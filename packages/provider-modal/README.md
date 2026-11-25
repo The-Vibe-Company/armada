@@ -53,13 +53,13 @@ profile/workspace label is not authentication; actual AppID is authoritative.
 There is no redirect/new-App fallback. The public SDK does not expose a separate
 verified authenticated-workspace accessor.
 
-Source snapshots use a separate SQL store. Fork reservations and
-machine inspection uses target scope. No source-store fallback can
-expose an org-scoped machine when a private target was requested. A fork persists
-source Image lineage; subsequent machine operations refuse a provider connection
-with the wrong source authority, even when both connections reach the same App.
+Source snapshots use a separate SQL store. The runtime launch job publishes
+machine records in the target scope and persists source Image lineage. Machine
+inspection uses that target scope. Subsequent machine operations refuse a provider
+connection with the wrong source authority, even when both connections reach the
+same App.
 New Machine and SavedImage records retain the nonsensitive managementAuthority
-(scope/owner only). Snapshot lookup/fork, physical lifecycle and GC compare it to
+(scope/owner only). Snapshot lookup, physical lifecycle and GC compare it to
 the selected connection; wrong-authority adapters cannot mutate resources or
 collect that authority's tombstones even when both keys reach the same App. GC
 still counts all authorized cross-target references conservatively. #514 persists
@@ -67,10 +67,10 @@ the same context with its source record and supplies it on restore. Legacy rows
 without this metadata rely on that trusted persisted server context and AppID;
 no credential owner is inferred from profile labels or resource visibility.
 
-Split adapters can read source snapshot metadata and fork, but cannot create or
-mutate golden snapshots through the target private scope. Route those golden
-operations through the source adapter. Keep sourceScope when resolving existing
-private forks, including after the named source snapshot has been deleted.
+Split adapters can read source snapshot metadata. Route golden creation and
+snapshot mutation through the source adapter. Keep sourceScope when resolving
+private runtimes launched from org goldens, including after the named source
+snapshot has been deleted.
 
 The low-level `createModalProvider` exposes the same split as
 `source:{scope,store}` plus target `scope`/`store` and the same optional
@@ -78,7 +78,6 @@ managementAuthority provenance. It also accepts explicit
 public client injection. `ModalStore.imageReferenced` is a server-only boolean
 reference check: it counts private target references across visibility scopes
 without returning private resource IDs, owners, events or rows to a source caller.
-Snapshot retirement and fork reservation serialize on the saved-image row.
 Store entry points recheck live organization membership, including for private owners. Lifecycle phase
 commits renew the 15-minute lease, and expired holders cannot commit late results.
 Image collection claims expire after five minutes. Tombstone deletion matches the
@@ -102,8 +101,8 @@ builders use credential-free SDK exec and their own filesystem checkpoint.
 
 Goldens are immutable/provider-bound, use ttlMs:null and contain no managed model
 credentials/sessions/bootstrap/host keys. Named snapshot deletion refuses while a
-non-deleted fork references the exact saved image, including across private and
-organization scopes. Fork admission pins the image in a short reservation transaction.
+non-deleted runtime references the exact saved image, including across private and
+organization scopes. The runtime launch job pins the admitted snapshot revision.
 Retirement records a durable tombstone before physical collection. Collection
 preserves referenced artifacts, including historical tombstones and images shared
 by multiple handles. `collectRetiredSnapshot(name)` retries collection for a
@@ -115,12 +114,11 @@ remains upstream, in addition to live membership/owner/binding checks here.
 
 `restoreGoldenMaster({snapshotId,sandboxId?}): Promise<SandboxInfo>` is a public
 server-side extension. snapshotId is the owned provider snapshot reference used by
-getSnapshot/fork, **not** an arbitrary Modal Image ID. When canonical master is NULL,
+getSnapshot. When canonical master is NULL,
 omit sandboxId: the adapter derives SavedImage.sourceId from the authorized source
 store. An optional supplied ID must match exactly. The source row must be golden,
 the snapshot ready, and source access/management authority/App binding must match.
-Call through a source-scoped provider, after core owner/admin authorization. No
-ordinary model-credentialed worker fork is used as a builder.
+Call through a source-scoped provider, after core owner/admin authorization.
 
 The source lease records a restore intent, terminates a known sealed predecessor,
 and creates a credential-free physical builder under the SAME logical master ID
@@ -132,7 +130,7 @@ working checkpoint for the matching latest named base, preserving unsaved repo e
 Core514 still owns canonical adoption/CAS, including expected NULL pointers.
 
 Owned distribution sanitizes inherited managed state before first bootstrap of a
-new physical golden master or a new logical fork, including legacy owned Images.
+new physical golden master, including legacy owned Images.
 A durable freshStatePreparedGeneration marker is saved BEFORE boot: a same-ID/gen
 retry never purges its journal/fence again. Working recovery generations skip this
 fresh purge. A legacy snapshot can be restored only with

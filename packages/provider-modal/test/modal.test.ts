@@ -31,7 +31,6 @@ import {
 } from "../src/index.ts";
 import { captureProcessBaseline } from "../src/process-scope.ts";
 
-let workerSnapshot: string;
 let goldenTemplate: Machine;
 let checkpointedGoldenTemplate: Machine;
 let workerTemplate: Machine;
@@ -64,13 +63,19 @@ const {
     );
     const builder = await provider.createGolden({});
     goldenTemplate = await store.get(builder.id);
-    workerSnapshot = crypto.randomUUID();
+    const workerSnapshot = crypto.randomUUID();
     await provider.snapshot({ sandboxId: builder.id, name: workerSnapshot });
     checkpointedGoldenTemplate = await store.get(builder.id);
     imageTemplate = await store.image(workerSnapshot);
-    const worker = await provider.fork({ from: workerSnapshot });
-    workerTemplate = await store.get(worker.id);
-    await db.query("delete from public.modal_machines where id=$1", [worker.id]);
+    workerTemplate = {
+      ...goldenTemplate,
+      info: { ...goldenTemplate.info, physicalGeneration: "1" },
+      commonRuntime: true,
+      golden: false,
+      runtimePolicy: "explicit-vm-v1",
+      runtimeEvidence: { version: 1, runtime: "vm", physicalId: "fixture", generation: 1 },
+      managementAuthority: imageTemplate.managementAuthority!,
+    };
     return db;
   } catch (error) {
     await db.close();
@@ -178,12 +183,12 @@ function fixture(
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
   let creates = 0;
-  let artifactVolume: Volume | undefined;
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
   let snapshotBudget: number | undefined;
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
   let manifestResult: { exitCode: number | null; stdout: string } | undefined;
+  let artifactVolume: Volume | undefined;
   let failSnapshot = false;
   let loseTerminateResponse = false;
   let failCreate = false;
@@ -382,7 +387,7 @@ function fixture(
   });
   return {
     captureRuntimeWork,
-    async seedMachine(template: Machine) {
+    async seedMachine(template: Machine, targetScope = accessScope) {
       const id = crypto.randomUUID();
       const physicalName = `fixture-${id}`;
       const { sandboxId: physicalId } = await fakeClient.sandboxes.create(undefined, undefined, {
@@ -391,7 +396,7 @@ function fixture(
         secrets: [],
         tags: {
           armada_sandbox: id,
-          armada_scope: scopeKey(accessScope),
+          armada_scope: scopeKey(targetScope),
           armada_generation: String(template.generation),
         },
       });
@@ -403,14 +408,19 @@ function fixture(
         ...(template.processBaseline ? { processBaseline: { ...template.processBaseline, physicalId } } : {}),
         ...(template.runtimeEvidence ? { runtimeEvidence: { ...template.runtimeEvidence, physicalId } } : {}),
       };
+      if (machine.commonRuntime && distribution.captureProcessBaseline)
+        machine.processBaseline = await distribution.captureProcessBaseline(await client.sandboxes.fromId(physicalId), {
+          ...machine,
+          phase: "booting",
+        });
       await sql.query(
         `insert into public.modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
          values($1,$2,$3,$4,$5,$5,$6::jsonb)`,
         [
-          scopeKey(accessScope),
-          accessScope.orgId,
-          accessScope.userId,
-          accessScope.visibility,
+          scopeKey(targetScope),
+          targetScope.orgId,
+          targetScope.userId,
+          targetScope.visibility,
           id,
           JSON.stringify(machine),
         ],
@@ -964,14 +974,7 @@ test.each([
   ["xlarge", 8, 32768],
 ] as const)("Modal %s pins physical-core and MiB requests and limits across resume", async (size, cpu, memoryMiB) => {
   const f = fixture();
-  const builder = await f.provider.createGolden({});
-  const name = crypto.randomUUID();
-  await f.provider.snapshot({ sandboxId: builder.id, name });
-  const row = await f.provider.fork({ from: name, size });
-  const resources = { cpu, cpuLimit: cpu, memoryMiB, memoryLimitMiB: memoryMiB };
-  expect(f.resourceRequests[1]).toMatchObject(resources);
-  expect(f.resourceRequests[0]).not.toHaveProperty("cpu");
-  expect(f.resourceRequests[0]).not.toHaveProperty("memoryMiB");
+  const row = await f.seedMachine({ ...workerTemplate, size });
   await stopRuntime(f.provider, { sandboxId: row.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
   await resumeRuntime(f.provider, {
     sandboxId: row.id,
@@ -979,23 +982,30 @@ test.each([
     checkpoint: { epoch: "1", watermark: 0 },
     ttlSeconds: 3600,
   });
-  expect(f.resourceRequests[2]).toMatchObject(resources);
+  expect(f.resourceRequests[1]).toMatchObject({ cpu, cpuLimit: cpu, memoryMiB, memoryLimitMiB: memoryMiB });
   expect((await f.store.get(row.id)).size).toBe(size);
 });
 
-test("invalid Modal size is refused without a physical create", async () => {
-  const f = fixture();
-  await expect(f.provider.fork({ from: "not-looked-up", size: "default" as never })).rejects.toMatchObject({
-    code: "invalid_request",
-  });
-  expect(f.creates).toBe(0);
-});
-
-function runningFork(f: ReturnType<typeof fixture>) {
-  return f.provider.fork({ from: workerSnapshot });
-}
 function activeWorker(f: ReturnType<typeof fixture>) {
   return f.seedMachine(workerTemplate);
+}
+
+async function workerFromSnapshot(
+  f: ReturnType<typeof fixture>,
+  name: string,
+  sourceScope: Scope = scope,
+  sourceStore = f.store,
+  targetScope?: Scope,
+) {
+  const image = await sourceStore.image(name);
+  return f.seedMachine(
+    {
+      ...workerTemplate,
+      managementAuthority: image.managementAuthority!,
+      sourceImage: { scopeKey: scopeKey(sourceScope), name, imageId: image.imageId! },
+    },
+    targetScope,
+  );
 }
 
 async function savedGolden(f: ReturnType<typeof fixture>) {
@@ -1024,59 +1034,10 @@ async function seedHistoricalSnapshotTombstone(name: string) {
   );
 }
 
-test("Modal forks from one snapshot can boot concurrently", async () => {
-  const f = fixture(scope, fixtureSql);
-  const { name } = await savedGolden(f);
-  const entered = deferred();
-  const release = deferred();
-  const prepare = f.distribution.prepareFreshMachine!;
-  let firstBoot = true;
-  f.distribution.prepareFreshMachine = async (sandbox, row) => {
-    if (firstBoot) {
-      firstBoot = false;
-      entered.resolve();
-      await release.promise;
-    }
-    await prepare(sandbox, row);
-  };
-  const first = f.provider.fork({ from: name });
-  try {
-    await Promise.race([entered.promise, first]);
-    expect(firstBoot).toBe(false);
-    const second = await f.provider.fork({ from: name });
-    expect(second.state).toBe("ready");
-    release.resolve();
-    const firstChild = await first;
-    expect(firstChild.state).toBe("ready");
-    expect(firstChild.id).not.toBe(second.id);
-  } finally {
-    release.resolve();
-    await first;
-  }
-});
-
-test("Modal fork refuses a snapshot retired before reservation", async () => {
-  const source = fixture();
-  const { name } = await savedGolden(source);
-  const fork = fixture(scope, {
-    query: fixtureSql.query,
-    async transaction(work) {
-      await source.provider.deleteSnapshot(name);
-      return getDb().transaction(work);
-    },
-  });
-  const requestKey = crypto.randomUUID();
-  await expect(fork.provider.fork({ from: name, idempotencyKey: requestKey })).rejects.toMatchObject({
-    code: "not_found",
-  });
-  expect(await fork.store.findByRequestKey(requestKey)).toBeNull();
-  expect(fork.creates).toBe(0);
-});
-
 test("snapshot retirement refuses a live Modal fork reference", async () => {
   const f = fixture(scope, fixtureSql);
   const { name } = await savedGolden(f);
-  const child = await f.provider.fork({ from: name });
+  const child = await workerFromSnapshot(f, name);
   const error = await f.provider.deleteSnapshot(name).catch((failure: unknown) => failure);
   expect(error).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy" });
   expect(isNonMutatingProviderRefusal(error)).toBe(true);
@@ -1086,11 +1047,18 @@ test("snapshot retirement refuses a live Modal fork reference", async () => {
   await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
 });
 
-test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
-  const f = fixture(scope, getDb());
+test("Modal runtime resume mounts the environment artifact cache read-only", async () => {
+  const f = fixture();
   const volume = new Volume("vo_public_artifacts");
   f.setArtifactVolume(volume);
-  await runningFork(f);
+  const worker = await activeWorker(f);
+  await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+  await resumeRuntime(f.provider, {
+    sandboxId: worker.id,
+    generation: 2,
+    checkpoint: { epoch: "1", watermark: 0 },
+    ttlSeconds: 3600,
+  });
   expect(f.resourceRequests.at(-1)?.volumes).toEqual({
     "/opt/armada/artifact-cache": volume.withMountOptions({ readOnly: true }),
   });
@@ -1098,7 +1066,7 @@ test("enrolled Modal forks mount the environment artifact cache read-only", asyn
 
 test("enrolled Modal bootstrap rejects a different physical machine before consuming the attempt", async () => {
   const f = fixture(scope, fixtureSql);
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   const lookup = f.client.sandboxes.fromId;
   f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
   const execs = f.sdkCommands.length;
@@ -1116,9 +1084,9 @@ test("enrolled Modal bootstrap rejects a different physical machine before consu
   expect((await f.store.get(row.id)).runtimeStartAttempted).toBeUndefined();
 });
 
-test("enrolled Modal forks bootstrap once", async () => {
+test("enrolled Modal workers bootstrap once", async () => {
   const f = fixture(scope, fixtureSql);
-  const row = await runningFork(f);
+  const row = await activeWorker(f);
   expect(await f.store.get(row.id)).toMatchObject({ commonRuntime: true, phase: "active" });
   await f.provider.startRuntime({
     sandboxId: row.id,
@@ -1151,8 +1119,8 @@ test("enrolled Modal forks bootstrap once", async () => {
 test("common-runtime Modal capture quiesces the active incarnation and runs the Git policy as the workspace user", async () => {
   const f = fixture(scope, getDb());
   f.distribution.captureProcessBaseline = captureProcessBaseline;
-  const worker = await runningFork(f);
-  const afterFork = f.log.length;
+  const worker = await activeWorker(f);
+  const beforeCapture = f.log.length;
 
   await expect(
     f.captureRuntimeWork({
@@ -1162,14 +1130,14 @@ test("common-runtime Modal capture quiesces the active incarnation and runs the 
       context: { source: "user_stop", captureId: crypto.randomUUID() },
     }),
   ).resolves.toEqual({ status: "clean" });
-  expect(f.log.slice(afterFork)).toEqual(["quiesce-processes", "workspace-exec"]);
+  expect(f.log.slice(beforeCapture)).toEqual(["quiesce-processes", "workspace-exec"]);
   expect(await f.store.get(worker.id)).toMatchObject({ phase: "active" });
 });
 
 test("common-runtime Modal capture refuses a stale incarnation before touching physical compute", async () => {
   const f = fixture(scope, getDb());
-  const worker = await runningFork(f);
-  const afterFork = f.sdkCommands.length;
+  const worker = await activeWorker(f);
+  const beforeCapture = f.sdkCommands.length;
 
   await expect(
     f.captureRuntimeWork({
@@ -1179,12 +1147,12 @@ test("common-runtime Modal capture refuses a stale incarnation before touching p
       context: { source: "lifecycle_stop", captureId: crypto.randomUUID() },
     }),
   ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-  expect(f.sdkCommands).toHaveLength(afterFork);
+  expect(f.sdkCommands).toHaveLength(beforeCapture);
 });
 
 test("Modal delete keeps ownership when physical lookup returns a different machine", async () => {
   const f = fixture(scope, fixtureSql);
-  const worker = await runningFork(f);
+  const worker = await activeWorker(f);
   const lookup = f.client.sandboxes.fromId;
   f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
   const before = f.log.length;
@@ -1198,7 +1166,7 @@ test("Modal delete keeps ownership when physical lookup returns a different mach
 
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
   const f = fixture(scope, fixtureSql);
-  const worker = await runningFork(f);
+  const worker = await activeWorker(f);
   const original = await f.store.get(worker.id);
   const bootstrap = {
     sandboxId: worker.id,
@@ -1292,7 +1260,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
 
 test("owner stop adopts a lost Modal replacement across the stop generation bump", async () => {
   const f = fixture(scope, fixtureSql);
-  const worker = await runningFork(f);
+  const worker = await activeWorker(f);
   await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
   f.failCreate(true);
   await expect(
@@ -1335,7 +1303,7 @@ test("owner stop adopts a lost Modal replacement across the stop generation bump
 
 test("uncertain enrolled Modal snapshot refuses retry or resume", async () => {
   const f = fixture(scope, fixtureSql);
-  const worker = await runningFork(f);
+  const worker = await activeWorker(f);
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
   const afterLaunch = f.log.length;
   f.failSnapshot(true);
@@ -1393,39 +1361,40 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.createGolden({})).rejects.toMatchObject({ code: "forbidden" });
     expect(f.creates).toBe(0);
   });
-  test.each([false, true])("keyed fork reuses its physical machine (lost response=%s)", async (lostResponse) => {
+  test.each([false, true])(
+    "keyed golden create reuses its physical machine (lost response=%s)",
+    async (lostResponse) => {
+      const f = fixture();
+      const request = { idempotencyKey: crypto.randomUUID() };
+      const creates = f.creates;
+      if (lostResponse) {
+        f.failCreate(true);
+        await expect(f.provider.createGolden(request)).rejects.toMatchObject({ code: "unknown" });
+        f.failCreate(false);
+      } else {
+        await f.provider.createGolden(request);
+      }
+      const physicalName = f.resourceRequests.at(-1)?.name;
+      if (typeof physicalName !== "string") throw new Error("Expected a named Modal create");
+      const original = await f.client.sandboxes.fromName("pinned", physicalName, {
+        environment: scope.binding.environment,
+        includeTerminated: true,
+      });
+      const replay = await f.provider.createGolden(request);
+      expect(replay.state).toBe("ready");
+      expect(f.creates - creates).toBe(1);
+      expect((await f.store.get(replay.id)).physicalId).toBe(original.sandboxId);
+    },
+  );
+  test("keyed golden create cannot reactivate a machine deleted before its builder lease", async () => {
     const f = fixture();
-    const { name: from } = await savedGolden(f);
-    const request = { from, idempotencyKey: crypto.randomUUID() };
-    const creates = f.creates;
-    if (lostResponse) {
-      f.failCreate(true);
-      await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "unknown" });
-      f.failCreate(false);
-    } else {
-      await f.provider.fork(request);
-    }
-    const physicalName = f.resourceRequests.at(-1)?.name;
-    if (typeof physicalName !== "string") throw new Error("Expected a named Modal create");
-    const original = await f.client.sandboxes.fromName("pinned", physicalName, {
-      environment: scope.binding.environment,
-      includeTerminated: true,
-    });
-    const replay = await f.provider.fork(request);
-    expect(replay.state).toBe("ready");
-    expect(f.creates - creates).toBe(1);
-    expect((await f.store.get(replay.id)).physicalId).toBe(original.sandboxId);
-  });
-  test("keyed fork cannot reactivate a machine deleted before its child lease", async () => {
-    const f = fixture();
-    const { name: from } = await savedGolden(f);
     const idempotencyKey = crypto.randomUUID();
-    const request = { from, idempotencyKey };
+    const request = { idempotencyKey };
     f.failCreate(true);
-    await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "unknown" });
+    await expect(f.provider.createGolden(request)).rejects.toMatchObject({ code: "unknown" });
     f.failCreate(false);
     const child = await f.store.findByRequestKey(idempotencyKey);
-    if (!child) throw new Error("Expected a saved fork reservation");
+    if (!child) throw new Error("Expected a saved golden reservation");
     const lease = f.store.lease.bind(f.store);
     f.store.lease = async (id, work) => {
       if (id === child.info.id) {
@@ -1434,7 +1403,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       }
       return lease(id, work);
     };
-    await expect(f.provider.fork(request)).rejects.toMatchObject({ code: "conflict" });
+    await expect(f.provider.createGolden(request)).rejects.toMatchObject({ code: "conflict" });
     expect((await f.store.get(child.info.id)).phase).toBe("deleted");
   });
   test("a shared-scope reservation key cannot be replayed by another owner", async () => {
@@ -1542,7 +1511,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("historically retired snapshots leave existing forks usable", async () => {
     const f = fixture();
     const { builder, name } = await savedGolden(f);
-    const fork = await f.provider.fork({ from: name });
+    const fork = await workerFromSnapshot(f, name);
     await seedHistoricalSnapshotTombstone(name);
     expect(f.log).not.toContain("delete-image");
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
@@ -1555,8 +1524,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("a retired image still referenced by a live fork never leases its source", async () => {
     const f = fixture();
     const { builder, name } = await savedGolden(f);
-    const first = await f.provider.fork({ from: name });
-    const second = await f.provider.fork({ from: name });
+    const first = await workerFromSnapshot(f, name);
+    const second = await workerFromSnapshot(f, name);
     await seedHistoricalSnapshotTombstone(name);
     await f.provider.delete({ sandboxId: first.id });
     const lease = f.store.lease.bind(f.store);
@@ -1576,7 +1545,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("a busy retired source neither fails nor delays a fork's deletion", async () => {
     const f = fixture();
     const { builder, name } = await savedGolden(f);
-    const fork = await f.provider.fork({ from: name });
+    const fork = await workerFromSnapshot(f, name);
     await seedHistoricalSnapshotTombstone(name);
     await stopRuntime(f.provider, {
       sandboxId: fork.id,
@@ -1613,7 +1582,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       if (id === brokenImage) throw new Error("image service refused");
     });
     await f.provider.deleteSnapshot(broken);
-    const fork = await f.provider.fork({ from: first });
+    const fork = await workerFromSnapshot(f, first);
     await seedHistoricalSnapshotTombstone(first);
     await f.provider.delete({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toEqual(expect.arrayContaining([a.id, b.id]));
@@ -1670,7 +1639,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: builder.id });
     await f.provider.restoreGoldenMaster({ snapshotId: restore });
     await f.provider.snapshot({ sandboxId: builder.id, name: second });
-    const fork = await f.provider.fork({ from: first });
+    const fork = await workerFromSnapshot(f, first);
     await seedHistoricalSnapshotTombstone(first);
     await f.runDetached();
     const entered = Promise.withResolvers<void>();
@@ -1780,7 +1749,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const f = fixture();
     const { name } = await savedGolden(f);
     const saved = await f.store.image(name);
-    const child = await f.provider.fork({ from: name });
+    const child = await workerFromSnapshot(f, name);
     await stopRuntime(f.provider, { sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
     const recovery = (await f.store.get(child.id)).recoveryImageId;
     expect(recovery).toBeDefined();
@@ -1832,7 +1801,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       const seed = await other.provider.createGolden({});
       const seedName = crypto.randomUUID();
       await other.provider.snapshot({ sandboxId: seed.id, name: seedName });
-      const child = await other.provider.fork({ from: seedName });
+      const child = await workerFromSnapshot(other, seedName, { ...scope, orgId: otherOrg, userId: otherUser });
       await stopRuntime(other.provider, { sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
       const recovery = (await other.store.get(child.id)).recoveryImageId!;
       if (mode === "retained") {
@@ -1891,7 +1860,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       await expect(f.store.lease(row.id, async () => undefined)).rejects.toMatchObject({ code: "conflict" });
     });
   });
-  test("actual composition forks ORG snapshot into owner-private access while management authority stays ORG and GC counts private references", async () => {
+  test("actual composition serves org-backed private runtime access while management authority stays ORG and GC counts private references", async () => {
     const orgScope: Scope = { ...scope, visibility: "org" };
     const f = fixture(orgScope);
     const builder = await f.provider.createGolden({});
@@ -1916,11 +1885,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       client: f.client,
     };
     const { provider, close } = await createRuntimeModalProvider(configuration);
-    const launched = await provider.fork({ from: snapshot, name: "private-working-fork" });
+    const launched = await workerFromSnapshot(f, snapshot, orgScope, f.store, scope);
     const privateStore = createSqlModalStore(getDb(), scope);
     const machine = await privateStore.get(launched.id);
     expect(machine.sourceImage).toMatchObject({ name: snapshot });
-    expect(machine.processBaseline).toMatchObject({ physicalId: machine.physicalId, generation: machine.generation });
     expect(machine.launchUserId).toBe(scope.userId);
     await expect(f.store.get(launched.id)).rejects.toMatchObject({ code: "not_found" });
     const otherScope = { ...scope, userId: "00000000-0000-0000-0000-000000000004" };
@@ -1984,7 +1952,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       createRuntimeModalProvider({ ...configuration, sourceScope: { ...scope, userId: otherScope.userId } }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
-  test("private golden with explicit org fallback authority stays owner-private across fork/restore and rejects scope/key substitution", async () => {
+  test("private golden with explicit org fallback authority stays owner-private across runtime resume and rejects scope/key substitution", async () => {
     const f = fixture();
     const requested = { credentialScope: "org" as const, credentialOwnerId: scope.orgId };
     const seen: ModalManagementAuthority[] = [];
@@ -2008,7 +1976,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.store.get(builder.id)).managementAuthority).toEqual(requested);
     expect((await f.store.image(snapshot)).managementAuthority).toEqual(requested);
     const { provider: restoredConnection } = await createRuntimeModalProvider(configuration);
-    const fork = await restoredConnection.fork({ from: snapshot });
+    f.distribution.captureProcessBaseline = captureProcessBaseline;
+    const fork = await workerFromSnapshot(f, snapshot);
     expect((await f.store.get(fork.id)).managementAuthority).toEqual(requested);
     await stopRuntime(restoredConnection, { sandboxId: fork.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
     await resumeRuntime(restoredConnection, {
@@ -2039,7 +2008,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       managementAuthority: { credentialScope: "user", credentialOwnerId: scope.userId },
     });
     await expect(userKey.provider.getSnapshot(snapshot)).rejects.toMatchObject({ code: "forbidden" });
-    await expect(userKey.provider.fork({ from: snapshot })).rejects.toMatchObject({ code: "forbidden" });
     await expect(userKey.provider.get(fork.id)).rejects.toMatchObject({ code: "forbidden" });
     await expect(userKey.provider.delete({ sandboxId: fork.id })).rejects.toMatchObject({ code: "forbidden" });
     await expect(
@@ -2081,7 +2049,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);
     close();
   });
-  test("NULL canonical golden master restores from its exact owned image, reconnect is idempotent, and resnapshot/fork remain credential-free", async () => {
+  test("NULL canonical golden master restores from its exact owned image, reconnect is idempotent, and resnapshot remains credential-free", async () => {
     const f = fixture();
     const builder = await f.provider.createGolden({});
     const first = crypto.randomUUID();
@@ -2106,9 +2074,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const next = await f.provider.restoreGoldenMaster({ snapshotId: second });
     expect(next.id).toBe(builder.id);
     expect(next.physicalGeneration).toBe("3");
-    const fork = await f.provider.fork({ from: second });
-    expect(fork.id).not.toBe(builder.id);
-    expect((await f.store.get(fork.id)).golden).toBe(false);
     const unrelated = await f.provider.createGolden({});
     const count = f.creates;
     await expect(f.provider.restoreGoldenMaster({ sandboxId: unrelated.id, snapshotId: second })).rejects.toMatchObject(
@@ -2186,9 +2151,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       expect(restored).toMatchObject({ id: builder.id, physicalGeneration: "2", state: "ready" });
       expect(await provider.restoreGoldenMaster({ snapshotId: name })).toEqual(restored);
       expect(await provider.exec({ sandboxId: builder.id, command: "true" })).toMatchObject({ exitCode: 0 });
-
-      const fork = await provider.fork({ from: name });
-      expect(await f.store.get(fork.id)).toMatchObject({ commonRuntime: true, phase: "active" });
     } finally {
       close();
     }
@@ -2206,7 +2168,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       close();
     }
   });
-  test("runtime-only stop refuses an unenrolled fork before recording a stop attempt", async () => {
+  test("runtime-only stop refuses an unenrolled worker before recording a stop attempt", async () => {
     const f = fixture();
     const worker = await f.seedMachine(workerTemplate);
     await f.store.lease(worker.id, async (row, save) => {
@@ -2274,31 +2236,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       release.resolve();
       await holder;
     }
-  });
-  test("failed fork boot exports exact reservation/physical/image provenance for scoped disposable cleanup", async () => {
-    const f = fixture();
-    const { name } = await savedGolden(f);
-    const sourceImage = (await f.store.image(name)).imageId;
-    f.failBoot(true);
-    let receipt: ModalOperationError["receipt"] | undefined;
-    try {
-      await f.provider.fork({ from: name });
-      throw Error("boot unexpectedly succeeded");
-    } catch (error) {
-      if (!(error instanceof ModalOperationError)) throw error;
-      receipt = error.receipt;
-    }
-    if (!receipt) throw Error("missing failed reservation receipt");
-    expect(receipt.phase).toBe("booting");
-    expect(receipt.physicalId).toBeDefined();
-    expect(receipt.imageId).toBe(sourceImage);
-    expect(receipt.sourceImage).toMatchObject({ name, imageId: sourceImage });
-    expect((await f.store.get(receipt.sandboxId)).phase).toBe("booting");
-    expect(JSON.stringify(receipt)).not.toContain("synthetic-secret");
-    expect(JSON.stringify(receipt)).not.toContain("headers");
-    await f.provider.delete({ sandboxId: receipt.sandboxId });
-    expect((await f.store.get(receipt.sandboxId)).phase).toBe("deleted");
-    expect(f.log).toContain("terminate");
   });
   test("known completed Image survives a failed SQL commit in the failure receipt without terminating source", async () => {
     let fail = false;

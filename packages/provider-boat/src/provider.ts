@@ -196,10 +196,14 @@ interface BoatRuntimeHost {
   ): Promise<void>;
 }
 
+/** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
+export interface BoatProvider extends Provider {
+  fork(request: ForkRequest): Promise<SandboxInfo>;
+}
+
 const DEPLOYMENT_LABEL = "armada.deployment";
 
-/** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
-export function createBoatProvider(options: BoatProviderOptions): Provider & BoatRuntimeHost {
+export function createBoatProvider(options: BoatProviderOptions): BoatProvider & BoatRuntimeHost {
   const defaultTtl = options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
   const deploymentId = options.deploymentId?.trim();
   const deploymentLabel = deploymentId ? createHash("sha256").update(deploymentId).digest("hex") : undefined;
@@ -395,7 +399,7 @@ export function createBoatProvider(options: BoatProviderOptions): Provider & Boa
   const requiresRuntime = async (): Promise<never> => {
     throw invalidRequest("Boat agent operations require an enrolled Armada runtime.");
   };
-  const provider: Provider & BoatRuntimeHost = {
+  const provider: BoatProvider & BoatRuntimeHost = {
     id: PROVIDER_ID,
     harnesses: HARNESSES.filter((id) => HARNESS_CATALOG[id].boatProvider !== null),
     capabilities: boatCapabilities,
