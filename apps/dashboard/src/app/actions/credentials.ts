@@ -1,6 +1,6 @@
 "use server";
 
-import { EncryptionKeyError, encryptSecret, toBytea } from "@armada/core";
+import { CREDENTIAL_KINDS, EncryptionKeyError, encryptSecret, toBytea } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { type ActionResult, done, fail, formString, isUuid } from "@/lib/action";
 import {
@@ -86,7 +86,13 @@ export async function saveCredential(_previous: ActionResult | null, data: FormD
 
 export async function removeCredential(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
   await requireViewer();
-  if (formString(data, "scope") === "org" && formString(data, "kind") === "boat") return fail(ORG_HOSTING_IN_PROVIDERS);
+  const kind = formString(data, "kind");
+  if (
+    formString(data, "scope") === "org" &&
+    isCredentialKind(kind) &&
+    CREDENTIAL_KINDS[kind].orgStorage === "org-boat-key"
+  )
+    return fail(ORG_HOSTING_IN_PROVIDERS);
   const id = formString(data, "id");
   if (!isUuid(id)) return fail("That request is not valid.");
   const supabase = await createClient();

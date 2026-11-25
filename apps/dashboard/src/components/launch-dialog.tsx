@@ -3,7 +3,7 @@
 import type { Harness, MachineSizePolicy, SandboxPlacementProviderId } from "@armada/core";
 import { HARNESSES, isSandboxProvider, MODEL_CATALOG, SANDBOX_PLACEMENT_LABELS as PROVIDER_LABELS } from "@armada/core";
 import { runtimeHarnessSupported } from "@armada/core/harnesses";
-import { capabilities } from "@armada/core/machine-capabilities";
+import { capabilities, openCodeRequiresRuntimeDiscovery } from "@armada/core/machine-capabilities";
 import { RocketIcon } from "lucide-react";
 import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
@@ -553,7 +553,7 @@ function LaunchForm({
   const [credential, setCredential] = useState(() => initialLaunchSelection(accounts, catalog, harness).credentialId);
   const [accountBlocked, setAccountBlocked] = useState(false);
   // Late discovery can rule out the initial snapshot agent. Preserve the form and its retry key.
-  const boatOpenCodeDisabled = provider === "boat" && !boatOpenCodeAvailable;
+  const boatOpenCodeDisabled = openCodeRequiresRuntimeDiscovery(provider) && !boatOpenCodeAvailable;
   const nextHarness = launchHarnessForSource(harness, offeredHarnesses, boatOpenCodeDisabled);
   if (nextHarness !== harness) {
     setHarness(nextHarness);

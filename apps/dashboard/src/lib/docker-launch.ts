@@ -5,7 +5,8 @@ import type {
   LaunchProviderCapabilities,
   LaunchProviderOption,
 } from "@armada/core";
-import { DOCKER_DEFAULT_IMAGE, HARNESSES } from "@armada/core";
+import { DOCKER_DEFAULT_IMAGE, HARNESSES, isSandboxPlacementProvider } from "@armada/core";
+import { capabilities as machineCapabilities } from "@armada/core/machine-capabilities";
 import { isUuid } from "./action.ts";
 import type { DockerHost } from "./docker-hosts.ts";
 
@@ -61,7 +62,12 @@ const knownOf = <T extends string>(value: unknown, known: readonly T[]): T[] | n
  */
 export function dockerLaunchOption(payload: unknown): DockerLaunchOption | null {
   if (!isRecord(payload) || !Array.isArray(payload.providers)) return null;
-  const entry = payload.providers.find((provider) => isRecord(provider) && provider.id === "docker");
+  const entry = payload.providers.find(
+    (provider) =>
+      isRecord(provider) &&
+      isSandboxPlacementProvider(provider.id) &&
+      machineCapabilities(provider.id).launchSource === "host",
+  );
   if (!isRecord(entry)) return null;
   const { enabled, launchSources, harnesses, capabilities, unsupportedReasons } = entry;
   const sources = knownOf(launchSources, SOURCES);

@@ -1,5 +1,6 @@
 import { shellQuote } from "../packages/core/src/shell-quote.ts";
 import { verifyDefaultReceipts } from "./default-skill-smoke.ts";
+import { smokeRequestId } from "./staging-smoke-policy.ts";
 import { verifyReceipts } from "./template-skill-smoke.ts";
 
 export interface SkillsProbeBinding {
@@ -57,7 +58,7 @@ export async function prepareSkillsProbe(
         command: `test -r ${shellQuote(path)} && sha256sum ${shellQuote(path)} | cut -d ' ' -f 1`,
         cwd: "/tmp",
         timeout_seconds: 30,
-        ...(provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+        ...smokeRequestId(provider),
       });
       if (result.exitCode !== 0 || result.timedOut !== false || result.stdout?.trim() !== binding.fileSha256)
         throw Error("skills_content_mismatch");

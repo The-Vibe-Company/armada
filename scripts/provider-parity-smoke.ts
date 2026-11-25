@@ -2,8 +2,12 @@ import { appendFile } from "node:fs/promises";
 import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "../packages/core/src/contract/launch-response.ts";
 import { isHarness } from "../packages/core/src/harnesses.ts";
 import type { LaunchProviderOption } from "../packages/core/src/index.ts";
-import { capabilities } from "../packages/core/src/machine-capabilities.ts";
-import { HOST_CAPABILITIES, isSandboxProvider } from "../packages/core/src/sandbox-provider.ts";
+import { capabilities, openCodeRequiresRuntimeDiscovery } from "../packages/core/src/machine-capabilities.ts";
+import {
+  HOST_CAPABILITIES,
+  isSandboxPlacementProvider,
+  isSandboxProvider,
+} from "../packages/core/src/sandbox-provider.ts";
 import type { SandboxUsage } from "../packages/core/src/sandbox-usage.ts";
 import { TEMPLATE_REFUSAL_HELP } from "../packages/core/src/templates.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
@@ -28,7 +32,15 @@ import deadlineTable from "./smoke-deadlines.json";
 import { deadlinesFor } from "./smoke-deadlines.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
-import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
+import {
+  BOAT_STAGING_NOTICE,
+  isCoordinatorSmokeProvider,
+  isStagingSmokeProvider,
+  requiresMcpRuntimeEpoch,
+  smokeReceiptProvider,
+  smokeRequestId,
+  stagingSmokeCases,
+} from "./staging-smoke-policy.ts";
 
 type Provider = "boat" | "modal" | "docker";
 type Diagnostic = {
@@ -233,12 +245,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       else if (flag === "--feature" && !feature && features.includes(value ?? "")) feature = value;
       else throw new Error();
     }
-    if (productionBoat && only !== "boat") throw new Error();
+    if (productionBoat && !isCoordinatorSmokeProvider(only)) throw new Error();
   } catch {
     io.out(JSON.stringify({ step: "configure", pass: false, code: "invalid_parity_filter" }));
     return false;
   }
-  if (only === "boat" && !productionBoat) {
+  if (isCoordinatorSmokeProvider(only) && !productionBoat) {
     io.out(
       JSON.stringify({
         step: "provider_parity",
@@ -270,7 +282,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       origin = url.origin;
       const raw: unknown = JSON.parse(env.ARMADA_SMOKE_CASES ?? "");
       if (!Array.isArray(raw)) throw new Error();
-      cases = raw.filter((c) => c && typeof c === "object" && c.provider === "boat");
+      cases = raw.filter((c) => c && typeof c === "object" && isCoordinatorSmokeProvider(c.provider));
       if (cases.length !== 1) throw new Error();
     } else {
       if (env.ARMADA_URL !== STAGING_ORIGIN) throw new Error();
@@ -283,7 +295,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     }
     for (const c of cases) {
       if (
-        !(productionBoat ? c.provider === "boat" : ["modal", "docker"].includes(c.provider)) ||
+        !(productionBoat ? isCoordinatorSmokeProvider(c.provider) : isStagingSmokeProvider(c.provider)) ||
         !isHarness(c.harness) ||
         (c.snapshotId !== undefined &&
           (capabilities(c.provider).launchSource !== "host" ||
@@ -381,10 +393,10 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       body: JSON.stringify(body),
     });
     const provider = (body as { provider?: unknown } | undefined)?.provider;
+    const hostLaunch = isSandboxPlacementProvider(provider) && capabilities(provider).launchSource === "host";
     const jobLaunch =
       path === "sandbox/launch" &&
-      (provider === "docker" ||
-        (isSandboxProvider(provider) && HOST_CAPABILITIES[provider].goldenLaunchAdmission === "job"));
+      (hostLaunch || (isSandboxProvider(provider) && HOST_CAPABILITIES[provider].goldenLaunchAdmission === "job"));
     const trackedLaunch = jobLaunch || path === "templates/launch";
     const requestId = trackedLaunch ? response.headers.get("x-request-id") : null;
     const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
@@ -429,7 +441,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     if (path === "sandbox/launch") {
       if (
         (jobLaunch && (typeof result?.sandbox?.id !== "string" || !UUID.test(result.sandbox.id))) ||
-        provider === "docker" ||
+        hostLaunch ||
         (jobLaunch &&
           result?.sandbox?.provider === undefined &&
           (result?.provider === undefined || result.provider === provider))
@@ -501,7 +513,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         name,
         provider,
         "not-run",
-        provider === "boat" && !productionBoat
+        isCoordinatorSmokeProvider(provider) && !productionBoat
           ? "not_part_of_release_gate"
           : only && provider !== only
             ? "provider_filtered"
@@ -580,7 +592,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         record("mcp-resume", c.provider, "not-run", "mcp_probe_not_configured");
       if (feature === "mcp" || feature === "mcp-resume") continue;
     }
-    if ((feature === "mcp" || feature === "mcp-resume") && c.provider === "boat" && c.harness !== "opencode") {
+    if (
+      (feature === "mcp" || feature === "mcp-resume") &&
+      requiresMcpRuntimeEpoch(c.provider) &&
+      c.harness !== "opencode"
+    ) {
       record(feature, c.provider, "not-run", "native_boat_mcp_evidence_probe_not_implemented");
       continue;
     }
@@ -705,7 +721,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
 
       async function claim(sandboxId: string) {
         id = sandboxId;
-        if (provider !== "boat") await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
+        if (isStagingSmokeProvider(provider)) await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
       }
 
       const dockerInput = launchSource === "host" ? dockerLaunchInput() : undefined;
@@ -970,7 +986,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       await poll(
         async () => {
           const evidence = await probe.verify(sandboxId, c.provider);
-          if (c.provider === "boat") {
+          if (requiresMcpRuntimeEpoch(c.provider)) {
             const epoch = evidence.runtimeEpoch;
             if (!epoch || (afterResume && mcpRuntimeEpoch && BigInt(epoch) <= BigInt(mcpRuntimeEpoch)))
               throw new McpProbeError("invalid_mcp_receipt");
@@ -1174,7 +1190,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         prompt: recall
           ? "What PARITY_ token did I ask you to remember? Reply with only that token, without tools."
           : `Remember this token for later: ${memory}. Reply with exactly SMOKE_OK and do not use tools.`,
-        ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+        ...smokeRequestId(c.provider),
       });
       if (!option?.capabilities.logs) throw new Error("logs_not_available");
       if (!turn.promptId) throw new Error("invalid_turn_receipt");
@@ -1373,7 +1389,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           id,
           prompt:
             "Use your terminal tool to run sleep 90. Wait for it to finish before replying CONTROL_ORIGINAL. Do not modify files.",
-          ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+          ...smokeRequestId(c.provider),
         });
         if (!original.promptId) throw new Error("invalid_turn_receipt");
         await poll(
@@ -1401,7 +1417,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             ...(action === "steer"
               ? { text: `Cancel the waiting task. Reply with exactly ${marker} and nothing else. Do not use tools.` }
               : {}),
-            ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+            ...smokeRequestId(c.provider),
           },
         );
         if (
@@ -1619,7 +1635,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       option = options.providers.find((p) => p.id === c.provider);
       if (!option) throw new Error("missing_provider_options");
       if (
-        c.provider === "boat" &&
+        openCodeRequiresRuntimeDiscovery(c.provider) &&
         c.harness === "opencode" &&
         (feature === "mcp" || feature === "mcp-resume") &&
         (!option.harnesses.includes("opencode") ||
@@ -1630,7 +1646,11 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         continue;
       }
       if (!option.harnesses.includes(c.harness as never)) throw new Error("harness_not_advertised");
-      if (c.provider === "boat" && c.harness === "opencode" && options.boatRuntime?.opencodeVersion !== 1)
+      if (
+        openCodeRequiresRuntimeDiscovery(c.provider) &&
+        c.harness === "opencode" &&
+        options.boatRuntime?.opencodeVersion !== 1
+      )
         throw new Error("boat_opencode_runtime_not_advertised");
       if (feature === "client-stop" || (!feature && c.clientStop === true)) {
         const missing = (["stop", "resume", "followupPrompts", "logs", "status"] as const).find(
@@ -1661,7 +1681,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (feature === "mcp" || feature === "mcp-resume") {
         if (feature === "mcp-resume") {
           if (
-            c.provider === "boat" &&
+            requiresMcpRuntimeEpoch(c.provider) &&
             (options.boatRuntime?.checkpointVersion !== 1 || options.boatRuntime.resumeVersion !== 1)
           ) {
             record(feature, c.provider, "not-run", "boat_runtime_checkpoint_resume_not_advertised");
@@ -1808,7 +1828,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         const snapshot = matches[0]!;
         if (
           matches.length !== 1 ||
-          snapshot.provider !== "docker" ||
+          snapshot.provider !== c.provider ||
           snapshot.orgId !== c.org ||
           snapshot.hostId !== c.hostId ||
           snapshot.visibility !== "private" ||
@@ -2003,7 +2023,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                             templateClaims.add(claimed);
                             id ??= claimed;
                             starts++;
-                            if (c.provider !== "boat")
+                            if (isStagingSmokeProvider(c.provider))
                               await io.recordSandbox?.(
                                 c.org,
                                 claimed,
@@ -2133,7 +2153,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                         if (!templateClaims.has(value.id)) {
                           templateClaims.add(value.id);
                           id ??= value.id;
-                          if (c.provider !== "boat")
+                          if (isStagingSmokeProvider(c.provider))
                             await io.recordSandbox?.(
                               c.org,
                               value.id,
@@ -2289,7 +2309,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             const result = await api<{ exitCode: number | null; timedOut: boolean; stdout: string }>("sandbox/exec", {
               id,
               command: "printf PARITY_EXEC_OK",
-              ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+              ...smokeRequestId(c.provider),
               cwd: "/tmp",
               timeout_seconds: 30,
             });
@@ -2317,7 +2337,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               command,
               cwd: "/tmp",
               timeout_seconds: 90,
-              ...(c.provider === "docker" ? { request_id: crypto.randomUUID() } : {}),
+              ...smokeRequestId(c.provider),
             });
             if (result.exitCode !== 0 || result.timedOut !== false || result.stdout !== "PARITY_GITHUB_OK") {
               const code =
@@ -2352,7 +2372,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
               stopped = false;
               stopRequested = false;
             }
-            if (step === "stop" && feature === "mcp-resume" && c.provider === "boat" && c.harness === "opencode") {
+            if (
+              step === "stop" &&
+              feature === "mcp-resume" &&
+              requiresMcpRuntimeEpoch(c.provider) &&
+              c.harness === "opencode"
+            ) {
               const requestId = crypto.randomUUID();
               const checkpoint = await api<{
                 id: string;
@@ -2693,12 +2718,7 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
     if (typeof value !== "string" || !value.trim()) invalid(path, "must be a non-empty string");
   };
   try {
-    if (
-      args.length === 3 &&
-      args[0] === "--accounts" &&
-      args[1] === "--only" &&
-      (args[2] === "modal" || args[2] === "docker")
-    )
+    if (args.length === 3 && args[0] === "--accounts" && args[1] === "--only" && isStagingSmokeProvider(args[2]))
       providers = [args[2]];
     else if (args.length !== 1 || args[0] !== "--accounts")
       invalid("arguments", "expected --accounts [--only modal|docker]");
@@ -2720,9 +2740,8 @@ async function accountsParity(env: NodeJS.ProcessEnv, io: Io, args: string[]): P
       if (!row || typeof row !== "object" || Array.isArray(row)) invalid(path, "must be an object");
       const c = row as Case;
       // Keep original indexes in diagnostics, while ignoring unused Boat fields.
-      if (c.provider === "boat") continue;
-      if (c.provider !== "modal" && c.provider !== "docker")
-        invalid(`${path}.provider`, "must be modal or docker (Boat is skipped)");
+      if (isCoordinatorSmokeProvider(c.provider)) continue;
+      if (!isStagingSmokeProvider(c.provider)) invalid(`${path}.provider`, "must be modal or docker (Boat is skipped)");
       if (typeof c.account !== "string" || !Object.hasOwn(accountMatrix, c.account))
         invalid(`${path}.account`, `must be one of: ${Object.keys(accountMatrix).join(", ")}`);
       if (accountMatrix[c.account!] !== c.harness) invalid(`${path}.harness`, "must match the selected account label");

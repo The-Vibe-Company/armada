@@ -194,16 +194,13 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     ? lookups.goldens.find((row) => row.id === definition.goldenId && row.provider === definition.provider)
     : undefined;
   const environment = definition
-    ? definition.provider === "docker"
+    ? "hostId" in definition
       ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official Armada image")} · ${DOCKER_HOST_LABEL} ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "unavailable"}`
       : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]} cloud`
     : null;
   const target = launchTarget(item, context.goldens, lookups);
   const launch = target && !target.blocker && (
-    <TemplateLaunchDialog
-      target={target}
-      dockerLimits={target.definition.provider === "docker" && <DockerLaunchLimitList />}
-    />
+    <TemplateLaunchDialog target={target} dockerLimits={"hostId" in target.definition && <DockerLaunchLimitList />} />
   );
 
   const detail = (
@@ -233,7 +230,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             ) : (
               <p className="text-sm">{environment}</p>
             )}
-            {definition.provider === "docker" && (
+            {"hostId" in definition && (
               <p className="text-xs text-muted-foreground">
                 {definition.snapshotId ? "Exact snapshot on this server." : "Official Armada image."}
               </p>
