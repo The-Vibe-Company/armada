@@ -56,7 +56,6 @@ function start(options: Parameters<typeof harness>[0] = {}) {
     reset all;
     set search_path=public;
     truncate members cascade;
-    delete from provider_launch_requests;
     delete from ordinary_launch_receipts;
     delete from sandboxes;
     delete from account_exhaustion;
