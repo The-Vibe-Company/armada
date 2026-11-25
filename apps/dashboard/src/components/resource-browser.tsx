@@ -89,8 +89,7 @@ export function useResourceSelected(key: string): boolean {
   return useBrowser().selected === key;
 }
 
-/** Responsive variants share row keys. Skip controls in the layout CSS has hidden. */
-function visibleControl(root: HTMLElement | null, selector: string) {
+function firstVisibleControl(root: HTMLElement | null, selector: string) {
   return [...(root?.querySelectorAll<HTMLElement>(selector) ?? [])].find(
     (control) => control.getClientRects().length > 0,
   );
@@ -168,7 +167,7 @@ export function ResourceBrowser({
     const back = opener.current ?? selected;
     opener.current = null;
     requestAnimationFrame(() => {
-      const row = back && visibleControl(rootRef.current, `[data-select-item="${CSS.escape(back)}"]`);
+      const row = back && firstVisibleControl(rootRef.current, `[data-select-item="${CSS.escape(back)}"]`);
       // Deleting a row may intentionally focus a page action (for example Add).
       // Do not overwrite that valid handoff with our missing-row fallback.
       const active = document.activeElement;
@@ -181,7 +180,7 @@ export function ResourceBrowser({
         !rootRef.current?.contains(active)
       )
         return;
-      const fallback = visibleControl(rootRef.current, "input, [data-select-item]");
+      const fallback = firstVisibleControl(rootRef.current, "input, [data-select-item]");
       (row || fallback || rootRef.current)?.focus();
     });
   }, [selected]);
@@ -192,7 +191,7 @@ export function ResourceBrowser({
   const restoreHistoryFocus = useCallback(() => {
     if (selected !== null) return;
     const key = resourceReturnFocus();
-    const row = key && visibleControl(rootRef.current, `[data-select-item="${CSS.escape(key)}"]`);
+    const row = key && firstVisibleControl(rootRef.current, `[data-select-item="${CSS.escape(key)}"]`);
     if (!row) return;
     if (returnedRow.current !== row || document.activeElement === document.body) row.focus();
     returnedRow.current = row;
@@ -696,7 +695,5 @@ export function SelectItem({ item, ...props }: { item: string } & Omit<Component
 
 /** Focus handoffs from nested dialogs must target the current visible frame, never a retained route's ID. */
 export function visibleResourcePanelTitle(): HTMLElement | undefined {
-  return [...document.querySelectorAll<HTMLElement>("[data-resource-panel-title]")].find(
-    (title) => title.getClientRects().length > 0,
-  );
+  return firstVisibleControl(document.body, "[data-resource-panel-title]");
 }
