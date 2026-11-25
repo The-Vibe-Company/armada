@@ -52,7 +52,8 @@ for run in runs:
         samples.setdefault(shard, []).append(seconds)
 
 assert all(len(samples[shard]) == 6 for shard in range(1, 7))
-print("static =", dumps({shard: median(values) for shard, values in sorted(samples.items()) if any(values)}))
+reserves = {shard: median(values) for shard, values in sorted(samples.items())}
+print("static =", dumps({shard: seconds for shard, seconds in reserves.items() if seconds > 0}))
 PYTHON
 ```
 
