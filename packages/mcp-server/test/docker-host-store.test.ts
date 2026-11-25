@@ -656,6 +656,86 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
   expect(chunks.rows).toEqual([{ name: "last.txt" }]);
 });
 
+test.each([
+  ["exact absence", true],
+  ["legacy omission", false],
+] as const)("Docker stop completion with %s", async (_case, provedAbsent) => {
+  const a = await machineBootstrapFixture();
+  const boot = await store.poll(
+    a.hostToken,
+    a.installationId,
+    undefined,
+    false,
+    undefined,
+    undefined,
+    null,
+    null,
+    [],
+    null,
+    false,
+    false,
+    false,
+    true,
+  );
+  const session = await a.enrol();
+  await store.complete(a.hostToken, a.installationId, { requestId: boot!.requestId, outcome: "completed" });
+  const checkpoint = randomUUID();
+  await sql.query(
+    `insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+     values($1,$2,$3,0,now())`,
+    [a.sandboxId, session.epoch, checkpoint],
+  );
+  await store.enqueueStop(a.owner, a.sandboxId, checkpoint, { checkpoint });
+  const jobs = createJobsStore(sql, key);
+  const owner = randomUUID();
+  const job = (await jobs.claim("stop", owner, 30, 1))!;
+  const handler = createStopJob(sql, key, () => ({
+    async readOutputs() {
+      throw new OutputCollectionError("output_limit");
+    },
+  }));
+  const context = {
+    signal: new AbortController().signal,
+    canDispatch: async (tx?: Sql) => (await jobs.inspect(job, owner, tx)) === "dispatch",
+    handoffGeneration: (handoff: Parameters<typeof jobs.handoffGeneration>[2]) =>
+      jobs.handoffGeneration(job, owner, handoff),
+  };
+  expect(await handler.run(job, context)).toMatchObject({ status: "retry" });
+  const stop = (await store.poll(a.hostToken, a.installationId))!;
+  await store.complete(a.hostToken, a.installationId, {
+    requestId: stop.requestId,
+    outcome: "completed",
+    ...(provedAbsent ? { absentMachineId: a.machine.machineId } : {}),
+  });
+  const result = await handler.run(job, context);
+  expect(result.status).toBe(provedAbsent ? "done" : "retry");
+  expect(await jobs.complete(job, owner, result)).toBe(true);
+  expect(await lifecycle(a.sandboxId)).toMatchObject(
+    provedAbsent
+      ? {
+          status: "failed",
+          status_reason: "docker_stop_retention_lost",
+          stopped_at: expect.anything(),
+          stop_requested_at: null,
+        }
+      : { status: "stopping", stopped_at: null },
+  );
+  if (provedAbsent)
+    expect(
+      await createDockerSandboxControls(sql, key).invoke(
+        { ...a.owner, via: "service", orgs: [{ orgId: a.owner.orgId, role: "admin" }] },
+        "status",
+        { id: a.sandboxId },
+      ),
+    ).toMatchObject({
+      handled: true,
+      result: {
+        status: "failed",
+        statusReason: "The Docker host confirmed the sandbox container is gone. This sandbox cannot resume.",
+      },
+    });
+});
+
 test("only a daemon advertising Machine bootstrap replay receives a pending descriptor", async () => {
   const a = await machineBootstrapFixture();
   const route = createDockerHostRoutes(store, async () => {

@@ -218,33 +218,40 @@ export function createStopJob(
       const sandboxId = job.sandbox_id;
       const generation = job.generation;
       const expired = "expired" in intent;
-      const finish = {
-        status: "done",
-        async commit(tx) {
-          const settled = expired
-            ? await transitionSandbox(tx, {
-                sandboxId,
-                expectedGeneration: generation,
-                fromStates: ["starting", "ready", "running", "stopping", "stopped", "failed"],
-                toState: "stopped",
-                actor: "docker_host",
-                code: "docker_expiry_observed",
-                effects: [],
-              })
-            : await recordDockerCleanupReceipt(tx, sandboxId, Number(generation), "stop");
-          if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
-          const orgId = expired ? intent.orgId : intent.actor.orgId;
-          await enqueueStopOutput(tx, jobs, sandboxId, orgId, expired ? generation : settled.generation);
-        },
-      } satisfies JobResult;
-      if (expired) return finish;
+      const finish = (retentionLost = false) =>
+        ({
+          status: "done",
+          async commit(tx) {
+            const settled = expired
+              ? await transitionSandbox(tx, {
+                  sandboxId,
+                  expectedGeneration: generation,
+                  fromStates: ["starting", "ready", "running", "stopping", "stopped", "failed"],
+                  toState: "stopped",
+                  actor: "docker_host",
+                  code: "docker_expiry_observed",
+                  effects: [],
+                })
+              : await recordDockerCleanupReceipt(
+                  tx,
+                  sandboxId,
+                  Number(generation),
+                  retentionLost ? "stop_retention_lost" : "stop",
+                );
+            if (settled.kind !== "applied") throw new Error("Docker stop settlement changed generation.");
+            const orgId = expired ? intent.orgId : intent.actor.orgId;
+            await enqueueStopOutput(tx, jobs, sandboxId, orgId, expired ? generation : settled.generation);
+          },
+        }) satisfies JobResult;
+      if (expired) return finish();
       const { signal } = context;
       const retry = (delay = 2_000) => ({ status: "retry", after: new Date(now() + delay) }) satisfies JobResult;
       const advanced = generation !== String(intent.generation);
       if (advanced || intent.exitPending) {
         const outcome = await hosts.stopOutcome(sandboxId, generation, intent);
         signal.throwIfAborted();
-        if (outcome === "stopped") return finish;
+        if (outcome === "stopped" || outcome === "retention_lost") return finish(outcome === "retention_lost");
+        if (outcome === "retention_unknown") return retry(30_000);
         if (outcome === "refused") return { status: "fail", reason: "stop_receipt_refused" };
       }
       const mayDispatch = await context.canDispatch();

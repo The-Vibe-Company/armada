@@ -738,8 +738,26 @@ export async function recordDockerCleanupReceipt(
   tx: Sql,
   sandboxId: string,
   expectedGeneration: number,
-  operation: "stop" | "delete",
+  operation: "stop" | "delete" | "stop_retention_lost",
 ) {
+  if (operation === "stop_retention_lost") {
+    const { rows } = await tx.query<{ status: string }>(
+      `update public.sandboxes set stopped_at=coalesce(stopped_at,now()),stop_requested_at=null
+       where id=$1 and lifecycle_generation=$2 and provider='docker' and status in ('failed','stopping') returning status`,
+      [sandboxId, expectedGeneration],
+    );
+    if (!rows.length) return { kind: "conflict" } as const;
+    if (rows[0]?.status === "failed") return { kind: "applied", generation: expectedGeneration } as const;
+    return transitionSandbox(tx, {
+      sandboxId,
+      expectedGeneration,
+      fromStates: ["stopping"],
+      toState: "failed",
+      actor: "lifecycle_runner",
+      code: "docker_stop_retention_lost",
+      effects: [],
+    });
+  }
   const { rows } = await tx.query(
     `update public.sandboxes set stopped_at=coalesce(stopped_at,now())
      where id=$1 and lifecycle_generation=$2
