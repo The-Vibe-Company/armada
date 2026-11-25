@@ -489,11 +489,13 @@ function ThreadHeader({
         <h1 className="truncate text-sm font-semibold leading-tight" title={name}>
           {name}
         </h1>
-        <span className="block truncate font-mono text-[10px] leading-tight text-muted-foreground">
-          {sandbox.id.slice(0, 8)}
-        </span>
+        <div className="flex items-center gap-0.5">
+          <span className="truncate font-mono text-[10px] leading-tight text-muted-foreground">
+            {sandbox.id.slice(0, 8)}
+          </span>
+          <CopyButton value={sandbox.id} label="Copy sandbox ID" className="size-6" />
+        </div>
       </div>
-      <CopyButton value={sandbox.id} label="Copy sandbox ID" />
       <span
         title={sandbox.status_reason ?? undefined}
         className="shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 [&>span]:gap-1 [&>span]:text-[11px]"
