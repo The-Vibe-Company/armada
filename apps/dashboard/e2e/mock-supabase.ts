@@ -70,6 +70,7 @@ type State = {
   goldens: Row[];
   hiddenSnapshot: string;
   sandboxes: Row[];
+  hideSandboxInventory: boolean;
   credentials: Row[];
   github_connections: Row[];
   githubInstallations: Row[];
@@ -117,6 +118,7 @@ function seed(): State {
       { org_id: ACME, user_id: BOB, role: "member", created_at: now },
     ],
     hiddenSnapshot: "",
+    hideSandboxInventory: false,
     goldens: [
       {
         ...golden(id(20), "shared-golden", "org", ALICE, "snap-shared"),
@@ -838,6 +840,7 @@ function canOpenSandbox(row: Row, userId: string): boolean {
  * exact `SandboxListMetadata` allowlist, whoever owns it and whatever its legacy visibility or golden.
  */
 function sandboxListMetadata(userId: string): Row[] {
+  if (state.hideSandboxInventory) return [];
   // As PostgREST serializes timestamptz.
   const at = (value: unknown) =>
     typeof value === "string" ? new Date(value).toISOString().replace(/\.\d{3}Z$/, "+00:00") : null;
@@ -2952,6 +2955,10 @@ function control(url: URL, body: Row): Response {
     pendingGoogleLogins.clear();
     sessions.clear();
     goldenJobs.clear();
+    return json({ ok: true });
+  }
+  if (url.pathname === "/__test/sandbox-inventory") {
+    state.hideSandboxInventory = body.hidden === true;
     return json({ ok: true });
   }
   if (url.pathname === "/__test/snapshot-visibility") {

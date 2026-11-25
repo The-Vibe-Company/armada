@@ -44,11 +44,9 @@ export function AppSidebar({
           {state === "collapsed" && !isMobile ? (
             <SidebarTrigger className="mx-auto my-3" aria-label="Expand navigation" />
           ) : (
-            <>
-              {header}
-              {(!isMobile || thread) && launch}
-            </>
+            header
           )}
+          {(!isMobile || thread) && launch}
         </SidebarHeader>
         {children}
         {(isMobile || state !== "collapsed") && (

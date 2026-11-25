@@ -41,13 +41,20 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     <SidebarProvider
       data-shell
       style={{ "--sidebar-width": "244px" } as CSSProperties}
-      className="min-h-dvh flex-col md:flex-row"
+      className="min-h-dvh flex-col md:flex-row [&:has(main_[data-page-launch])_[data-shell-launch]]:hidden"
     >
       <AppSidebar
         header={header}
-        mobileLaunch={<SandboxLaunchAction />}
+        mobileLaunch={
+          <div data-shell-launch>
+            <SandboxLaunchAction />
+          </div>
+        }
         launch={
-          <div className="px-3 pb-2 [&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
+          <div
+            data-shell-launch
+            className="px-3 pb-2 group-data-[state=collapsed]:px-2 group-data-[state=collapsed]:[&_button]:justify-center group-data-[state=collapsed]:[&_button_span]:sr-only group-data-[state=collapsed]:[&_kbd]:hidden [&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]"
+          >
             <SandboxLaunchAction shortcut />
           </div>
         }

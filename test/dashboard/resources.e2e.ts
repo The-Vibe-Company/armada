@@ -33,9 +33,19 @@ for (const session of ["alice", "large"]) {
     browser,
   }) => {
     await app.open("/variables");
-    await expect(screen.getByRole("columnheader", "Value", { exact: true })).toBeVisible();
-    await expect(screen.getByRole("cell", "Not shown", { exact: true }).first()).toBeVisible();
-    await browser.locator("[data-select-item]").first().tap();
+    const mobile = await browser.evaluate(() => window.innerWidth < 768);
+    const name = session === "alice" ? "APP_REGION" : "LARGE_CONFIGURATION_0";
+    const storedValue = session === "alice" ? "eu-west-1" : "large_fixture_value_0";
+    const variable = screen.getByRole("link", name, { exact: true });
+    const row = screen.getByRole(mobile ? "listitem" : "row").filter({ has: variable });
+    if (mobile) {
+      await expect(row.getByText("Not shown", { exact: true })).toBeVisible();
+    } else {
+      await expect(screen.getByRole("columnheader", "Value", { exact: true })).toBeVisible();
+      await expect(row.getByRole("cell", "Not shown", { exact: true })).toBeVisible();
+    }
+    await expect(screen.getByText(storedValue, { exact: true })).toHaveCount(0);
+    await variable.tap();
     await expect(screen.getByRole("dialog")).toBeVisible();
     await screen.getByRole("button", "Close the panel", { exact: true }).tap();
     await screen.getByRole("button", "Add a variable", { exact: true }).tap();
