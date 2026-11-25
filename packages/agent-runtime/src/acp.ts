@@ -12,6 +12,21 @@ type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+function concreteModel(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed && trimmed !== "default" ? trimmed : undefined;
+}
+
+function currentModel(configOptions: unknown, models?: unknown) {
+  if (Array.isArray(configOptions)) {
+    const option = configOptions.find((value) => object(value) && value.id === "model");
+    const selected = option ? concreteModel(option.currentValue) : undefined;
+    if (selected) return selected;
+  }
+  return object(models) ? concreteModel(models.currentModelId) : undefined;
+}
+
 function availableModel(configOptions: unknown, model: string) {
   if (!Array.isArray(configOptions)) return false;
   const option = configOptions.find((value) => object(value) && value.id === "model" && value.type === "select");
@@ -89,6 +104,7 @@ export class AcpDriver implements Driver {
       stopped = false,
       interrupted = false,
       steering = false;
+    let activeModel: string | undefined;
     const longToolTitles = new Map<string, { title: string; bytes: number }>();
     let longToolTitleBytes = 0;
     const clearLongToolTitles = () => {
@@ -196,14 +212,20 @@ export class AcpDriver implements Driver {
               send({ id: m.id, result: { outcome: { outcome: "selected", optionId: option.optionId } } });
             else send({ id: m.id, error: { code: -32601, message: "Client operation unavailable" } });
           } else if (
-            !replay &&
             !stopped &&
+            sessionId &&
             m.method === "session/update" &&
             object(m.params) &&
             m.params.sessionId === sessionId &&
             object(m.params.update)
           ) {
             const u = m.params.update;
+            if (u.sessionUpdate === "config_option_update") {
+              const resolved = currentModel(u.configOptions, u.models);
+              if (resolved) activeModel = resolved;
+              continue;
+            }
+            if (replay) continue;
             if (
               u.sessionUpdate === "agent_message_chunk" &&
               object(u.content) &&
@@ -347,14 +369,26 @@ export class AcpDriver implements Driver {
           throw new HarnessError("invalid_harness_protocol");
         sessionId = session.sessionId;
       }
+      activeModel = currentModel(session.configOptions, session.models) ?? activeModel;
       const model = c.request.model;
       if (!resumeOnly && model && this.options.modelSelection === "config-option" && model !== "default") {
         if (!availableModel(session.configOptions, model)) throw new RequestRefused("invalid_request");
-        await rpc("session/set_config_option", { sessionId, configId: "model", value: model });
+        const prior = activeModel;
+        const updated = await rpc("session/set_config_option", { sessionId, configId: "model", value: model });
+        activeModel =
+          currentModel(updated.configOptions, updated.models) ??
+          (activeModel !== prior ? activeModel : concreteModel(model)) ??
+          activeModel;
       }
       c.session(sessionId);
-      if (!resumeOnly && model && !this.options.modelSelection)
-        await rpc("session/set_model", { sessionId, modelId: model });
+      if (!resumeOnly && model && !this.options.modelSelection) {
+        const prior = activeModel;
+        const updated = await rpc("session/set_model", { sessionId, modelId: model });
+        activeModel =
+          currentModel(updated.configOptions, updated.models) ??
+          (activeModel !== prior ? activeModel : concreteModel(model)) ??
+          activeModel;
+      }
       if (!resumeOnly) await this.options.observation?.ready(sessionId);
       replay = false;
     })();
@@ -383,6 +417,8 @@ export class AcpDriver implements Driver {
               partial: false,
               textMode: "snapshot",
               messageId: assistantMessageId,
+              ...(activeModel ? { model: activeModel } : {}),
+              responseKind: "assistant",
               tools: [],
             });
           return interrupted ? "interrupted" : "finished";
@@ -393,7 +429,11 @@ export class AcpDriver implements Driver {
         throw error;
       } finally {
         if (usageSeen)
-          c.emit({ kind: "other", type: "armada/turnUsage", data: { model: c.request.model ?? null, ...totals } });
+          c.emit({
+            kind: "other",
+            type: "armada/turnUsage",
+            data: { model: activeModel ?? concreteModel(c.request.model) ?? null, ...totals },
+          });
         stopped = true;
         failure();
         c.signal.removeEventListener("abort", abort);
