@@ -95,11 +95,16 @@ export default async function RoutinesPage({
         {
           key: "schedule",
           content: item.pauseReason ? (
-            <span className="text-destructive" title="Open its runs to see what failed, fix it, then turn it back on.">
-              {item.pauseReason === "repeated_launch_failures"
-                ? "Paused after 3 failed launches"
-                : routineReasonHelp(item.pauseReason)}
-            </span>
+            <>
+              <span className="text-destructive">
+                {item.pauseReason === "repeated_launch_failures"
+                  ? "Paused after 3 failed launches"
+                  : routineReasonHelp(item.pauseReason)}
+              </span>
+              <span className="block text-xs md:hidden">
+                Open its runs to see what failed, fix it, then turn it back on.
+              </span>
+            </>
           ) : (
             scheduleLabel(item)
           ),
