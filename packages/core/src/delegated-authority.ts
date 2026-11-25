@@ -53,8 +53,7 @@ export interface DelegatedAuthorityTransport {
 
 type AuthorityParent = { id: string; sandbox_id: string; owner_id: string; org_id: string };
 
-async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
-  // WARNING: Keep membership before sandbox and sandbox before access parent to match runtime and lifecycle writers.
+async function lockAuthorityMember(tx: Sql, parent: AuthorityParent) {
   if (
     !(
       await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
@@ -64,6 +63,10 @@ async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
     ).rows.length
   )
     return deny();
+}
+
+async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
+  // WARNING: The lifecycle fence acquires the parent sandbox before the access parent.
   if (
     !(await tx.query("select 1 from public.sandboxes where id=$1 for no key update", [parent.sandbox_id])).rows.length
   )
@@ -131,6 +134,20 @@ export class DelegatedAuthority {
     if (!this.sql.transaction) return deny();
     return this.sql.transaction(async (tx) => {
       const candidate = await this.activeGrant(tx, token, scope);
+      await lockAuthorityMember(tx, candidate);
+      // WARNING: Launch/setup workers acquire the child sandbox before revalidating parent authority.
+      if (request.method !== "launch" && request.method !== "finish") {
+        const child = await tx.query(
+          `select c.sandbox_id from public.orchestrator_children c
+          join public.sandboxes s on s.id=c.sandbox_id
+          where c.orchestrator_id=$1 and c.sandbox_id=$2 and c.org_id=$3 and c.owner_id=$4
+          and s.org_id=c.org_id and s.owner_id=c.owner_id
+          and not exists(select 1 from public.armada_access_parents parent where parent.sandbox_id=s.id)
+          ${request.method === "stop" ? "for update of s" : "for no key update of s"}`,
+          [candidate.id, request.childId ?? null, candidate.org_id, candidate.owner_id],
+        );
+        if (!child.rows.length) return deny();
+      }
       await lockAuthorityParent(tx, candidate);
       const row = await this.activeGrant(tx, token, scope, true);
       if (row.id !== candidate.id || row.sandbox_id !== candidate.sandbox_id) return deny();
@@ -166,16 +183,6 @@ export class DelegatedAuthority {
         );
         if (!self.rows.length || request.childId !== undefined) return deny();
       } else {
-        const child = await tx.query(
-          `select c.sandbox_id from public.orchestrator_children c
-          join public.sandboxes s on s.id=c.sandbox_id
-          where c.orchestrator_id=$1 and c.sandbox_id=$2 and c.org_id=$3 and c.owner_id=$4
-          and s.org_id=c.org_id and s.owner_id=c.owner_id
-          and not exists(select 1 from public.armada_access_parents parent where parent.sandbox_id=s.id)
-          for no key update of s`,
-          [row.id, request.childId ?? null, row.org_id, row.owner_id],
-        );
-        if (!child.rows.length) return deny();
         const relation = await tx.query(
           "select 1 from public.orchestrator_children where sandbox_id=$1 and orchestrator_id=$2 for update",
           [request.childId, row.id],
@@ -210,6 +217,7 @@ export class DelegatedAuthority {
         )
       ).rows[0];
       if (!parent) return deny();
+      await lockAuthorityMember(tx, parent);
       await lockAuthorityParent(tx, parent);
       const binding = await tx.query(
         `update public.sandboxes s set orchestrator_native_generation=$2

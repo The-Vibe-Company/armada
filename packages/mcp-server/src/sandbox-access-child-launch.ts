@@ -68,17 +68,43 @@ const childLaunchAuthority = `
 
 const childLaunchLockBudget = "set local lock_timeout = '2s'";
 
+// WARNING: Lock the parent sandbox before the access parent to match the lifecycle fence.
+async function lockChildLaunchParent(tx: Sql, operationId: string, sandboxId: string) {
+  const {
+    rows: [parent],
+  } = await tx.query<{ id: string; sandbox_id: string }>(
+    `select o.id,o.sandbox_id ${childLaunchAuthority} for share of s`,
+    [operationId, sandboxId],
+  );
+  if (!parent) return false;
+  const { rows } = await tx.query(
+    "select 1 from public.armada_access_parents where id=$1 and sandbox_id=$2 for share",
+    [parent.id, parent.sandbox_id],
+  );
+  return rows.length > 0;
+}
+
 export async function lockChildLaunchAdmission(tx: Sql, operation: ChildOperation) {
   await tx.query(childLaunchLockBudget);
+  const { rows: members } = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
+    operation.orgId,
+    operation.ownerId,
+  ]);
+  if (!members.length || !(await lockChildLaunchParent(tx, operation.id, operation.sandboxId)))
+    throw new ChildLaunchNotAllocated("preallocation_rejected", "parent_authority");
   const {
     rows: [row],
   } = await tx.query<{ request_digest: string }>(
     `with locked as materialized (
-      select c.request_digest,d.expires_at ${childLaunchAuthority} and c.state='pending'
+      select d.expires_at ${childLaunchAuthority} and c.state='pending'
         and c.org_id=$3 and c.owner_id=$4 and c.orchestrator_id=$5 and c.parent_generation=$6 and c.parent_epoch=$7
-        for no key update of c for share of o,s,m,d
+        for share of d
+    ), receipt as materialized (
+      select request_digest from public.orchestrator_child_operations
+      where id=$1 and state='pending' and exists(select 1 from locked where expires_at>clock_timestamp())
+      for no key update
     )
-    select request_digest from locked where expires_at>clock_timestamp()`,
+    select request_digest from receipt where exists(select 1 from locked where expires_at>clock_timestamp())`,
     [
       operation.id,
       operation.sandboxId,
@@ -106,12 +132,14 @@ export async function completeChildLaunchAdmission(tx: Sql, operation: ChildOper
 export async function childLaunchAuthorized(tx: Sql, sandboxId: string, operationId?: string) {
   if (operationId === undefined) return true;
   await tx.query(childLaunchLockBudget);
+  if (!(await lockChildLaunchParent(tx, operationId, sandboxId))) return false;
+  // WARNING: The access-parent lock fences membership deletion via its revocation trigger.
   const { rows } = await tx.query(
     `with locked as materialized (
       select d.expires_at ${childLaunchAuthority} and c.state='succeeded'
         and exists(select 1 from public.orchestrator_children r where r.sandbox_id=c.target_id
           and r.orchestrator_id=c.orchestrator_id and r.org_id=c.org_id and r.owner_id=c.owner_id)
-        for share of o,s,m,d
+        for share of d
     )
     select 1 from locked where expires_at>clock_timestamp()`,
     [operationId, sandboxId],
