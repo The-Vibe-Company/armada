@@ -8,7 +8,6 @@ import {
 } from "@armada/core/server";
 import { captureFinalOutputs, createSandboxOutputs, drainFinalOutputs } from "../src/sandbox-outputs.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
-import { preserveBeforeStop } from "../src/work-preservation.ts";
 import { outputJobFixture } from "./output-job.fixture.ts";
 import { publishedGetResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -47,14 +46,11 @@ async function fixture(
 }
 
 async function admitStop(sql: Sql, id: string, status: "stopping" | "failed") {
-  const token = crypto.randomUUID();
-  const { rows } = await sql.query<{ generation: number }>(
+  await sql.query(
     `update sandboxes set status=$2, stop_requested_at=now(), stop_generation=stop_generation+1,
-       lifecycle_generation=lifecycle_generation+1, activity_lease_id=$3, activity_until=now()+interval '2 minutes'
-     where id=$1 returning lifecycle_generation as generation`,
-    [id, status, token],
+       lifecycle_generation=lifecycle_generation+1 where id=$1`,
+    [id, status],
   );
-  return { kind: "activity", token, generation: rows[0]!.generation } as const;
 }
 
 /** A stand-in for live reads only. */
@@ -382,12 +378,9 @@ test("stop captures files written after the last sample, for native and enrolled
     expect(await sample(service)).toBe(true);
     expect(await sample(service)).toBe(true);
     state.live = [file("final.pdf", "final")];
-    for (const [sandbox, physical] of [
-      [id, "final_native"],
-      [enrolled, "final_runtime"],
-    ] as const) {
-      const authority = await admitStop(sql, sandbox, "stopping");
-      expect(await preserveBeforeStop(sql, provider, sandbox, physical, "user_stop", authority)).toBeUndefined();
+    for (const sandbox of [id, enrolled]) {
+      await admitStop(sql, sandbox, "stopping");
+      await captureFinalOutputs(sql, provider, sandbox, { key: KEY, signal: signal() });
     }
     for (const sandbox of [id, enrolled]) {
       const url = `https://armada.example/api/v1/sandboxes/${sandbox}/outputs/final.pdf`;
@@ -742,8 +735,8 @@ test("a user stop of a failed sandbox whose compute still runs captures its fina
     expect(await sample(service)).toBe(true);
     state.live = [file("memo.txt", "final")];
     // The user-stop path keeps the logical 'failed' status while it admits the stop.
-    const authority = await admitStop(sql, id, "failed");
-    expect(await preserveBeforeStop(sql, provider, id, "failed_fixture", "user_stop", authority)).toBeUndefined();
+    await admitStop(sql, id, "failed");
+    await captureFinalOutputs(sql, provider, id, { key: KEY, signal: signal() });
     const url = `https://armada.example/api/v1/sandboxes/${id}/outputs/memo.txt`;
     const download = await routeFor(service, people.owner, people.org)(new Request(url));
     expect(await download?.text()).toBe("final");

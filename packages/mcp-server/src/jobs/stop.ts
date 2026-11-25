@@ -7,7 +7,7 @@ import { unresolvedResume } from "../modal-launch-handoff.ts";
 import { usesDiskStopJob } from "../provider-runtime-admission.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { holdModalStop, recordDockerCleanupReceipt, settleModalStop, transitionSandbox } from "../sandbox-lifecycle.ts";
-import { captureFinalOutputs, enqueueStopOutput, type StagedOutput } from "../sandbox-outputs.ts";
+import { enqueueStopOutput, type StagedOutput, stageStopOutputs } from "../sandbox-outputs.ts";
 import { preserveBeforeStop } from "../work-preservation.ts";
 import { createBoatStop } from "./boat-stop.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
@@ -40,25 +40,6 @@ export function createStopJob(
   const boatStop = createBoatStop(sql, key, deploymentId, now);
   const hosts = createDockerHostStore(sql, key);
   const jobs = createJobsStore(sql, key);
-  async function capture(
-    job: Job,
-    context: JobContext,
-    provider: Provider | ReturnType<typeof readOutputs>,
-    remaining: number,
-  ) {
-    if (remaining <= 0) return;
-    await captureFinalOutputs(sql, provider, job.sandbox_id!, {
-      key,
-      signal: AbortSignal.any([context.signal, AbortSignal.timeout(remaining)]),
-      generation: job.generation!,
-      async stage(tx: Sql, output: StagedOutput) {
-        context.signal.throwIfAborted();
-        if (!(await context.canDispatch(tx))) throw new Error("Stop capture claim changed.");
-        await mergeStopOutcome(tx, job.id, { output });
-      },
-    }).catch(() => {});
-  }
-
   const runModal: (job: Job, context: JobContext, sandboxId: string, generation: string) => Promise<JobResult> = async (
     job,
     context,
@@ -162,15 +143,14 @@ export function createStopJob(
         await write((tx) => mergeStopOutcome(tx, job.id, { modal_checkpoint: checkpoint, modal_physical: physical }));
       if (!reconcileOnly && !stopped && !prior?.modal_capture_complete && !prior?.output) {
         if (
-          (await preserveBeforeStop(sql, provider, sandboxId, target.provider_sandbox_id, "lifecycle_stop", {
-            kind: "job",
+          (await preserveBeforeStop(sql, provider, sandboxId, target.provider_sandbox_id, {
             token: `${job.id}:${job.lease_epoch}`,
             generation: Number(generation),
             signal,
           })) === "pending"
         )
           return retry;
-        await capture(job, context, provider, deadline - 90_000 - now());
+        await stageStopOutputs(sql, key, job, context, provider, deadline - 90_000 - now());
         await write((tx) => mergeStopOutcome(tx, job.id, { modal_capture_complete: true }));
       }
       if (!reconcileOnly && !(await context.canDispatch())) return retry;
@@ -272,7 +252,14 @@ export function createStopJob(
       if (!mayDispatch) return { status: "fail", reason: "stop_dispatch_deadline" };
       if (!job.outcome && !intent.exitPending) {
         if (await hosts.pendingLaunchPrompt(sandboxId, intent)) return { ...retry(), unattempted: true };
-        await capture(job, context, readOutputs(sandboxId, intent.runtimeEpoch), intent.captureUntil - now());
+        await stageStopOutputs(
+          sql,
+          key,
+          job,
+          context,
+          readOutputs(sandboxId, intent.runtimeEpoch),
+          intent.captureUntil - now(),
+        );
       }
       signal.throwIfAborted();
       if (!(await context.canDispatch())) return { status: "fail", reason: "stop_dispatch_deadline" };

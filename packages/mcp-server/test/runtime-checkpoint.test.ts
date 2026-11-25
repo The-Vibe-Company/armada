@@ -325,6 +325,37 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
 }
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
+test("owner stop refuses a legacy Modal sandbox before resolving its provider", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    const id = crypto.randomUUID();
+    await f.db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+       select $1,golden_id,org_id,owner_id,provider,'legacy-modal',harness,'ready' from sandboxes where id=$2`,
+      [id, f.row.id],
+    );
+    const before = (await f.context.data.sandboxes.get(id))!;
+    let resolutions = 0;
+    const stop = stopPort(f);
+    const context = {
+      ...stop.context,
+      provider: async () => {
+        resolutions++;
+        return stop.context.provider();
+      },
+    };
+    await expect(callSharedTool(context, "stop", { id })).rejects.toMatchObject({ code: "conflict" });
+    expect(resolutions).toBe(0);
+    expect(await f.context.data.sandboxes.get(id)).toMatchObject({
+      status: before.status,
+      lifecycleGeneration: before.lifecycleGeneration,
+      stopRequestedAt: null,
+    });
+  } finally {
+    await f.close();
+  }
+});
+
 test.each(["runtime_retained_stop", "owner_stop_settled"])("shared stop rolls back when %s fails", async (code) => {
   const f = await checkpointFixture("modal");
   try {

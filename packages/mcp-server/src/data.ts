@@ -30,7 +30,6 @@ import {
   type Visibility,
   withUsageTotals,
 } from "@armada/core";
-import type { Provider } from "@armada/core/server";
 import {
   assertGoldenBackendBinding,
   assertSqlGoldenMutation,
@@ -42,7 +41,6 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
-import { usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
@@ -67,7 +65,7 @@ import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { MODAL_LAUNCH_FAILURE } from "./turns.ts";
-import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
+import { readWorkRecovery } from "./work-preservation.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
@@ -128,12 +126,6 @@ export interface ServerSandboxStore extends SandboxStore {
       completed?: ReadonlyMap<string, string>;
     },
   ): Promise<void>;
-  preserveWork?(
-    id: string,
-    provider: Provider,
-    providerId: string,
-    authority: StopAuthority,
-  ): Promise<"pending" | void>;
   readWorkRecovery?(id: string, recoveryId?: string): Promise<string | null>;
   reportTaskOutcome?(id: string, promptId: string, outcome: TaskOutcome, expectedGeneration?: number): Promise<void>;
   /** Null when it does not exist or the caller may not see it: the two are not told apart. */
@@ -694,11 +686,6 @@ export function createSqlData(
             "sandbox_not_ready",
           );
       },
-      async preserveWork(id, provider, providerId, authority) {
-        const selected = await sandboxes.get(id);
-        if (!selected) throw new DataError("No such sandbox.");
-        return preserveBeforeStop(sql, provider, id, providerId, "user_stop", authority);
-      },
       async readWorkRecovery(id, recoveryId) {
         if (!UUID.test(id)) throw new DataError("No such sandbox.", "not_found");
         const archive = await readWorkRecovery(sql, scope, id, recoveryId);
@@ -731,15 +718,15 @@ export function createSqlData(
         }
         if (patch.status === "deleted") throw new DataError("Sandbox deletion requires a confirmed receipt.");
         const stopStatus =
-          patch.ownerStop && (patch.status === "stopping" || patch.status === "stopped" || patch.status === "failed")
-            ? patch.status
-            : undefined;
+          patch.ownerStop && (patch.status === "stopping" || patch.status === "failed") ? patch.status : undefined;
         if (
           patch.ownerStop &&
           (!stopStatus ||
             patch.expectedGeneration === undefined ||
             !patch.activityToken ||
-            Boolean(patch.advanceGeneration) === Boolean(patch.finishActivity))
+            !patch.advanceGeneration ||
+            patch.finishActivity ||
+            patch.stopRequested !== true)
         )
           throw new DataError("Owner stop requires its activity generation, token and phase.");
         const reason = statusReasonOf(patch);
@@ -821,7 +808,7 @@ export function createSqlData(
         const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-        const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
+        const stopAdmissionReason = stopStatus === "stopping" ? reason : undefined;
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
@@ -915,13 +902,12 @@ export function createSqlData(
               where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
             and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
         if (stopStatus !== undefined) {
-          fence += " and s.provider in ('boat','modal') and s.deleted_at is null";
-          if (admission) fence += ` and not ${unresolvedModalLaunch("s")}`;
-          fence += patch.finishActivity
-            ? stopStatus === "failed"
-              ? " and s.status in ('stopping','failed')"
-              : " and s.status='stopping'"
-            : stopStatus === "failed"
+          fence += patch.queueModalStop
+            ? " and s.provider='modal' and s.runtime_transport='dialout' and s.deleted_at is null"
+            : " and s.provider='boat' and s.deleted_at is null";
+          fence += ` and not ${unresolvedModalLaunch("s")}`;
+          fence +=
+            stopStatus === "failed"
               ? " and s.status='failed' and s.stop_requested_at is null"
               : " and s.status in ('starting','ready','running') and s.stop_requested_at is null";
         }
@@ -985,8 +971,8 @@ export function createSqlData(
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
-            const locked = await tx.query<{ observation_blocked: boolean; provider: string }>(
-              `select not (${observationFence}) as observation_blocked,s.provider::text
+            const locked = await tx.query<{ observation_blocked: boolean }>(
+              `select not (${observationFence}) as observation_blocked
                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
               [...scope, id],
             );
@@ -1008,16 +994,9 @@ export function createSqlData(
                 generation: row.generation,
                 fromState: row.status,
                 toState: stopStatus,
-                confirmedStop: patch.stoppedAt != null,
                 ...(stopAdmissionReason !== undefined ? { statusReason: stopAdmissionReason } : {}),
-                code: patch.finishActivity
-                  ? "owner_stop_settled"
-                  : patch.retainedRuntimeStop
-                    ? "runtime_retained_stop"
-                    : "owner_stop_admitted",
+                code: patch.retainedRuntimeStop ? "runtime_retained_stop" : "owner_stop_admitted",
               });
-              if (usesDiskStopJob(locked.rows[0]?.provider) && admission && patch.stopRequested)
-                await enqueueBoatStop(tx, id, row.generation, patch.activityToken);
               if (
                 patch.queueModalStop &&
                 (!patch.activityToken ||
@@ -1030,6 +1009,7 @@ export function createSqlData(
                   )))
               )
                 throw new Error("Modal stop admission lost the exact target.");
+              if (!patch.queueModalStop) await enqueueBoatStop(tx, id, row.generation, patch.activityToken);
             }
             return updated;
           });
@@ -1074,15 +1054,11 @@ export function createSqlData(
             cause ? { cause } : undefined,
           );
           if (stopStatus !== undefined)
-            recordOperatorDiagnostic(
-              patch.finishActivity ? "sandbox.stop.settlement" : "sandbox.stop.admission",
-              failureDiagnostic(error),
-              {
-                sandboxId: id,
-                refusalCode: "stop_fence_rejected",
-                stopEvidence: result.rows[0]?.stop_evidence ?? null,
-              },
-            );
+            recordOperatorDiagnostic("sandbox.stop.admission", failureDiagnostic(error), {
+              sandboxId: id,
+              refusalCode: "stop_fence_rejected",
+              stopEvidence: result.rows[0]?.stop_evidence ?? null,
+            });
           throw error;
         }
         // Names the writer behind any later refusal's activityLeaseId. Lease IDs are random
