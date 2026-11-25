@@ -321,6 +321,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
            and (j.deadline_at<=clock_timestamp() or j.attempts>j.max_attempts or j.state in ('failed','done') or not exists(
              select 1 from public.mcp_actor_epochs e where e.org_id=j.org_id and e.user_id=j.request_owner_id
                and e.epoch::text=j.outcome->>'docker_actor_epoch')))
+         and not exists(select 1 from public.jobs j where j.kind='resume' and j.sandbox_id=$1
+           and j.generation=$3 and (j.deadline_at<=clock_timestamp() or j.attempts>j.max_attempts or j.state in ('failed','done')))
          and ($6 = (configuration_enc is null))
          and docker_issuer_fence is not distinct from $4::text for update`,
           [

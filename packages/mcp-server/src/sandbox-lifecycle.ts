@@ -17,7 +17,12 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { createJobsStore, mergeStopOutcome } from "./jobs/store.ts";
-import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import {
+  installModalLaunchHandoff,
+  type ModalLaunchHandoff,
+  unresolvedModalLaunch,
+  unresolvedResume,
+} from "./modal-launch-handoff.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { requiresMissingMachineObservation, retainsDiskOnStop, usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
@@ -1502,7 +1507,7 @@ export function createSandboxLifecycle(
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and not ${unresolvedModalStop("candidate")}
           -- The launch job owns recovery across retries and worker replacement.
-          and not ${unresolvedModalLaunch("candidate")}
+          and not ${unresolvedModalLaunch("candidate")} and not ${unresolvedResume("candidate")}
           -- This transition and the cleanup job commit together.
           and not ((candidate.provider='modal' or candidate.boat_runtime) and candidate.status='failed' and exists(
             select 1 from public.sandbox_transitions failure
@@ -2131,18 +2136,23 @@ export async function publishRuntimeWake(
   requestId: string,
   promptId: string,
   conversationIds: string[],
+  resumeJob?: string,
 ) {
   const published = await tx.query(
     `update public.sandboxes s set task_prompt_id=$4,conversation_ids=$5::text[],status_reason=null,
        activity_lease_id=null,activity_until=null
-     where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
-       and s.status='starting' and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
+     where s.id=$1 and s.lifecycle_generation=$2
+       and (case when $6::uuid is null then s.activity_lease_id=$3 and s.activity_until>clock_timestamp()
+         else exists(select 1 from public.jobs j where j.id=$6 and j.sandbox_id=s.id
+           and j.generation=s.lifecycle_generation and j.kind='resume' and j.state='leased'
+           and j.lease_until>clock_timestamp() and j.deadline_at>clock_timestamp()) end)
+       and s.status='starting'  and s.expires_at>clock_timestamp()
        and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
        and not s.application_secret_tainted
        and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
        and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
      returning s.id`,
-    [sandboxId, generation, requestId, promptId, conversationIds],
+    [sandboxId, generation, requestId, promptId, conversationIds, resumeJob ?? null],
   );
   if (!published.rows.length) throw new VaultError("conflict", "Runtime wake publication is stale.");
   const transition = await transitionSandbox(tx, {
@@ -2155,6 +2165,7 @@ export async function publishRuntimeWake(
     effects: [],
   });
   if (transition.kind === "conflict") throw new VaultError("conflict", "Runtime wake publication is stale.");
+  if (resumeJob) await restoreModalResumeSchedule(tx, sandboxId);
   await releaseAccountCapacity(tx, sandboxId);
   await settleRuntimeTurn(tx, sandboxId, generation);
 }

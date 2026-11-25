@@ -673,7 +673,6 @@
     "packages/mcp-server/src/mcp-sandbox-provider.ts": 1,
     "packages/mcp-server/src/merged-work.ts": 1,
     "packages/mcp-server/src/modal-integration.ts": 4,
-    "packages/mcp-server/src/modal-runtime-resume.ts": 1,
     "packages/mcp-server/src/model-auth-state.ts": 16,
     "packages/mcp-server/src/model-auth.ts": 3,
     "packages/mcp-server/src/model-usage-codex.ts": 2,

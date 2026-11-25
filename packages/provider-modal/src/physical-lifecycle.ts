@@ -93,7 +93,12 @@ export function createPhysicalLifecycle(deps: {
       });
     }
   }
-  async function create(row: Machine, save: (row: Machine) => Promise<void>, onResumeStage?: ResumeStageObserver) {
+  async function create(
+    row: Machine,
+    save: (row: Machine) => Promise<void>,
+    onResumeStage?: ResumeStageObserver,
+    beforeAllocate?: () => Promise<void>,
+  ) {
     const app = await bound();
     let sb: Sandbox;
     if (row.phase === "creating") {
@@ -127,6 +132,7 @@ export function createPhysicalLifecycle(deps: {
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
+      await beforeAllocate?.();
       sb = await measure("modal_sandbox_create", () =>
         allocateModalCompute(client.sandboxes.create.bind(client.sandboxes), app, image, {
           ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),

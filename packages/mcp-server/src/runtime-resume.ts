@@ -6,9 +6,10 @@ import { CONFIRMED_WAKE_WITHOUT_TICKET } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
+import type { createResumeJob } from "./jobs/resume.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
-import { runtimeBridgeTarget, usesDiskStopJob } from "./provider-runtime-admission.ts";
+import { modalDialoutPlacement, runtimeBridgeTarget, usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -92,6 +93,7 @@ export function createRuntimeResume(
   prepareMcp?: RuntimeMcp["prepare"],
   prepareGitHub?: RuntimeGitHub["prepareLaunch"],
   restoreScopedAccess?: RestoreScopedRuntimeAccess,
+  queuedResume?: ReturnType<typeof createResumeJob>["resume"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
@@ -114,6 +116,9 @@ export function createRuntimeResume(
       throw new VaultError("not_found", "No owned runtime resume target.");
     if (!HARNESS_CAPABILITIES[found.harness].resume)
       throw new VaultError("unavailable", "This harness cannot resume a stopped conversation.");
+    if (modalDialoutPlacement(found) && queuedResume)
+      return queuedResume(caller, found, { ...input, id: found.id, request_id: requestId }, claim);
+
     const prior = await read(sql, found.id, requestId);
     const empty = prior?.empty_checkpoint ?? (found.conversationIds.length === 0 && !found.taskPromptId);
     const conversation =

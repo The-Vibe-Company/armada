@@ -7,7 +7,22 @@ import { ModalOperationError, refusal } from "./errors.ts";
 import { observeModalCompute, stopModalCompute, terminateModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
-import { bootstrapModalRuntime, validateRuntimeTicket } from "./runtime-bootstrap.ts";
+import { bootstrapModalRuntime, type RuntimeTicket, validateRuntimeTicket } from "./runtime-bootstrap.ts";
+
+export type ModalRuntimeResume = (binding: {
+  recordId: string;
+  sandboxId: string;
+  generation: number;
+  checkpoint: { epoch: string; watermark: number };
+  deadlineAt?: number;
+  write(work: (tx: Sql) => Promise<void>): Promise<void>;
+  authorize(): Promise<void>;
+  ticket(request: Parameters<MachineContract["bootstrap"]>[0]): Promise<RuntimeTicket | null>;
+}) => Promise<
+  Pick<MachineContract, "resume" | "bootstrap"> & {
+    predecessor: Parameters<MachineContract["resume"]>[0]["predecessor"];
+  }
+>;
 
 type PhysicalTarget = Pick<MachineIdentity, "machineId" | "generation">;
 
@@ -37,8 +52,8 @@ interface RuntimeLifecycleDependencies {
     row: Machine,
     save: (row: Machine) => Promise<void>,
     onResumeStage?: ResumeStageObserver,
+    beforeAllocate?: () => Promise<void>,
   ): Promise<SandboxInfo>;
-  sandboxInfo(row: Machine): SandboxInfo;
 }
 
 export function createRuntimeLifecycle({
@@ -49,7 +64,6 @@ export function createRuntimeLifecycle({
   physical,
   resourceReceipt,
   create,
-  sandboxInfo,
 }: RuntimeLifecycleDependencies) {
   return {
     async startRuntime(input) {
@@ -225,45 +239,56 @@ export function createRuntimeLifecycle({
         },
       } satisfies Awaited<ReturnType<ModalRuntimeStop>>;
     },
-    async resumeRuntime(input, signal, onResumeStage) {
-      const { epoch, watermark } = input.checkpoint;
+    async runtimeResumeMachine({ recordId, sandboxId, generation, checkpoint, deadlineAt, write, authorize, ticket }) {
+      const source = await store.get(recordId);
+      const predecessor = source.runtimeCheckpoint;
+      const image = source.recoveryImageId;
       if (
-        !/^[1-9][0-9]{0,18}$/.test(epoch) ||
-        !Number.isSafeInteger(watermark) ||
-        watermark < 0 ||
-        !Number.isSafeInteger(input.generation) ||
-        input.generation < 1 ||
-        !Number.isInteger(input.ttlSeconds) ||
-        input.ttlSeconds < 1 ||
-        input.ttlSeconds > 86400
+        !predecessor ||
+        !image ||
+        predecessor.epoch !== checkpoint.epoch ||
+        predecessor.watermark !== checkpoint.watermark
       )
-        throw refusal("invalid_request", "Common resume requires a checkpoint and a valid physical TTL.");
-      signal?.throwIfAborted();
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        return await store.lease(input.sandboxId, async (row, save) => {
+        throw refusal("conflict", "No matching retained common checkpoint is available.");
+      const sourceGeneration = predecessor.generation;
+      return {
+        predecessor: { sandboxId, generation: generation - 1, kind: "image", ref: image },
+        async resume(request) {
+          const { computeTtlSeconds, signal } = request;
+          if (
+            request.sandboxId !== sandboxId ||
+            request.generation !== generation ||
+            request.predecessor.sandboxId !== sandboxId ||
+            request.predecessor.generation !== generation - 1 ||
+            request.predecessor.kind !== "image" ||
+            request.predecessor.ref !== image
+          )
+            throw refusal("conflict", "Modal resume source changed.");
+          if (!Number.isInteger(computeTtlSeconds) || computeTtlSeconds < 1 || computeTtlSeconds > 86400)
+            throw refusal("invalid_request", "Invalid Modal resume TTL.");
+          const row = await store.get(recordId);
+          const save = (record: Machine) => write((tx) => store.saveResume(tx, record, sourceGeneration, image));
+          const { epoch, watermark } = checkpoint;
           signal?.throwIfAborted();
-          observed = row;
           assertMachineSource(row);
-          const checkpoint = row.runtimeCheckpoint;
+          const retained = row.runtimeCheckpoint;
           if (
             !row.commonRuntime ||
             row.golden ||
             !row.recoveryImageId ||
-            !checkpoint ||
-            checkpoint.epoch !== epoch ||
-            checkpoint.watermark !== watermark
+            !retained ||
+            retained.epoch !== epoch ||
+            retained.watermark !== watermark
           )
             throw refusal("conflict", "No matching retained common checkpoint is available.");
           if (row.phase === "stopped") {
-            if (row.runtimeResumeGeneration !== undefined && input.generation <= row.runtimeResumeGeneration)
+            if (row.runtimeResumeGeneration !== undefined && generation <= row.runtimeResumeGeneration)
               throw refusal("conflict", "Resume generation has already been rolled back.");
-            if (checkpoint.generation !== row.generation || checkpoint.physicalId !== row.physicalId)
+            if (retained.generation !== row.generation || retained.physicalId !== row.physicalId)
               throw refusal("conflict", "Retained source incarnation does not match.");
             row.generation++;
-            row.runtimeResumeGeneration = input.generation;
-            row.ttlSeconds = input.ttlSeconds;
+            row.runtimeResumeGeneration = generation;
+            row.ttlSeconds = computeTtlSeconds;
             row.imageId = row.recoveryImageId;
             row.phase = "reserved";
             row.info.state = "starting";
@@ -277,28 +302,54 @@ export function createRuntimeLifecycle({
             await save(row);
           }
           if (
-            row.runtimeResumeGeneration !== input.generation ||
-            row.generation !== checkpoint.generation + 1 ||
+            row.runtimeResumeGeneration !== generation ||
+            row.generation !== retained.generation + 1 ||
             row.imageId !== row.recoveryImageId ||
-            row.ttlSeconds !== input.ttlSeconds
+            row.ttlSeconds !== computeTtlSeconds
           )
             throw refusal("conflict", "Common resume belongs to another activation.");
           signal?.throwIfAborted();
-          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, onResumeStage);
+          if (["reserved", "creating", "booting"].includes(row.phase))
+            await withModalStopSignal(signal, deadlineAt, () => create(row, save, undefined, authorize));
           if (row.phase === "active") {
             const sb = await physical(row);
             const { phase } = await observeModalCompute(
-              { sandboxId: input.sandboxId, generation: row.generation, machineId: sb.sandboxId },
+              { sandboxId, generation: row.generation, machineId: sb.sandboxId },
               sb,
+              signal,
             );
-            if (phase === "running") return sandboxInfo(row);
+            if (phase === "running") return { sandboxId, generation, machineId: sb.sandboxId };
           }
           throw refusal("conflict", "Resume activation outcome is unavailable; do not allocate again.");
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
+        },
+        async bootstrap(request) {
+          const row = await store.get(recordId);
+          assertMachineSource(row);
+          if (
+            request.sandboxId !== sandboxId ||
+            request.generation !== generation ||
+            row.runtimeResumeGeneration !== generation ||
+            row.phase !== "active" ||
+            row.physicalId !== request.machineId
+          )
+            throw refusal("conflict", "Modal bootstrap source changed.");
+          const descriptor = await ticket(request);
+          if (!descriptor) return;
+          const server = validateRuntimeTicket(descriptor);
+          const sb = await physical(row, request.signal);
+          await authorize();
+          request.signal?.throwIfAborted();
+          await withModalStopSignal(request.signal, deadlineAt, () =>
+            bootstrapModalRuntime(
+              sb,
+              request.machineId,
+              server,
+              descriptor,
+              "Modal resume bootstrap must be reconciled.",
+            ),
+          );
+        },
+      };
     },
     async rollbackRuntimeResume({ sandboxId, generation }) {
       await bound();
@@ -336,5 +387,8 @@ export function createRuntimeLifecycle({
         await save(row);
       });
     },
-  } satisfies Pick<ModalProvider, "startRuntime" | "runtimeStopMachine" | "resumeRuntime" | "rollbackRuntimeResume">;
+  } satisfies Pick<
+    ModalProvider,
+    "startRuntime" | "runtimeStopMachine" | "runtimeResumeMachine" | "rollbackRuntimeResume"
+  >;
 }

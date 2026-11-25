@@ -122,6 +122,13 @@ export async function mergeStopOutcome(tx: Sql, jobId: string, outcome: Record<s
   ]);
 }
 
+export function recordResumeBootstrapTicket(tx: Sql, jobId: string, ciphertext: string) {
+  return tx.query(
+    "update public.jobs set outcome=jsonb_build_object('bootstrap_ticket_enc',$2::text) where id=$1 and kind='resume'",
+    [jobId, ciphertext],
+  );
+}
+
 export function clearStopCapture(tx: Sql, jobId: string, sandboxId: string, generation: string) {
   return tx.query(
     "update public.jobs set outcome=outcome-'output' where id=$1 and sandbox_id=$2 and generation=$3 and kind='stop'",
@@ -408,7 +415,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     work: (db: Sql, generation: string | null) => Promise<T>,
     lockPrerequisites?: (tx: Sql) => Promise<void>,
   ) {
-    if (job.kind !== "turn_dispatch" && job.kind !== "stop") return work(sql, job.generation);
+    if (job.kind !== "turn_dispatch" && job.kind !== "stop" && job.kind !== "resume") return work(sql, job.generation);
     if (!sql.transaction) throw new Error("Job fencing requires a transaction.");
     return sql.transaction(async (tx) => {
       await lockPrerequisites?.(tx);
@@ -730,7 +737,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         }
         return rows[0]?.completed === true;
       };
-      if (job.kind === "turn_dispatch") return (await withLockedJobGeneration(job, owner, complete)) ?? false;
+      if (job.kind === "turn_dispatch" || job.kind === "resume")
+        return (await withLockedJobGeneration(job, owner, complete)) ?? false;
       if (result.commit || refundAttempt) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));

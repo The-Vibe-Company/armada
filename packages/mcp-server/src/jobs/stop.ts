@@ -3,6 +3,7 @@ import type { ModalProvider } from "@armada/provider-modal";
 import { createDockerHostStore, DockerHostDenied } from "../docker-host-store.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
 import { createDockerOutputReader } from "../docker-outputs.ts";
+import { unresolvedResume } from "../modal-launch-handoff.ts";
 import { usesDiskStopJob } from "../provider-runtime-admission.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { holdModalStop, recordDockerCleanupReceipt, settleModalStop, transitionSandbox } from "../sandbox-lifecycle.ts";
@@ -206,11 +207,12 @@ export function createStopJob(
       if (job.sandbox_id && job.generation && job.payload === null) {
         const {
           rows: [target],
-        } = await sql.query<{ provider: string }>(
-          "select provider::text from public.sandboxes where id=$1 and lifecycle_generation=$2",
+        } = await sql.query<{ provider: string; resuming: boolean }>(
+          `select provider::text,${unresolvedResume("s")} as resuming from public.sandboxes s where id=$1 and lifecycle_generation=$2`,
           [job.sandbox_id, job.generation],
         );
         if (!target) return { status: "fail", reason: "stop_target_changed" };
+        if (target.resuming) return { status: "retry", after: new Date(now() + 1_000), unattempted: true };
         return usesDiskStopJob(target.provider)
           ? boatStop(job, context)
           : runModal(job, context, job.sandbox_id, job.generation);

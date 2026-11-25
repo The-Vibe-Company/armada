@@ -12,13 +12,12 @@ import {
 } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { admitClaimedAccountTurn, dispatchAccountTurn } from "../src/account-turn-dispatch.ts";
-import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
-import { createJobsStore } from "../src/jobs/store.ts";
-import { createModalResumePolicy, modalRuntimeResume } from "../src/modal-runtime-resume.ts";
+import { createResumeJob } from "../src/jobs/resume.ts";
+import { createJobsStore, JOBS_WAKE } from "../src/jobs/store.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
@@ -28,6 +27,7 @@ import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runti
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
+import { runtimeWakes } from "../src/wake-bus.ts";
 import { archivedBoat, runBoatStop } from "./boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
@@ -70,13 +70,13 @@ test("a stopped Antigravity Modal sandbox refuses resume before activation", asy
   expect((await f.db.query("select 1 from runtime_resumes where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
 });
 
-describe("Modal user stop and wake-on-send", () => {
+describe("Modal retained stop", () => {
   const fixture = scopedRuntimeFixture(async () => runtimeFixture(await sharedDatabase(), "modal"), {
     perTest: true,
   });
 
   test.each([false, true])(
-    "wake restores the same native conversation after Modal stop (recover=%s)",
+    "retained stop publishes the checkpoint and captures output once (recover=%s)",
     async (recover) => {
       const f = await fixture();
       let needsRetry = recover;
@@ -110,19 +110,6 @@ describe("Modal user stop and wake-on-send", () => {
         },
       };
       const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
-      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
-        async start(_signal, restore) {
-          expect(restore).toMatchObject({
-            epoch: retained?.epoch,
-            watermark: retained?.watermark,
-            conversationId: f.first.conversationId,
-          });
-          return f.reboot(restore);
-        },
-        async stop() {
-          throw Error("Unexpected cleanup of healthy resume");
-        },
-      }));
       const store = createSqlVaultStore(f.sql);
       const providers = providerRegistry({
         vault: store,
@@ -148,7 +135,6 @@ describe("Modal user stop and wake-on-send", () => {
           f.sql,
           createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
         ),
-        runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
       };
       const stop = () => dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls);
       expect(await stop()).toMatchObject({ status: "stopping" });
@@ -165,37 +151,7 @@ describe("Modal user stop and wake-on-send", () => {
       expect((await runClaimedStop(f.sql, resolve)).result.status).toBe("done");
       expect(captures).toBe(1);
       expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.status).toBe("stopped");
-      const accountTurns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
-      accountTurns.setDispatch((caller, request) =>
-        dispatchControlCommand("sandbox/send", caller, { ...request }, controls),
-      );
-      const outcome = Promise.withResolvers<"finished" | "interrupted">();
-      f.hold(outcome.promise);
-      const request = f.input();
-      expect(
-        await dispatchControlCommand("sandbox/send", f.caller, request, { ...controls, accountTurns }),
-      ).toMatchObject({
-        status: "queued",
-      });
-      expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
-      await accountTurns.drain();
-      expect(await accountTurns.status(f.caller, request.id, request.request_id)).toEqual({
-        nativePromptId: expect.any(String),
-      });
-      expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
-        f.first.conversationId,
-      ]);
-      const status = () =>
-        dispatchControlCommand("sandbox/status", f.caller, { id: request.id, recorded: true }, controls);
-      expect(await status()).toMatchObject({ status: "running" });
-      outcome.resolve(recover ? "interrupted" : "finished");
-      await outcome.promise;
-      await f.runner.flushOutbox();
-      expect(await status()).toMatchObject({ status: "ready" });
-      const list = await dispatchControlCommand("sandbox/list", f.caller, { status: ["ready"] }, controls);
-      expect(list).toMatchObject({ sandboxes: [expect.objectContaining({ id: request.id, status: "ready" })] });
       expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
-      expect(f.starts).toEqual([undefined, "native-thread"]);
     },
   );
 });
@@ -491,7 +447,8 @@ describe("runtime resume admission rollback", () => {
   });
 });
 
-describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", (provider) => {
+describe("queued Boat wake admission", () => {
+  const provider = "boat" as "boat" | "modal";
   const fixture = scopedRuntimeFixture(() => stopped("codex", provider), { perTest: true });
 
   const scenarios = [
@@ -515,16 +472,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "replaced epoch",
   ] as const;
 
-  const cases = scenarios.filter((scenario) =>
-    provider === "modal"
-      ? scenario === "current" ||
-        scenario === "scoped grant loss" ||
-        scenario === "unenrolled failure" ||
-        scenario === "unenrolled claim loss" ||
-        scenario === "restore admission loss" ||
-        scenario === "before ticket loss" ||
-        scenario === "ticket commit loss"
-      : !["scoped grant loss", "restore admission loss", "ticket commit loss"].includes(scenario),
+  const cases = scenarios.filter(
+    (scenario) => !["scoped grant loss", "restore admission loss", "ticket commit loss"].includes(scenario),
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
     const coveringBoatDeadline = scenario === "before ticket loss with covering Boat deadline";
@@ -578,8 +527,6 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     let replacementEpoch: string | undefined;
     let restores = 0;
     let bootstraps = 0;
-    let lostBeforeTicket = false;
-    let bootstrappedEpoch: string | undefined;
     const hasTicket = async () =>
       Boolean(
         (
@@ -588,50 +535,6 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           ])
         ).rows.length,
       );
-    const modalPlacement = modalRuntimeResume({
-      sql: f.sql,
-      vault: createSqlVaultStore(f.sql),
-      key: ENCRYPTION_KEY,
-      hostFor: async () =>
-        ({
-          id: "modal",
-          async stop() {},
-          async get() {
-            if (restores) {
-              if (scenario === "before ticket loss" && !lostBeforeTicket) {
-                lostBeforeTicket = true;
-                await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
-              }
-              return { state: "ready", providerState: "active", expiresAt: new Date(Date.now() + 86_400_000) };
-            }
-            if (scenario === "restore admission loss")
-              await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
-            return { state: "stopped" };
-          },
-          async resumeRuntime() {
-            restores++;
-          },
-          async startRuntime({ enrolmentToken }: { enrolmentToken: string }) {
-            bootstraps++;
-            if (scenario === "before ticket loss") bootstrappedEpoch = (await f.authority.enrol(enrolmentToken)).epoch;
-            throw Error("Fixture ends at bootstrap invocation");
-          },
-        }) as unknown as Awaited<ReturnType<Parameters<typeof modalRuntimeResume>[0]["hostFor"]>>,
-      policy: createModalResumePolicy({
-        sql: f.sql,
-        encryptionKey: ENCRYPTION_KEY,
-        serverUrl: PUBLIC_URL,
-        architecture: "x64",
-        manifest: {
-          protocol: 1,
-          platform: "linux",
-          architecture: "x64",
-          libc: "glibc",
-          runtime: { sha256: "a".repeat(64), bytes: 3 },
-          harnesses: { codex: { files: [{ path: "bin/codex" }] } },
-        },
-      }),
-    });
     const prepare: NonNullable<Parameters<typeof createRuntimeResume>[3]> = async (_caller, sandbox) => {
       preparations++;
       expect(await read()).toEqual({
@@ -677,8 +580,6 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           },
         })(f.caller, sandbox);
       }
-      if (["restore admission loss", "before ticket loss", "ticket commit loss"].includes(scenario))
-        return modalPlacement(f.caller, sandbox);
       return {
         async start(_signal, restore, confirmActivation) {
           if (heartbeat) {
@@ -888,7 +789,6 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       } else {
         await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
         expect(bootstraps).toBe(1);
-        expect(bootstrappedEpoch).toBe("2");
       }
       expect(restores).toBe(1);
     } else if (scenario === "ticket commit loss") {
@@ -1463,156 +1363,6 @@ test.each(["expired reconcile lease", "removed owner membership"])(
   },
 );
 
-test.each(["request catch", "expired activity lease", "activation before ticket"])(
-  "an unenrolled Modal replacement recovers through %s and can enrol the current artifact",
-  async (handoff) => {
-    const f = await stopped("codex", "modal");
-    try {
-      const retainedArtifact = { sha256: "a".repeat(64), bytes: 3 };
-      const currentArtifact = { sha256: "b".repeat(64), bytes: 5 };
-      let artifact = retainedArtifact;
-      let activated = false;
-      let loseSettlement = false;
-      let rollbacks = 0;
-      const settlementFailure = Error("Lost logical settlement");
-      const expireActivity = () =>
-        f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
-      let activations = 0,
-        generation: number,
-        refused: string | undefined;
-      let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
-      let refusedGeneration: number | undefined;
-      const physicalDeadline = new Date(Date.now() + 86_400_000);
-      const host = {
-        id: "modal",
-        async get() {
-          if (!activated) return { state: "stopped" };
-          if (activations === 1 && handoff === "activation before ticket") {
-            await expireActivity();
-            throw Error("Lost read after confirming activation");
-          }
-          return { state: "ready", providerState: "active", expiresAt: physicalDeadline };
-        },
-        async resumeRuntime(request: Parameters<import("@armada/provider-modal").ModalProvider["resumeRuntime"]>[0]) {
-          expect(request.sandboxId).toBe(f.row.providerSandboxId);
-          expect(request.checkpoint).toEqual({
-            epoch: f.cp.runtime.epoch,
-            watermark: f.cp.checkpoint.watermark,
-          });
-          generation = request.generation;
-          activations++;
-          if (activations === 1) refusedGeneration = generation;
-          activated = true;
-        },
-        async rollbackRuntimeResume(request: { sandboxId: string; generation: number }) {
-          expect(request).toEqual({ sandboxId: f.row.providerSandboxId, generation });
-          activated = false;
-          rollbacks++;
-          if (handoff === "request catch" && rollbacks === 1) loseSettlement = true;
-        },
-        async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string; resumeGeneration: number }) {
-          expect(activated).toBe(true);
-          expect(request.resumeGeneration).toBe(generation);
-          artifact = request.artifact;
-          if (activations === 1) {
-            refused = request.enrolmentToken;
-            await expect(f.authority.enrol(refused, "999")).rejects.toThrow("runtime_protocol_unsupported");
-            if (handoff === "expired activity lease") await expireActivity();
-            throw Error("Replacement did not enrol");
-          }
-          await expect(
-            f.authority.issue({
-              sandboxId: f.row.id,
-              ownerId: f.caller.userId,
-              configuration: {},
-              expectedGeneration: refusedGeneration!,
-            }),
-          ).rejects.toThrow("runtime_enrolment_denied");
-          enrolled = await f.authority.enrol(request.enrolmentToken);
-          throw Error("Fixture ends after enrolment, before health");
-        },
-      } as unknown as import("@armada/provider-modal").ModalProvider;
-      const prepare = modalRuntimeResume({
-        sql: f.sql,
-        vault: createSqlVaultStore(f.sql),
-        key: ENCRYPTION_KEY,
-        hostFor: async () => host,
-        policy: createModalResumePolicy({
-          sql: f.sql,
-          encryptionKey: ENCRYPTION_KEY,
-          serverUrl: "https://armada.example",
-          architecture: "x64",
-          manifest: {
-            protocol: 1,
-            platform: "linux",
-            architecture: "x64",
-            libc: "glibc",
-            runtime: currentArtifact,
-            harnesses: { codex: { files: [{ path: "bin/codex" }] } },
-          },
-        }),
-      });
-      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare);
-      const first = input(f.row.id);
-      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
-      const store = createSqlData(f.sql)(f.caller).sandboxes;
-      const worker = createSandboxLifecycle(
-        {
-          ...f.sql,
-          async transaction(work) {
-            if (loseSettlement) {
-              loseSettlement = false;
-              throw settlementFailure;
-            }
-            return f.sql.transaction!(work);
-          },
-        },
-        async () => host,
-      );
-      if (handoff !== "request catch") {
-        expect((await store.get(f.row.id))?.status).toBe("starting");
-        expect(
-          (
-            await f.db.query<{ parked: boolean }>(
-              "select reconcile_after='infinity'::timestamptz as parked from sandboxes where id=$1",
-              [f.row.id],
-            )
-          ).rows[0]?.parked,
-        ).toBe(true);
-        expect(await worker.reconcileOne()).toBe(true);
-      }
-      expect((await store.get(f.row.id))?.status).toBe("stopping");
-      if (handoff === "request catch") {
-        await expect(worker.reconcileOne()).rejects.toBe(settlementFailure);
-        expect((await store.get(f.row.id))?.status).toBe("stopping");
-        await f.db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [
-          f.row.id,
-        ]);
-      }
-      expect(await worker.reconcileOne()).toBe(true);
-      expect(rollbacks).toBe(handoff === "request catch" ? 2 : 1);
-      expect((await store.get(f.row.id))?.status).toBe("stopped");
-      expect(Boolean(refused)).toBe(handoff !== "activation before ticket");
-      if (refused) await expect(f.authority.enrol(refused)).rejects.toThrow("runtime_enrolment_denied");
-      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
-      expect(activations).toBe(1);
-      await expect(resume(f.caller, input(f.row.id))).rejects.toMatchObject({ code: "conflict" });
-      expect(activations).toBe(2);
-      expect(artifact).toEqual(currentArtifact);
-      expect(enrolled?.epoch).toBe("2");
-      const configuration = enrolled?.configuration as Record<string, unknown> | undefined;
-      expect(configuration?.grant).toEqual({ expiresAt: physicalDeadline.getTime() });
-      expect(configuration?.artifactManifest).toMatchObject({ runtime: currentArtifact });
-      expect(configuration?.restoreCheckpoint).toMatchObject({
-        epoch: f.cp.runtime.epoch,
-        watermark: f.cp.checkpoint.watermark,
-      });
-    } finally {
-      await f.close();
-    }
-  },
-);
-
 test("failed GitHub reauthorization prevents resumed inference and can reconcile without reactivation", async () => {
   const f = await stopped();
   try {
@@ -2159,32 +1909,108 @@ describe.each([
   });
 });
 
-describe("uncertain empty Modal wake", () => {
-  const fixture = scopedRuntimeFixture(() => stopped("codex", "modal", true));
-  test("fresh server reconciles the first conversation without reactivation or another model turn", async () => {
+describe("Modal resume job", () => {
+  const fixture = scopedRuntimeFixture(() => stopped("codex", "modal"), { perTest: true });
+  test("explicit resume and send replay a single generation after a lost allocation response", async () => {
     const f = await fixture();
-    let activations = 0;
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
-      async start(_signal, restore) {
-        activations++;
-        return f.reboot(restore);
+    const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+    const firstGeneration = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
+    let allocated = false;
+    let allocations = 0;
+    let bootstraps = 0;
+    const restore = {
+      epoch: f.cp.runtime.epoch,
+      watermark: f.cp.checkpoint.watermark,
+      conversationId: f.first.conversationId!,
+    };
+    const service = createResumeJob({
+      sql: f.sql,
+      key: ENCRYPTION_KEY,
+      commands: f.bridge,
+      async provider() {
+        return {
+          async get() {
+            return { state: "ready", expiresAt: new Date(Date.now() + 86_400_000) };
+          },
+          async runtimeResumeMachine({ sandboxId, generation, checkpoint, ticket }) {
+            expect(checkpoint).toMatchObject(restore);
+            return {
+              predecessor: { sandboxId, generation: generation - 1, kind: "image", ref: "retained" },
+              async resume() {
+                if (!allocated) {
+                  allocated = true;
+                  allocations++;
+                  throw Error("Allocation reply lost");
+                }
+                return { sandboxId, generation, machineId: "replacement" };
+              },
+              async bootstrap(request) {
+                const descriptor = await ticket(request);
+                expect(descriptor?.artifact).toEqual({ sha256: "b".repeat(64), bytes: 5 });
+                await f.reboot(restore, true, descriptor?.enrolmentToken);
+                bootstraps++;
+              },
+            };
+          },
+        } as Pick<
+          import("@armada/provider-modal").ModalProvider,
+          "runtimeResumeMachine"
+        > as import("@armada/provider-modal").ModalProvider;
       },
-      async stop() {
-        throw Error("No activation retry");
+      async prepare() {
+        return {
+          serverUrl: PUBLIC_URL,
+          artifact: { sha256: "b".repeat(64), bytes: 5 },
+          cacheDir: "/tmp/runtime",
+          configuration: {},
+        };
       },
-    }));
-    const request = { ...f.input("first instruction"), runtimeVersion: 1 as const };
-    f.lose();
-    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
-    expect(f.starts).toEqual([undefined]);
-    expect(activations).toBe(1);
-    const recovered = await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
-    expect(recovered.sourceCheckpoint.empty).toBe(true);
-    expect(recovered.runtime.epoch).toBe("2");
-    expect(f.starts).toEqual([undefined]);
-    expect(activations).toBe(1);
-    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
-      recovered.conversationId,
-    ]);
+      async prepareMcp() {
+        return undefined;
+      },
+      async restoreScopedAccess() {},
+    });
+    const explicit = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      service.resume,
+    );
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, explicit);
+    const request = input(f.row.id);
+    const wake = Promise.withResolvers<void>();
+    const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, wake.resolve);
+    const receipt = explicit(f.caller, request);
+    try {
+      await wake.promise;
+      const sendReceipt = send(f.caller, request);
+      const owner = crypto.randomUUID();
+      const take = async () => {
+        const job = (await jobs.claim("resume", owner, 30, 8))!;
+        expect(job.generation).toBe(String(firstGeneration + 1));
+        const result = await service.handler.run(job, {
+          signal: new AbortController().signal,
+          canDispatch: async (tx) => (await jobs.inspect(job, owner, tx)) === "dispatch",
+          async handoffGeneration() {
+            throw Error("Resume already owns the target generation");
+          },
+        });
+        expect(await jobs.complete(job, owner, result)).toBeTrue();
+        return result.status;
+      };
+      expect(await take()).toBe("retry");
+      await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
+      expect(await take()).toBe("done");
+      expect(await sendReceipt).toEqual(await receipt);
+      expect(allocations).toBe(1);
+      expect(bootstraps).toBe(1);
+      expect(f.starts).toEqual([undefined, "native-thread"]);
+    } finally {
+      unsubscribe();
+    }
   });
 });
