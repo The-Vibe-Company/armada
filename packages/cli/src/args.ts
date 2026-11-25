@@ -1,4 +1,11 @@
-import { GoldenError, isSandboxProvider, SANDBOX_PROVIDERS, type SandboxProviderId } from "@armada/core";
+import {
+  GoldenError,
+  isSandboxPlacementProvider,
+  isSandboxProvider,
+  SANDBOX_PROVIDERS,
+  type SandboxProviderId,
+} from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 
 const BOOLEAN = new Set(["--private", "--json", "--no-browser", "--no-connections"]);
 const VALUE = new Set([
@@ -90,6 +97,10 @@ export function single(args: Args, name: string): string | undefined {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function uuid(value: string | undefined, flag: string): asserts value is string {
   if (!value || !UUID.test(value)) throw new GoldenError("invalid_config", `${flag} must be a UUID.`);
+}
+
+export function usesHostLaunch(provider: unknown) {
+  return isSandboxPlacementProvider(provider) && capabilities(provider).launchSource === "host";
 }
 
 export function providerFlag(args: Args): SandboxProviderId | undefined {

@@ -14,7 +14,7 @@ import {
   parseOpenCodeEndpoint,
   VaultError,
 } from "@armada/core";
-import { antigravityLoginOperations, antigravityLoginPath, controlRouteKey } from "@armada/core/contract";
+import { antigravityLoginOperations, antigravityLoginPath, controlRouteKey, orgProvider } from "@armada/core/contract";
 import { ArmadaApiError } from "./api-responses.ts";
 import { acceptedOptions, flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
@@ -56,9 +56,11 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
       const org = single(args, "--org");
       let body: Record<string, unknown> = { org };
       if (sub === "connect") {
-        const provider = one(args.positionals, "armada org connect boat|modal [--org <name>] [--file <path>]");
-        if (provider !== "boat" && provider !== "modal") throw usage("Provider is boat or modal.");
-        body = { org, provider, value: parseCredentialValue(provider, await readValue(args, io)) };
+        const provider = orgProvider.safeParse(
+          one(args.positionals, "armada org connect boat|modal [--org <name>] [--file <path>]"),
+        );
+        if (!provider.success) throw usage("Provider is boat or modal.");
+        body = { org, provider: provider.data, value: parseCredentialValue(provider.data, await readValue(args, io)) };
       } else expect(args.positionals, 0, "armada org setup [--org <name>]");
       const status = await control<{
         org: OrgSummary;

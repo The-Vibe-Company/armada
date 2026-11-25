@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Harness, launchFailureHelp, type VaultStore } from "@armada/core";
+import { type Harness, launchFailureHelp, type SandboxProviderId, type VaultStore } from "@armada/core";
 import {
   controlRouteKey,
   type LaunchInput,
@@ -53,25 +53,29 @@ type LaunchControlOptions = Pick<
   | "admitModalLaunch"
 >;
 
+const runtimeGoldenMismatch = {
+  boat: "Runtime v1 requires a Boat golden.",
+  modal: "Modal runtime requires a Modal golden.",
+} satisfies Record<SandboxProviderId, string>;
+
 type GoldenLaunchRequest = Extract<LaunchInput, { golden: string }>;
 
 export function launchRoute(
   options: LaunchControlOptions,
   caller: Caller,
   body: GoldenLaunchRequest,
-  runtime: boolean | "modal" = false,
+  runtimeProvider?: SandboxProviderId,
 ) {
-  return observeGoldenLaunch("rest", (timing) => launchGolden(options, caller, body, runtime, timing));
+  return observeGoldenLaunch("rest", (timing) => launchGolden(options, caller, body, runtimeProvider, timing));
 }
 
 async function launchGolden(
   options: LaunchControlOptions,
   caller: Caller,
   body: GoldenLaunchRequest,
-  runtime: boolean | "modal",
+  runtimeProvider: SandboxProviderId | undefined,
   timing: GoldenLaunchTiming,
 ) {
-  const modalRuntime = runtime === "modal";
   if (!options.data) throw new VaultError("unavailable", "Launching is not configured on this server.");
   const { connections, idempotencyKey, golden: name, repo, harness, credentialId } = body;
   const maxActiveChildren = typeof body.armadaAccess === "object" ? body.armadaAccess.maxActiveChildren : undefined;
@@ -85,11 +89,8 @@ async function launchGolden(
   resolveRepositoryDir(golden, repo);
   if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");
-  if (runtime && golden.provider !== (modalRuntime ? "modal" : "boat"))
-    throw new VaultError(
-      "invalid",
-      modalRuntime ? "Modal runtime requires a Modal golden." : "Runtime v1 requires a Boat golden.",
-    );
+  if (runtimeProvider && golden.provider !== runtimeProvider)
+    throw new VaultError("invalid", runtimeGoldenMismatch[runtimeProvider]);
   const launchRequest: import("@armada/core/server").LaunchRequest = {
     ...(credentialId === undefined ? {} : { credentialId }),
     golden: name,
@@ -108,7 +109,7 @@ async function launchGolden(
     ...(body.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
     ...(body.externalRef === undefined ? {} : { externalRef: body.externalRef }),
   };
-  const payload = controlLaunchReceiptPayload(body, golden.id, runtime);
+  const payload = controlLaunchReceiptPayload(body, golden.id, runtimeProvider);
   timing.checkpoint("admission");
   if (!options.admitModalLaunch) throw new VaultError("unavailable", "Golden launch admission is unavailable.");
   return options.admitModalLaunch(
@@ -332,7 +333,7 @@ async function handleSandboxLaunch({ caller, body, options, request }: ControlRo
         throw new VaultError("unavailable", "Modal runtime idle first send is unavailable.");
       return launchRoute(options, caller, launch, "modal");
     }
-    return { ...(await launchRoute(options, caller, launch, true)) };
+    return { ...(await launchRoute(options, caller, launch, "boat")) };
   }
   return launchRoute(options, caller, launch);
 }

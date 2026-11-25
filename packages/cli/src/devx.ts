@@ -8,7 +8,7 @@ import {
   VERSION,
 } from "@armada/core";
 import { accountOperations, controlRouteKey } from "@armada/core/contract";
-import { parseArgs, single } from "./args.ts";
+import { parseArgs, single, usesHostLaunch } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
@@ -68,7 +68,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
       "Provider",
       options.providers
         .filter((p) => p.enabled && p.capabilities.launch)
-        .map((p) => ({ value: p.id, label: p.id === "docker" ? "Your Docker host" : p.id })),
+        .map((p) => ({ value: p.id, label: usesHostLaunch(p.id) ? "Your Docker host" : p.id })),
     );
     result.push("--provider", provider);
   }
@@ -83,7 +83,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     );
     result.push("--agent", agent);
   }
-  if (provider === "docker") {
+  if (usesHostLaunch(provider)) {
     if (!single(args, "--host") && !single(args, "--golden")) {
       const client = await createSdkCommandClient(auth);
       const hosts = await listHosts(client, await resolveHostOrganization(client, org));
