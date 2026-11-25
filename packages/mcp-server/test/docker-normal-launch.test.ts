@@ -55,6 +55,7 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { createLaunchJob } from "../src/jobs/launch.ts";
+import { createResumeJob } from "../src/jobs/resume.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -3378,14 +3379,20 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
       credentialId,
     ],
   );
-  let resumeCalls = 0;
-  const controls = createDockerSandboxControls(sql, key, {
-    clock: f.clock,
-    async resume() {
-      resumeCalls++;
-      throw Error("Incompatible daemon must not admit a resume.");
-    },
+  const unavailable = async () => {
+    throw Error("Resume must be refused before provider work.");
+  };
+  const resume = createResumeJob({
+    sql,
+    key,
+    commands: createRuntimeCommands(createRuntimeEnrolments(sql, key), key, f.clock),
+    turns: createAccountTurnQueue(sql, key),
+    provider: unavailable,
+    prepare: unavailable,
+    prepareMcp: unavailable,
+    restoreScopedAccess: unavailable,
   });
+  const controls = createDockerSandboxControls(sql, key, { resume: resume.resumeDocker });
   const before = await counts(f);
   for (const protocol of [null, DOCKER_HOST_PROTOCOL + 1]) {
     await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, protocol]);
@@ -3393,8 +3400,10 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
       code: "docker_host_upgrade_required",
       message: expect.stringContaining("Upgrade the Docker host daemon"),
     });
-    expect(resumeCalls).toBe(0);
     expect(await counts(f)).toEqual(before);
+    expect(
+      (await db.query("select 1 from public.jobs where sandbox_id=$1 and kind='resume'", [requestId])).rows,
+    ).toEqual([]);
     expect((await createDockerSandboxService(sql).get(f.actor, requestId)).status).toBe("stopped");
   }
 });
