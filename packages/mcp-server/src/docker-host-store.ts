@@ -119,6 +119,7 @@ type StoredJob = Bound & {
   outcome: string | null;
   result_image_id?: string | null;
   result_machine_id?: string | null;
+  absent_machine_id?: string | null;
   cancelled_at?: string | null;
   refused_resume_generation?: string | null;
 };
@@ -893,7 +894,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
       return generation;
     return undefined;
   }
-  async function allocationReceipt(tx: Sql, row: Sandbox, daemonGeneration = row.docker_generation) {
+  async function allocationReceipt(
+    tx: Sql,
+    row: Pick<Sandbox, "id" | "docker_host_id" | "docker_generation">,
+    daemonGeneration = row.docker_generation,
+  ) {
     return (
       await tx.query<{ result_machine_id: string | null }>(
         `select result_machine_id from public.docker_host_jobs
@@ -1907,11 +1912,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!receipt || receipt.request_id === intent.retryAfter) return "unknown";
         if (receipt.outcome === "failed" || receipt.cancelled_at) return "refused";
         if (receipt.outcome !== "completed") return "unknown";
-        return receipt.retain &&
-          receipt.result_machine_id === machineId &&
-          !(await physicalRemovalReceipt(tx, row, machineId))
-          ? "stopped"
-          : "refused";
+        if (!receipt.retain) return "refused";
+        if (receipt.absent_machine_id === machineId) return "retention_lost";
+        if (receipt.absent_machine_id || (await physicalRemovalReceipt(tx, row, machineId))) return "refused";
+        if (!receipt.result_machine_id) return "retention_unknown";
+        return receipt.result_machine_id === machineId ? "stopped" : "refused";
       });
     },
     machineCleanup(actor: Actor, scope?: MachineHost & { retryAfter?: string }) {
@@ -2868,6 +2873,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         reason?: DockerJobFailureReason;
         imageId?: string;
         machineId?: string;
+        absentMachineId?: string;
         baselineVersion?: number;
         baselineTool?: SnapshotBaselineTool;
         missingRefIndex?: number;
@@ -2881,6 +2887,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ...(result.reason !== undefined ? ["reason"] : []),
           ...(result.imageId !== undefined ? ["imageId"] : []),
           ...(result.machineId !== undefined ? ["machineId"] : []),
+          ...(result.absentMachineId !== undefined ? ["absentMachineId"] : []),
           ...(result.baselineVersion !== undefined ? ["baselineVersion"] : []),
           ...(result.baselineTool !== undefined ? ["baselineTool"] : []),
           ...(result.missingRefIndex !== undefined ? ["missingRefIndex"] : []),
@@ -2947,6 +2954,23 @@ export function createDockerHostStore(sql: Sql, key: string) {
             (job.bound_operation !== "create" && job.bound_operation !== "restore" && job.bound_operation !== "stop"))
         )
           deny();
+        if (result.absentMachineId !== undefined) {
+          if (
+            result.outcome !== "completed" ||
+            result.machineId !== undefined ||
+            !/^[a-f0-9]{64}$/.test(result.absentMachineId) ||
+            job.bound_operation !== "stop" ||
+            !job.bound_sandbox_id
+          )
+            deny();
+          const { request } = await readJob(job);
+          const allocatedId = await allocationReceipt(tx, {
+            id: job.bound_sandbox_id,
+            docker_host_id: host.id,
+            docker_generation: request.generation,
+          });
+          if (allocatedId !== result.absentMachineId) deny();
+        }
         if (job.bound_operation === "stop" && result.machineId !== undefined && logical) {
           const allocatedId = await allocationReceipt(tx, logical);
           if (allocatedId && allocatedId !== result.machineId) deny();
@@ -2958,7 +2982,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           job.cancelled_at === null &&
           (job.outcome !== result.outcome ||
             (job.result_image_id ?? null) !== (result.imageId ?? null) ||
-            (result.machineId !== undefined && job.result_machine_id !== result.machineId))
+            (result.machineId !== undefined && job.result_machine_id !== result.machineId) ||
+            (result.absentMachineId !== undefined && job.absent_machine_id !== result.absentMachineId))
         )
           deny();
         // A retired snapshot build is already failed and its build authorization is
@@ -3117,8 +3142,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (job.outcome === null || job.cancelled_at !== null) {
           await tx.query(
-            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,result_machine_id=$4,cancelled_at=null where request_id=$1`,
-            [result.requestId, result.outcome, result.imageId ?? null, result.machineId ?? null],
+            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,result_machine_id=$4,
+             absent_machine_id=$5,cancelled_at=null where request_id=$1`,
+            [
+              result.requestId,
+              result.outcome,
+              result.imageId ?? null,
+              result.machineId ?? null,
+              result.absentMachineId ?? null,
+            ],
           );
         }
       });

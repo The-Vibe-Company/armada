@@ -178,6 +178,7 @@ export function httpApi(
   inventory?: { cli: DockerMachineCli; failed(phase: InventoryPhase, error: unknown): void },
 ) {
   let stopIdentitySupported = false;
+  let stopAbsenceSupported = false;
 
   async function post(
     server: string,
@@ -327,6 +328,7 @@ export function httpApi(
           undefined,
           (response) => {
             stopIdentitySupported = response.headers.get("x-armada-docker-stop-identity") === "1";
+            stopAbsenceSupported = response.headers.get("x-armada-docker-stop-absence") === "1";
             retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
           },
           options?.preferStartup ? { [DOCKER_HOST_PREFER_STARTUP_HEADER]: "1" } : undefined,
@@ -442,6 +444,13 @@ export function httpApi(
         ...(!expired && retained && receipt.operation === "stop" && receipt.outcome === "failed" ? { retained } : {}),
         ...(expired ? { expired: true } : { outcome: receipt.outcome! }),
         ...(machineId === undefined ? {} : { machineId }),
+        ...(!expired &&
+        stopAbsenceSupported &&
+        receipt.operation === "stop" &&
+        receipt.outcome === "completed" &&
+        receipt.absentMachineId
+          ? { absentMachineId: receipt.absentMachineId }
+          : {}),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
       const baselineVersion = receipt.operation === "buildSnapshot" ? receipt.baselineVersion : undefined;
