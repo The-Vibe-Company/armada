@@ -273,6 +273,7 @@ export function fakeBoat() {
       return { status: "pending" };
     },
   } as unknown as Provider & {
+    fork(request: ForkRequest): Promise<SandboxInfo>;
     prompt(request: PromptRequest): Promise<PromptReceipt>;
     quiesce?: Provider["interrupt"];
   };

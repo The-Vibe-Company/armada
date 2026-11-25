@@ -16,10 +16,7 @@ export function createSnapshotTombstones(
   return {
     async deleteSnapshot(name: string) {
       if (!canMutateSnapshotScope)
-        throw refusal(
-          "forbidden",
-          "Snapshot mutation requires the golden-source provider scope, not a private-fork adapter.",
-        );
+        throw refusal("forbidden", "Snapshot mutation requires the golden-source provider scope.");
       await snapshotBackend();
       let image: SavedImage;
       try {
@@ -53,10 +50,7 @@ export function createSnapshotTombstones(
     },
     async collectRetiredSnapshot(name: string) {
       if (!canMutateSnapshotScope)
-        throw refusal(
-          "forbidden",
-          "Snapshot collection requires the golden-source provider scope, not a private-fork adapter.",
-        );
+        throw refusal("forbidden", "Snapshot collection requires the golden-source provider scope.");
       await snapshotBackend();
       return collectRetiredSnapshot(name);
     },
