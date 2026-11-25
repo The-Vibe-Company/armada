@@ -1326,13 +1326,18 @@ test("the current runner attaches only a completed Docker restore and can recove
   );
   await expect(resume(submitFault.faultingStore)).rejects.toMatchObject({ cause: submitFault.failure });
   expect(await createDockerMachineGenerationBindings(sql, a).lookup(target)).toBeUndefined();
-  expect(await a.poll([a.cleanupId])).toBeNull();
+  const restoreReceipts = () =>
+    db.query("select request_id from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='restore'", [
+      a.sandboxId,
+    ]);
+  expect((await restoreReceipts()).rows).toEqual([]);
 
   await expect(resume()).rejects.toMatchObject({ outcome: "pending" });
   await expect(resume()).rejects.toMatchObject({ outcome: "pending" });
   const delivered = await a.poll([a.cleanupId]);
   if (delivered?.operation !== "restore") throw new Error("Missing Docker restore delivery.");
   const { requestId } = delivered;
+  expect((await restoreReceipts()).rows).toEqual([{ request_id: requestId }]);
   expect(delivered.request.generation).toBe(requestId);
   expect(delivered.predecessor).toEqual(a.restore.predecessor);
   await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId });
