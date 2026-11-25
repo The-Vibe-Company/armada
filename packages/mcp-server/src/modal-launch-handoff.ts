@@ -96,3 +96,9 @@ export function unresolvedModalLaunch(sandbox: string) {
       and launch.org_id=${sandbox}.org_id and launch.request_owner_id=${sandbox}.owner_id
   ))`;
 }
+
+export function unresolvedResume(sandbox: string) {
+  return `exists(select 1 from public.jobs resume where resume.kind='resume'
+    and resume.state in ('queued','leased') and resume.sandbox_id=${sandbox}.id
+    and resume.generation=${sandbox}.lifecycle_generation)`;
+}

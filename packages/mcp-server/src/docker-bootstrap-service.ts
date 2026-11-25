@@ -251,7 +251,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
              and docker_resume_claims.installation_id=excluded.installation_id and docker_resume_claims.generation=excluded.generation
              and docker_resume_claims.lifecycle_generation=excluded.lifecycle_generation
              returning accepted,lifecycle_generation::text`,
-            [requestId, sandboxId, actor.userId, Number.MAX_SAFE_INTEGER - 3],
+            [requestId, sandboxId, actor.userId, Number.MAX_SAFE_INTEGER - 4],
           );
           if (!claim.rows.length) deny();
           if (claim.rows[0]!.accepted === false) throw new DockerRetentionEnded();

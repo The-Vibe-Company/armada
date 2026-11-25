@@ -3,6 +3,13 @@ import { assembleServer } from "../src/modules.ts";
 import type { ServerServices } from "../src/server-services.ts";
 import { jobsModule, type LaneFactory } from "../src/server-worker-modules.ts";
 
+const resumeJob = {
+  concurrency: 1,
+  async run() {
+    throw new Error("An empty claim must not run resume.");
+  },
+} satisfies ServerServices["resumeJob"];
+
 const modalCleanup = {
   launchCleanupJob: {
     concurrency: 1,
@@ -34,6 +41,7 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
     },
     config: { encryptionKey: "test" },
+    resumeJob,
     idleDelayMs: 100,
     control: { invitations: {} },
     githubApp: {},
@@ -114,7 +122,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture", "launch"],
     },
   ]) {
-    if (encryptionKey) expected.push("stop");
+    if (encryptionKey) expected.push("resume", "stop");
     const claimed = new Set<string>();
     const errors: string[] = [];
     let backfillAttempts = 0;
@@ -123,6 +131,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       control: {},
       options: { logError: (message: string) => errors.push(message) },
       config: { encryptionKey },
+      resumeJob,
       accountTurns: {
         async backfillDispatchJobs() {
           backfillAttempts++;

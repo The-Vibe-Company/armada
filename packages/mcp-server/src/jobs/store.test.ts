@@ -389,7 +389,7 @@ test("a replacement launch claimant reads Modal create intent and fences the pre
   expect(await retried.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
 });
 
-async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>) {
+async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>, providerSandboxId: string | null = null) {
   const goldenId = crypto.randomUUID();
   const id = crypto.randomUUID();
   await f.db.query(
@@ -398,9 +398,9 @@ async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>) {
     [goldenId, f.people.org, f.people.owner],
   );
   await f.db.query(
-    `insert into sandboxes (id, golden_id, org_id, owner_id, harness, provider, status, lifecycle_generation, runtime_transport)
-     values ($1, $2, $3, $4, 'codex', 'modal', 'starting', 2, 'dialout')`,
-    [id, goldenId, f.people.org, f.people.owner],
+    `insert into sandboxes (id, golden_id, org_id, owner_id, harness, provider, status, lifecycle_generation, runtime_transport, provider_sandbox_id)
+     values ($1, $2, $3, $4, 'codex', 'modal', 'starting', 2, 'dialout',$5)`,
+    [id, goldenId, f.people.org, f.people.owner, providerSandboxId],
   );
   return id;
 }
@@ -1797,6 +1797,12 @@ async function modalFirstTurnLane(
     runtimeGitHub,
     runtimeMcp,
     config: { encryptionKey: launchEncryptionKey },
+    resumeJob: {
+      concurrency: 1,
+      async run() {
+        throw new Error("Unexpected resume in launch setup fixture.");
+      },
+    },
     options: { logError: () => {} },
     control: { sandboxArmadaAccess },
     langfuse: { exportJob: { concurrency: 1 } },
@@ -2825,6 +2831,142 @@ test("owner stop retains the original machine after job-owned Modal bootstrap ta
   );
   expect(rows).toEqual([{ image: "im-retained" }]);
 });
+
+test.each(["lost allocation", "enrolled replacement"] as const)(
+  "owner stop settles the exact previous Modal resume generation after %s",
+  async (state) => {
+    const f = await fixture();
+    const recordId = "retained-placement";
+    const id = await unboundModalSandbox(f, recordId);
+    const scope = {
+      orgId: f.people.org,
+      userId: f.people.owner,
+      visibility: "private" as const,
+      binding: { workspace: "workspace", environment: "main", appId: "ap-test" },
+    };
+    const replacementId = "replacement";
+    const epoch = state === "lost allocation" ? 1 : 2;
+    await f.db.query("update sandboxes set expires_at=clock_timestamp()+interval '1 hour' where id=$1", [id]);
+    await f.db.query("insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch) values($1,2,$2)", [
+      id,
+      epoch,
+    ]);
+    await f.db.query(
+      `insert into runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
+       values ($1,1,$2,0,now())`,
+      [id, crypto.randomUUID()],
+    );
+    const resume = await f.store.enqueue("resume", id, 2, "restore", null, {
+      orgId: f.people.org,
+      maxAttempts: 3,
+      deadline: new Date("2100-01-01T00:00:00Z"),
+    });
+    const proof = { checkpoint: { epoch: "1", target: "2", watermark: 0 } };
+    await f.db.query("update jobs set outcome=$2,state=$3 where id=$1", [
+      resume,
+      state === "lost allocation" ? proof : { reason: "resume_dispatch_ended", evidence: proof },
+      state === "lost allocation" ? "queued" : "failed",
+    ]);
+    await f.db.query(
+      `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+       values($1,$2,$3,'private',$4,$4,$5)`,
+      [
+        scopeKey(scope),
+        f.people.org,
+        f.people.owner,
+        recordId,
+        {
+          info: { id: recordId, state: "starting" },
+          generation: 2,
+          runtimeResumeGeneration: 2,
+          commonRuntime: true,
+          phase: state === "lost allocation" ? "creating" : "active",
+          physicalName: "replacement-name",
+          ...(state === "enrolled replacement" && { physicalId: replacementId }),
+          imageId: "retained-image",
+          recoveryImageId: "retained-image",
+          runtimeCheckpoint: { epoch: "1", watermark: 0, generation: 1, physicalId: "retained-machine" },
+        },
+      ],
+    );
+    const caller: Caller = {
+      via: "service",
+      userId: f.people.owner,
+      orgs: [{ orgId: f.people.org, role: "member" }],
+    };
+    const data = createSqlData(f.sql)(caller);
+    const unexpected = async () => {
+      throw new Error("Stop must not dispatch compute in this phase");
+    };
+    expect(
+      await callSharedTool(
+        {
+          caller,
+          data,
+          launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
+          exposedSecrets: async () => [],
+          provider: unexpected,
+          now: () => new Date(),
+          sleep: unexpected,
+        },
+        "stop",
+        { id },
+      ),
+    ).toEqual({ id, status: "stopping" });
+    await f.db.query("update jobs set deadline_at='-infinity' where sandbox_id=$1 and kind='stop'", [id]);
+    const replacement = {
+      sandboxId: replacementId,
+      async getTags() {
+        return { armada_sandbox: recordId, armada_scope: scopeKey(scope), armada_generation: "2" };
+      },
+      async poll() {
+        return 0;
+      },
+      terminate: unexpected,
+    };
+    const { provider } = createModalProvider({
+      appName: "test",
+      client: {
+        apps: {
+          async fromName() {
+            return { appId: "ap-test" };
+          },
+        },
+        sandboxes: {
+          async fromName(_app: string, name: string) {
+            expect(name).toBe("replacement-name");
+            return replacement;
+          },
+          async fromId(machineId: string) {
+            expect(machineId).toBe(replacementId);
+            return replacement;
+          },
+        },
+      } as unknown as NonNullable<Parameters<typeof createModalProvider>[0]["client"]>,
+      scope,
+      store: createSqlModalStore(f.sql, scope),
+      distribution: { capabilities: {}, image: unexpected, prepareSnapshot: unexpected },
+    });
+    const stopRunner = createJobsRunner(f.store, {
+      stop: createStopJob(f.sql, launchEncryptionKey, undefined, Date.now, async () => provider),
+    });
+    expect(await stopRunner.reconcileOne(signal)).toBe(true);
+    await stopRunner.drain();
+    expect(await data.sandboxes.get(id)).toMatchObject({ lifecycleGeneration: 3, status: "stopped" });
+    expect(
+      (
+        await f.db.query("select outcome->'modal_checkpoint' as proof from jobs where sandbox_id=$1 and kind='stop'", [
+          id,
+        ])
+      ).rows,
+    ).toEqual([{ proof: { epoch: "1", watermark: 0 } }]);
+    expect(await createSqlModalStore(f.sql, scope).get(recordId)).toMatchObject({
+      phase: "stopped",
+      recoveryImageId: "retained-image",
+      runtimeCheckpoint: { epoch: "1", watermark: 0, generation: 2, physicalId: replacementId },
+    });
+  },
+);
 
 test("owner stop after a lost Modal create reply leaves the exact allocation for replacement cleanup", async () => {
   const { f, id, jobId, makeRunner, effects, cleanupEffects, hideAllocation } = await modalLaunchFixture(

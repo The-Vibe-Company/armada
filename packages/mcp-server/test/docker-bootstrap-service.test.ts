@@ -973,7 +973,7 @@ test("Docker resume refuses insufficient headroom before issuing a daemon claim"
   const f = await fixture();
   await database().query(
     "update public.sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=$2::bigint where id=$1",
-    [f.sandbox.id, String(Number.MAX_SAFE_INTEGER - 2)],
+    [f.sandbox.id, String(Number.MAX_SAFE_INTEGER - 3)],
   );
   await denied(service.resume(f.actor, f.sandbox.id, randomUUID()));
   expect(await hosts.resumeClaimsForHost(f.hostToken, f.installationId)).toEqual([]);

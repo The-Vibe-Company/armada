@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Provider, ResumeStageObserver, SandboxInfo } from "@armada/core";
+import type { Provider, SandboxInfo } from "@armada/core";
 import { HARNESSES, OUTPUT_MAX_READ_BYTES } from "@armada/core";
 import {
   OUTPUT_COLLECTOR,
@@ -27,7 +27,7 @@ import type {
   SshPreparation,
 } from "./ports.ts";
 import type { RuntimeTicket } from "./runtime-bootstrap.ts";
-import { createRuntimeLifecycle, type ModalRuntimeStop } from "./runtime-lifecycle.ts";
+import { createRuntimeLifecycle, type ModalRuntimeResume, type ModalRuntimeStop } from "./runtime-lifecycle.ts";
 import { createRuntimeCapture } from "./runtime-work.ts";
 import { createSandboxInspection } from "./sandbox-inspection.ts";
 import { createSnapshotLifecycle } from "./snapshot-lifecycle.ts";
@@ -66,19 +66,9 @@ export interface ModalProviderOptions extends ModalConnection {
   ssh?: SshPreparation;
 }
 export interface ModalProvider extends Provider {
-  startRuntime(input: RuntimeTicket & { sandboxId: string; resumeGeneration?: number }): Promise<void>;
+  startRuntime(input: RuntimeTicket & { sandboxId: string }): Promise<void>;
   runtimeStopMachine: ModalRuntimeStop;
-  resumeRuntime(
-    input: {
-      sandboxId: string;
-      generation: number;
-      checkpoint: { epoch: string; watermark: number };
-      ttlSeconds: number;
-    },
-    signal?: AbortSignal,
-    onResumeStage?: ResumeStageObserver,
-  ): Promise<SandboxInfo>;
-  rollbackRuntimeResume(input: { sandboxId: string; generation: number }): Promise<void>;
+  runtimeResumeMachine: ModalRuntimeResume;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
@@ -332,12 +322,11 @@ export function createModalProvider(options: ModalProviderOptions) {
     ...createRuntimeLifecycle({
       store,
       distribution,
-      bound,
       assertMachineSource,
       physical,
+      namedOwned,
       resourceReceipt,
       create,
-      sandboxInfo,
     }),
     outputReadBytes: OUTPUT_MAX_READ_BYTES,
     listOutputEntries(request) {

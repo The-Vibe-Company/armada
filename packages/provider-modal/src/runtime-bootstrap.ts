@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { runtimeBootstrapScript, SHARED_ARTIFACT_CACHE_PATH } from "@armada/core/server";
 import type { Sandbox } from "modal";
+import { modalStopTimeout } from "./client.ts";
 import { refusal } from "./errors.ts";
 
 export type RuntimeTicket = {
@@ -66,7 +67,7 @@ esac`;
       {
         env: {},
         secrets: [],
-        timeoutMs: 150_000,
+        timeoutMs: modalStopTimeout(150_000, 1_000),
         workdir: "/home/user",
         stdout: "ignore",
         stderr: "ignore",

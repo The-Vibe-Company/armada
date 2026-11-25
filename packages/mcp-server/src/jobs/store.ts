@@ -18,6 +18,7 @@ import {
   resetAbandonedTurn,
 } from "../account-turn-dispatch.ts";
 import type { ModalLaunchHandoff } from "../modal-launch-handoff.ts";
+import { unresolvedResume } from "../modal-launch-handoff.ts";
 import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
 import type { Job, JobStore } from "./runner.ts";
 
@@ -133,6 +134,31 @@ export async function mergeStopOutcome(tx: Sql, jobId: string, outcome: Record<s
   ]);
 }
 
+export async function recordResumeAuthority(
+  tx: Sql,
+  id: string,
+  generation: number,
+  requestId: string,
+  expiresAt: string,
+  checkpoint: object,
+) {
+  const { rows } = await tx.query(
+    `update public.jobs j set outcome=jsonb_build_object('requestId',$3::text,'expiresAt',$4::text,
+       'accountId',s.credential_id,'accountVersion',s.credential_version,'actorEpoch',e.epoch::text,'checkpoint',$5::jsonb)
+     from public.sandboxes s join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
+     where s.id=$1 and j.sandbox_id=s.id and j.kind='resume' and j.generation=$2 returning j.id`,
+    [id, generation, requestId, expiresAt, JSON.stringify(checkpoint)],
+  );
+  return rows.length === 1;
+}
+
+export function recordResumeBootstrapTicket(tx: Sql, jobId: string, ciphertext: string) {
+  return tx.query(
+    "update public.jobs set outcome=outcome||jsonb_build_object('bootstrap_ticket_enc',$2::text) where id=$1 and kind='resume'",
+    [jobId, ciphertext],
+  );
+}
+
 export function clearStopCapture(tx: Sql, jobId: string, sandboxId: string, generation: string) {
   return tx.query(
     "update public.jobs set outcome=outcome-'output' where id=$1 and sandbox_id=$2 and generation=$3 and kind='stop'",
@@ -234,12 +260,18 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     try {
       return await sql.transaction(async (tx) => {
         // WARNING: Acquire the write lock first to avoid a table lock upgrade against startup model repair.
-        await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
+        await tx.query("set local lock_timeout = '750ms'");
+        await tx.query("lock table public.account_turn_queue in row exclusive mode");
+        await tx.query(
+          "select id from public.credentials where id=(select account_id from public.account_turn_queue where sandbox_id=$1 and request_id=$2) for update",
+          [sandboxId, requestId],
+        );
+        await tx.query("select id from public.sandboxes where id = $1 for update", [sandboxId]);
         const {
           rows: [receipt],
         } = await tx.query<{ state: string; account_id: string }>(
           `select state, account_id from public.account_turn_queue
-           where sandbox_id = $1 and request_id = $2 for update nowait`,
+           where sandbox_id = $1 and request_id = $2 for update`,
           [sandboxId, requestId],
         );
         if (!receipt || receipt.state === "admitted" || receipt.state === "failed") {
@@ -250,8 +282,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           );
           return job;
         }
-        // WARNING: Owner stop can hold the sandbox lock while waiting for the receipt.
-        await tx.query("select id from public.sandboxes where id = $1 for update nowait", [sandboxId]);
         const {
           rows: [sandbox],
         } = await tx.query<{
@@ -263,6 +293,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           abandoned: boolean;
           unrecoverable_dispatch: boolean;
           defer_dispatch_until: string | null;
+          resuming: boolean;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -279,7 +310,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                       and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
                       and (${noAdjacentDispatchEvidence()} or ${OBSOLETE_RUNTIME_PROMPT}))))
                     as unrecoverable_dispatch,
-                  case when ${adjacentRuntimeDispatch()}
+                  ${unresolvedResume("s")} as resuming,
+                  case when ${unresolvedResume("s")} then (statement_timestamp()+interval '1 second')::text
+                    when ${adjacentRuntimeDispatch()}
                     and (s.status in ('ready','running')
                       or (s.status = 'starting'
                         and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB}))
@@ -292,6 +325,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
         );
+        if (sandbox?.resuming && sandbox.defer_dispatch_until && !sandbox.cancelled) {
+          await tx.query(
+            `update public.jobs j set state='queued',lease_owner=null,lease_until=null,run_after=$4,
+               attempts=greatest(attempts-1,0) where ${fence}`,
+            [...claimIdentity(job, owner), sandbox.defer_dispatch_until],
+          );
+          return undefined;
+        }
         if (
           sandbox?.cancelled ||
           sandbox?.queued_with_evidence ||
@@ -316,9 +357,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         }
         let reset = false;
         if (!retiring && sandbox?.abandoned) {
-          await tx.query("select id from public.credentials where id = $1 for update nowait", [receipt.account_id]);
           const { rows } = await tx.query(
-            `select j.id from public.jobs j where ${fence} and j.generation = $4 and j.generation <= $5 for update nowait`,
+            `select j.id from public.jobs j where ${fence} and j.generation = $4 and j.generation <= $5 for update`,
             [...claim, sandbox.generation],
           );
           if (rows.length) reset = await resetAbandonedTurn(tx, sandboxId, requestId);
@@ -404,7 +444,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   ) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
-         outcome = coalesce(case when kind='launch' and jsonb_typeof(outcome)='object'
+         outcome = coalesce(case when kind in ('launch','resume') and jsonb_typeof(outcome)='object'
                                  then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' - 'boat_authority_sha256' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
          and (j.generation is distinct from $5 or $6 <> 'stale_generation') returning j.id`,
@@ -419,7 +459,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     work: (db: Sql, generation: string | null) => Promise<T>,
     lockPrerequisites?: (tx: Sql) => Promise<void>,
   ) {
-    if (job.kind !== "turn_dispatch" && job.kind !== "stop") return work(sql, job.generation);
+    if (job.kind !== "turn_dispatch" && job.kind !== "stop" && job.kind !== "resume") return work(sql, job.generation);
     if (!sql.transaction) throw new Error("Job fencing requires a transaction.");
     return sql.transaction(async (tx) => {
       await lockPrerequisites?.(tx);
@@ -742,7 +782,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         }
         return rows[0]?.completed === true;
       };
-      if (job.kind === "turn_dispatch") return (await withLockedJobGeneration(job, owner, complete)) ?? false;
+      if (job.kind === "turn_dispatch" || job.kind === "resume" || job.kind === "stop")
+        return (await withLockedJobGeneration(job, owner, complete)) ?? false;
       if (result.commit || refundAttempt) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));
