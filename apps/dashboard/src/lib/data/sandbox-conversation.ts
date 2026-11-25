@@ -1,4 +1,5 @@
 import { idlePauseMessage, isRecord } from "@armada/core";
+import { capabilities } from "@armada/core/machine-capabilities";
 import { isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
 import { getSandbox } from "@/lib/data/sandboxes";
@@ -8,6 +9,8 @@ import { GatewayError } from "@/lib/gateway";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";
 
+const CONVERSATION_PAGE_LIMIT = 200;
+
 export async function readSandboxConversation(
   id: string,
   cursor: string | null,
@@ -16,8 +19,7 @@ export async function readSandboxConversation(
 ) {
   if (!isUuid(id)) return { body: { error: "Not found." }, status: 404 };
 
-  const viewer = await requireViewer();
-  const supabase = await createClient();
+  const [viewer, supabase] = await Promise.all([requireViewer(), createClient()]);
   const sandbox = await getSandbox(supabase, id);
   if (!sandbox) return { body: { error: "Not found." }, status: 404 };
 
@@ -45,10 +47,16 @@ export async function readSandboxConversation(
   const backward = conversationReadDirection(sandbox, source) === "backward";
   let observedStatus: unknown;
   const queuedPrompt = isUuid(pending) ? pending : undefined;
-  const statusRead = () => gateway.status(id, queuedPrompt).catch(() => observedStatus ?? {});
+  const expectThreadStatus = capabilities(sandbox.provider).launchSource === "host";
+  const eagerStatus =
+    queuedPrompt !== undefined || !expectThreadStatus ? gateway.status(id, queuedPrompt).catch(() => undefined) : null;
 
   const metadata = async () => {
-    const detail = (queuedPrompt ? await statusRead() : (observedStatus ?? (await statusRead()))) as {
+    const detail = (
+      eagerStatus
+        ? ((await eagerStatus) ?? observedStatus ?? {})
+        : (observedStatus ?? (await gateway.status(id).catch(() => ({}))))
+    ) as {
       status?: string;
       statusMessage?: string | null;
       prompt?: unknown;
@@ -67,7 +75,11 @@ export async function readSandboxConversation(
     };
   };
   try {
-    const raw = await gateway.logs(id, cursor, backward ? { direction: "backward" } : {});
+    const raw = await gateway.logs(id, cursor, {
+      limit: CONVERSATION_PAGE_LIMIT,
+      coalesce: true,
+      ...(backward ? { direction: "backward" as const } : {}),
+    });
     if (isRecord(raw) && isRecord(raw.threadStatus)) observedStatus = raw.threadStatus;
     const page = backward
       ? { ...parseEventPage(raw), backward: true }

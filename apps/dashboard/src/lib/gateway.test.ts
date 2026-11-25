@@ -1,84 +1,58 @@
 import { describe, expect, test } from "bun:test";
 import { ControlError, createControlClient } from "./control.ts";
-import { createGateway, GatewayError, sandboxGateway } from "./gateway.ts";
+import { GatewayError, sandboxGateway } from "./gateway.ts";
 
-type Call = { method: string; headers: Record<string, string>; body: Record<string, unknown> };
+type Seen = { method: string; url: string; headers: Headers; body: unknown };
 
-function server(reply: (call: Call) => Response, sessionId?: string) {
-  const calls: Call[] = [];
-  const fakeFetch = (async (_url: unknown, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    const call: Call = { method: String(body.method), headers: init?.headers as Record<string, string>, body };
-    calls.push(call);
-    if (call.method === "initialize") {
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), {
-        headers: { "content-type": "application/json", ...(sessionId ? { "mcp-session-id": sessionId } : {}) },
-      });
-    }
-    if (call.method === "notifications/initialized") return new Response(null, { status: 202 });
-    return reply(call);
+function restServer(reply: (request: Seen) => Response) {
+  const calls: Seen[] = [];
+  const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const raw = request.body ? await request.text() : null;
+    const seen: Seen = {
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: raw ? JSON.parse(raw) : null,
+    };
+    calls.push(seen);
+    return reply(seen);
   }) as typeof fetch;
-  return { calls, gateway: createGateway({ url: "https://mcp.example/mcp", token: "user-jwt", fetch: fakeFetch }) };
+  const control = createControlClient({
+    serverUrl: "https://mcp.example/mcp",
+    token: "user-jwt",
+    fetch: fakeFetch,
+  });
+  return { calls, sandbox: sandboxGateway(control) };
 }
-
-const unexpectedControl = {
-  deleteSandbox: async () => {
-    throw new Error("Unexpected REST request");
-  },
-  post: async () => {
-    throw new Error("Unexpected REST request");
-  },
-};
-
-const rpc = (id: unknown, result: unknown) =>
-  new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { headers: { "content-type": "application/json" } });
 
 describe("gateway", () => {
   for (const operation of ["delete", "extend"] as const) {
     test(`sandbox ${operation} uses the existing authenticated REST operation`, async () => {
-      const seen: Request[] = [];
-      const { calls, gateway } = server((call) =>
-        rpc(call.body.id, { isError: true, content: [{ type: "text", text: "Unknown tool" }] }),
+      const { calls, sandbox } = restServer(() =>
+        Response.json(
+          operation === "delete"
+            ? { id: "sandbox-1", status: "deleted" }
+            : { id: "sandbox-1", expiresAt: "2026-11-19T08:00:00Z", ttlSeconds: 7200 },
+        ),
       );
-      const control = createControlClient({
-        serverUrl: "https://mcp.example/mcp",
-        token: "user-jwt",
-        fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
-          seen.push(new Request(input, init));
-          return Response.json(
-            operation === "delete"
-              ? { id: "sandbox-1", status: "deleted" }
-              : { id: "sandbox-1", expiresAt: "2026-11-19T08:00:00Z", ttlSeconds: 7200 },
-          );
-        }) as typeof fetch,
-      });
-      const sandbox = sandboxGateway(gateway, control);
       const id = "sandbox-1";
       const ttlSeconds = 7200;
       if (operation === "delete") await sandbox.delete(id);
       else await sandbox.extend(id, ttlSeconds);
-      expect(calls).toHaveLength(0);
-      expect(seen).toHaveLength(1);
-      expect(seen[0]?.method).toBe(operation === "delete" ? "DELETE" : "POST");
-      expect(seen[0]?.url).toBe(
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.method).toBe(operation === "delete" ? "DELETE" : "POST");
+      expect(calls[0]?.url).toBe(
         `https://mcp.example/api/v1/${operation === "delete" ? `sandboxes/${id}` : "sandbox/extend"}`,
       );
-      expect(seen[0]?.headers.get("authorization")).toBe("Bearer user-jwt");
-      if (operation === "delete") expect(seen[0]?.body).toBeNull();
-      else expect(await seen[0]?.json()).toEqual({ id, ttlSeconds });
+      expect(calls[0]?.headers.get("authorization")).toBe("Bearer user-jwt");
+      if (operation === "delete") expect(calls[0]?.body).toBeNull();
+      else expect(calls[0]?.body).toEqual({ id, ttlSeconds });
     });
   }
 
   test("an unreadable REST success cannot confirm sandbox deletion or extension", async () => {
-    const { gateway } = server(() => {
-      throw new Error("Unexpected MCP request");
-    });
-    const control = createControlClient({
-      serverUrl: "https://mcp.example/mcp",
-      token: "user-jwt",
-      fetch: (async () => new Response("unreadable")) as unknown as typeof fetch,
-    });
-    const sandbox = sandboxGateway(gateway, control);
+    const { sandbox } = restServer(() => new Response("unreadable"));
     for (const call of [() => sandbox.delete("sandbox-1"), () => sandbox.extend("sandbox-1", 7200)]) {
       const error = await call().catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(ControlError);
@@ -86,107 +60,110 @@ describe("gateway", () => {
     }
   });
 
-  test("a tool call initializes the session, carries the user's token and returns the tool's JSON", async () => {
-    const { calls, gateway } = server(
-      (call) => rpc(call.body.id, { content: [{ type: "text", text: JSON.stringify({ events: [], cursor: "9" }) }] }),
-      "session-1",
-    );
-    const page = await sandboxGateway(gateway, unexpectedControl).logs("sandbox-1", "5");
-    expect(page).toEqual({ events: [], cursor: "9" });
-    expect(calls.map((call) => call.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
-    expect(calls[2]?.body.params).toEqual({ name: "logs", arguments: { id: "sandbox-1", since_cursor: "5" } });
-    expect(calls[2]?.headers.authorization).toBe("Bearer user-jwt");
-    expect(calls[2]?.headers["mcp-session-id"]).toBe("session-1");
+  test("logs reads via a single 1-RTT REST request carrying cursor, pagination and bearer token", async () => {
+    const { calls, sandbox } = restServer(() => Response.json({ events: [], cursor: "9", hasMore: false }));
+    const page = await sandbox.logs("sandbox-1", "5", { limit: 200, coalesce: true, direction: "backward" });
+    expect(page).toEqual({ events: [], cursor: "9", hasMore: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toBe("https://mcp.example/api/v1/logs/read");
+    expect(calls[0]?.headers.get("authorization")).toBe("Bearer user-jwt");
+    expect(calls[0]?.body).toEqual({
+      id: "sandbox-1",
+      cursor: "5",
+      limit: 200,
+      coalesce: true,
+      direction: "backward",
+    });
   });
 
-  test("send, steer and interrupt address the sandbox without a conversation selector", async () => {
-    const { calls, gateway } = server((call) => rpc(call.body.id, { structuredContent: { ok: true } }));
-    const sandbox = sandboxGateway(gateway, unexpectedControl);
+  test("send, steer, interrupt, stop, exec and status each make one 1-RTT REST call", async () => {
+    const { calls, sandbox } = restServer(() => Response.json({ ok: true }));
     await sandbox.send("sandbox-9", "go", { reasoning_effort: "high" });
     await sandbox.send("sandbox-9", "first");
     await sandbox.send("sandbox-9", "again", {}, "request-1");
     await sandbox.steer("sandbox-9", "use the fixture");
     await sandbox.interrupt("sandbox-9");
-    const tools = calls.filter((call) => call.method === "tools/call").map((call) => call.body.params);
-    expect(tools).toEqual([
+    await sandbox.stop("sandbox-9");
+    await sandbox.exec("sandbox-9", "git status", 30);
+    await sandbox.status("sandbox-9", "request-1");
+    expect(calls.map(({ method, url, body }) => ({ method, url, body }))).toEqual([
       {
-        name: "send",
-        arguments: { id: "sandbox-9", prompt: "go", reasoning_effort: "high" },
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/send",
+        body: { id: "sandbox-9", prompt: "go", reasoning_effort: "high" },
       },
-      { name: "send", arguments: { id: "sandbox-9", prompt: "first" } },
       {
-        name: "send",
-        arguments: { id: "sandbox-9", prompt: "again", request_id: "request-1" },
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/send",
+        body: { id: "sandbox-9", prompt: "first" },
       },
-      { name: "send", arguments: { id: "sandbox-9", prompt: "use the fixture", steer: true } },
-      { name: "stop", arguments: { id: "sandbox-9", turn: true } },
+      {
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/send",
+        body: { id: "sandbox-9", prompt: "again", request_id: "request-1" },
+      },
+      {
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/steer",
+        body: { id: "sandbox-9", text: "use the fixture" },
+      },
+      {
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/interrupt",
+        body: { id: "sandbox-9" },
+      },
+      {
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/stop",
+        body: { id: "sandbox-9" },
+      },
+      {
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/exec",
+        body: { id: "sandbox-9", command: "git status", timeout_seconds: 30 },
+      },
+      {
+        method: "POST",
+        url: "https://mcp.example/api/v1/sandbox/status",
+        body: { id: "sandbox-9", prompt_id: "request-1" },
+      },
     ]);
   });
 
-  test("queued status can address the accepted prompt before it appears in the journal", async () => {
-    const { calls, gateway } = server((call) => rpc(call.body.id, { structuredContent: { ok: true } }));
-    await sandboxGateway(gateway, unexpectedControl).status("sandbox-9", "request-1");
-    expect(calls.find((call) => call.method === "tools/call")?.body.params).toEqual({
-      name: "status",
-      arguments: { id: "sandbox-9", prompt_id: "request-1" },
-    });
-  });
-
-  test("a reply sent as a server-sent event is read too", async () => {
-    const { gateway } = server((call) => {
-      const message = { jsonrpc: "2.0", id: call.body.id, result: { structuredContent: { ok: true } } };
-      return new Response(`event: message\ndata: ${JSON.stringify(message)}\n\n`, {
-        headers: { "content-type": "text/event-stream" },
-      });
-    });
-    expect(await sandboxGateway(gateway, unexpectedControl).stop("sandbox-1")).toEqual({ ok: true });
-  });
-
-  test("a tool error becomes a GatewayError, in plain words for a usage limit", async () => {
-    const { gateway } = server((call) =>
-      rpc(call.body.id, {
-        isError: true,
-        content: [
-          { type: "text", text: "weekly cap reached" },
-          { type: "text", text: "error code: usage_limit" },
-        ],
-      }),
+  test("a structured REST error becomes a GatewayError, in plain words for a usage limit", async () => {
+    const { sandbox } = restServer(() =>
+      Response.json({ error: { code: "usage_limit", message: "weekly cap reached" } }, { status: 429 }),
     );
-    const error = await sandboxGateway(gateway, unexpectedControl)
-      .send("sandbox-1", "go")
-      .catch((caught: unknown) => caught);
+    const error = await sandbox.send("sandbox-1", "go").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(GatewayError);
-    expect((error as GatewayError).message).toContain("hit its plan or billing limit");
+    expect(error).toMatchObject({
+      status: 429,
+      code: "usage_limit",
+      message: expect.stringContaining("hit its plan or billing limit"),
+    });
   });
 
-  test("a tool error keeps the server's typed code next to its words", async () => {
-    const { gateway } = server((call) =>
-      rpc(call.body.id, {
-        isError: true,
-        content: [
-          { type: "text", text: "This legacy Modal sandbox has no account binding." },
-          { type: "text", text: "error code: credential_binding_required" },
-        ],
-      }),
+  test("a structured REST error keeps the server's typed code next to its words", async () => {
+    const { sandbox } = restServer(() =>
+      Response.json(
+        {
+          error: { code: "credential_binding_required", message: "This legacy Modal sandbox has no account binding." },
+        },
+        { status: 409 },
+      ),
     );
-    const error = await sandboxGateway(gateway, unexpectedControl)
-      .send("sandbox-1", "go")
-      .catch((caught: unknown) => caught);
+    const error = await sandbox.send("sandbox-1", "go").catch((caught: unknown) => caught);
     expect(error).toMatchObject({
+      status: 409,
       code: "credential_binding_required",
       message: "This legacy Modal sandbox has no account binding.",
     });
   });
 
   test("a gateway outage gives recovery guidance without exposing the proxy response", async () => {
-    const gateway = createGateway({
-      url: "https://mcp.example/mcp",
-      token: "user-jwt",
-      fetch: Object.assign(async () => new Response("Private proxy diagnostics", { status: 503 }), {
-        preconnect: fetch.preconnect,
-      }),
-    });
-    const error = await gateway.call("stop", {}).catch((caught: unknown) => caught);
+    const { sandbox } = restServer(() => new Response("Private proxy diagnostics", { status: 503 }));
+    const error = await sandbox.stop("sandbox-1").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(GatewayError);
     const { status, message } = error as GatewayError;
     expect(status).toBe(503);
@@ -194,24 +171,27 @@ describe("gateway", () => {
     expect(message).not.toContain("Private proxy diagnostics");
   });
 
+  test("an unreadable 200 REST response throws a GatewayError", async () => {
+    const { sandbox } = restServer(() => new Response("<html>proxy</html>", { status: 200 }));
+    await expect(sandbox.logs("sandbox-1")).rejects.toThrow("unreadable");
+  });
+
   test("a refused session and an unreachable server are told apart", async () => {
-    const refused = createGateway({
-      url: "https://mcp.example/mcp",
-      token: "stale",
-      fetch: (async () => new Response("no", { status: 401 })) as unknown as typeof fetch,
-    });
-    await expect(refused.call("logs", {})).rejects.toMatchObject({
+    const { sandbox: refused } = restServer(() => new Response("no", { status: 401 }));
+    await expect(refused.logs("sandbox-1")).rejects.toMatchObject({
       status: 401,
       message: expect.stringContaining("Sign in again"),
     });
 
-    const down = createGateway({
-      url: "https://mcp.example/mcp",
-      token: "t",
-      fetch: (async () => {
-        throw new TypeError("fetch failed");
-      }) as unknown as typeof fetch,
-    });
-    await expect(down.call("logs", {})).rejects.toThrow("unreachable");
+    const down = sandboxGateway(
+      createControlClient({
+        serverUrl: "https://mcp.example/mcp",
+        token: "t",
+        fetch: (async () => {
+          throw new TypeError("fetch failed");
+        }) as unknown as typeof fetch,
+      }),
+    );
+    await expect(down.logs("sandbox-1")).rejects.toThrow("unreachable");
   });
 });

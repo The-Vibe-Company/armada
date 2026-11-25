@@ -55,58 +55,8 @@ for (const mode of [
           const body = parityRequest(url, init).body;
           const headers = new Headers(init.headers);
           expect(headers.get("authorization")).toBe("Bearer placeholder");
-          if (new URL(url).pathname === "/mcp") {
-            calls.push(`${active}:mcp:${body.method}`);
-            if (body.method === "initialize") {
-              expect(body.params.clientInfo.name).toBe("armada-dashboard");
-              if (mode === "dashboard_late") now += 110_001;
-              return Response.json(
-                {
-                  jsonrpc: "2.0",
-                  id: body.id,
-                  result: {
-                    protocolVersion: body.params.protocolVersion,
-                    capabilities: {},
-                    serverInfo: { name: "fixture", version: "1" },
-                  },
-                },
-                { headers: { "mcp-session-id": `session_${active}` } },
-              );
-            }
-            expect(headers.get("mcp-session-id")).toBe(`session_${active}`);
-            if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
-            expect(body.method).toBe("tools/call");
-            expect(body.params.name).toBe("send");
-            const args = body.params.arguments;
-            expect(args.id).toBe(ids[active]);
-            expect(args).not.toHaveProperty("conversation_id");
-            expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
-            expect(args).not.toHaveProperty("model");
-            expect(args).not.toHaveProperty("reasoning_effort");
-            wire.push({ provider: active, client: "dashboard", body: args });
-            if (mode === "dashboard_reject")
-              return Response.json({
-                jsonrpc: "2.0",
-                id: body.id,
-                result: {
-                  isError: true,
-                  content: [
-                    { type: "text", text: "private_error_placeholder" },
-                    { type: "text", text: "error code: invalid_request_id" },
-                  ],
-                },
-              });
-            const promptId = `dashboard_${active}`;
-            prompts.set(promptId, String(args.prompt).match(/PARITY_CLIENT_DASHBOARD_[a-f0-9-]{36}/)![0]);
-            clients.set(active, "dashboard");
-            return Response.json({
-              jsonrpc: "2.0",
-              id: body.id,
-              result: { content: [{ type: "text", text: JSON.stringify({ promptId }) }] },
-            });
-          }
           const { path: route } = parityRequest(url, init);
-          const provider = body.org === orgs.modal ? "modal" : "docker";
+          const provider = body.org ? (body.org === orgs.modal ? "modal" : "docker") : active;
           calls.push(`${provider}:${route}`);
           switch (route) {
             case "launch/options":
@@ -147,11 +97,24 @@ for (const mode of [
                 return Response.json({ promptId: `seed_${provider}` });
               }
               expect(body.id).toBe(ids[provider]);
-              expect(body.org).toBe(orgs[provider]);
               expect(body).not.toHaveProperty("conversation_id");
               expect(body.request_id).toMatch(/^[a-f0-9-]{36}$/);
               expect(body).not.toHaveProperty("model");
               expect(body).not.toHaveProperty("reasoning_effort");
+              if (!body.org) {
+                if (mode === "dashboard_late") now += 110_001;
+                wire.push({ provider, client: "dashboard", body });
+                if (mode === "dashboard_reject")
+                  return Response.json(
+                    { error: { code: "invalid_request_id", message: "private_error_placeholder" } },
+                    { status: 400 },
+                  );
+                const promptId = `dashboard_${provider}`;
+                prompts.set(promptId, String(body.prompt).match(/PARITY_CLIENT_DASHBOARD_[a-f0-9-]{36}/)![0]);
+                clients.set(provider, "dashboard");
+                return Response.json({ promptId });
+              }
+              expect(body.org).toBe(orgs[provider]);
               wire.push({ provider, client: "cli", body });
               if (mode === "cli_unauthorized")
                 return Response.json(
