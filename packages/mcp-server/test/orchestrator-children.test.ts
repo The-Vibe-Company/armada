@@ -204,7 +204,7 @@ const admissionScenarios = [
   "rolled back Boat",
   "brief parent contention",
   "contended Boat admission",
-] as const;
+];
 
 test.each(admissionScenarios)(
   "delegated child launch admission preserves its durable authority fence after %s",
