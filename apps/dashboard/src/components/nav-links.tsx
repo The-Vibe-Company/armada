@@ -32,7 +32,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { INLINE_LIVE_LIMIT, LIVE_SANDBOXES_HREF, type LiveSandboxes } from "@/lib/live-sandboxes";
+import { INLINE_LIVE_LIMIT, LIVE_SANDBOXES_HREF, type LiveSandboxes } from "@/lib/live-sandbox-view";
 import { isActiveLink, NAV_GROUPS, type NavIcon } from "@/lib/navigation";
 import { statusLook } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";

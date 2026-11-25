@@ -28,7 +28,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { createControlClient } from "@/lib/control";
 import { readSelectedDockerHosts } from "@/lib/data/docker-hosts";
 import { readProviderSetup } from "@/lib/data/provider-setup";
-import { loadSandboxInventory } from "@/lib/data/sandbox-inventory";
+import { listSandboxMetadata, loadSandboxInventory } from "@/lib/data/sandbox-inventory";
 import { listSandboxEnrichment } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
@@ -94,7 +94,15 @@ async function SandboxesContent({ searchParams }: Props) {
     );
   const serverUrl = mcpUrl();
   const control = serverUrl && viewer.token ? createControlClient({ serverUrl, token: viewer.token }) : null;
-  const inventory = loadSandboxInventory(supabase, selected.org.id, filters, viewer.id, query.activity, control);
+  const inventory = loadSandboxInventory(
+    supabase,
+    selected.org.id,
+    filters,
+    viewer.id,
+    query.activity,
+    control,
+    listSandboxMetadata(selected.org.id),
+  );
   const hosts = readSelectedDockerHosts();
   const enrichmentRead = inventory.then(({ rows }) => listSandboxEnrichment(supabase, selected.org.id, rows));
   const [

@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createClient } from "@supabase/supabase-js";
 import { createControlClient } from "../control";
-import { parseSandboxFilters } from "../sandbox-filters";
+import { parseSandboxFilters, sandboxInventoryScope } from "../sandbox-filters";
 import type { Database } from "../supabase/types";
-import { loadSandboxInventory } from "./sandbox-inventory";
+import { loadSandboxInventory, readSandboxMetadata } from "./sandbox-inventory";
 import { listSandboxEnrichment } from "./sandboxes";
 
 function sandbox(index: number, status = "ready") {
@@ -65,6 +65,7 @@ test("the Sandboxes list reads activity once for the organization without per-sa
     "viewer",
     "working",
     control,
+    readSandboxMetadata(supabase, "org", true),
   );
   expect(metadataOffsets).toEqual([0, 500]);
   expect(controlCalls).toEqual(["/api/v1/sandbox/list-turns"]);
@@ -110,7 +111,15 @@ test.each([
       },
     });
 
-    const result = await loadSandboxInventory(supabase, "org", parseSandboxFilters(params), "viewer", activity, null);
+    const result = await loadSandboxInventory(
+      supabase,
+      "org",
+      parseSandboxFilters(params),
+      "viewer",
+      activity,
+      null,
+      readSandboxMetadata(supabase, "org", !statusQuery),
+    );
 
     expect(rowReads).toEqual(
       statusQuery
@@ -172,4 +181,12 @@ test("one JWT sandbox read enriches only readable rows with cost, host and snaps
   expect(requests[0]?.searchParams.get("select")).not.toContain("*");
   expect([...result.keys()]).toEqual([readable]);
   expect(result.get(readable)).toMatchObject({ cost: { computeSeconds: 20 }, hostId: host, snapshot: "Nightly" });
+});
+
+test("only sandbox list requests share metadata with the shell, using the full inventory for valid filters", () => {
+  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("status=ready&status=invalid"))).toBe("all");
+  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("activity=deleted"))).toBe("all");
+  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("sort=name&page=2&status=invalid"))).toBe("active");
+  expect(sandboxInventoryScope("/sandboxes/sandbox-1", new URLSearchParams())).toBeNull();
+  expect(sandboxInventoryScope("/api/fleet/live", new URLSearchParams())).toBeNull();
 });
