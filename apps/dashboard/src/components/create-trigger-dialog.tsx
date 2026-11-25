@@ -113,7 +113,7 @@ export function CreateTriggerDialog({
                 Use the template’s harness. Your default account must be available for it.
               </p>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor={`${fields}-rate`}>Deliveries per minute</Label>
                 <Input

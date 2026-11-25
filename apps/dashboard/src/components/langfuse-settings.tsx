@@ -147,7 +147,7 @@ function LangfuseCounters({ counters }: { counters: LangfuseAdmin["counters"] })
   const { exported, failed, dropped } = counters;
   return (
     <>
-      <dl className="grid grid-cols-3 divide-x border-y">
+      <dl className="grid grid-cols-1 divide-y border-y sm:grid-cols-3 sm:divide-x sm:divide-y-0">
         {(
           [
             ["Traces sent", exported, ""],

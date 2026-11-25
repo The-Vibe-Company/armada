@@ -31,15 +31,8 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           <OrgSwitcher memberships={memberships} selected={selected?.org.id ?? null} role={selected?.role ?? null} />
         </div>
         <DesktopSidebarTrigger />
-        <div className="flex items-center gap-1 md:hidden">
-          <ThemeToggle />
-          <SignOut compact />
-        </div>
       </div>
       <ShellSearch />
-      <div className="[&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
-        <SandboxLaunchAction shortcut />
-      </div>
     </div>
   );
   const liveSandboxes = selected ? loadLiveSandboxes(selected.org.id) : Promise.resolve([]);
@@ -51,6 +44,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     >
       <AppSidebar
         header={header}
+        mobileLaunch={<SandboxLaunchAction />}
+        launch={
+          <div className="px-3 pb-2 [&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]">
+            <SandboxLaunchAction shortcut />
+          </div>
+        }
         footer={
           <div className="flex items-center gap-2.5">
             <span

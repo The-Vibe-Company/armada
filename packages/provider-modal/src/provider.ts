@@ -309,11 +309,13 @@ export function createModalProvider(options: ModalProviderOptions) {
     capabilities: distribution.capabilities,
     ...createLaunchLifecycle({
       store,
-      source,
+      assertGoldenScope: () => {
+        if (source.scope.visibility !== options.scope.visibility)
+          throw refusal("forbidden", "Golden creation requires the source-scoped provider connection.");
+      },
       scope: options.scope,
       managementAuthority,
       bound,
-      assertAuthority,
       assertMachineSource,
       create,
       sandboxInfo,
