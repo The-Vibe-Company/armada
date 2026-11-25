@@ -1738,11 +1738,11 @@ stable request UUIDs as those clients serialize them. Each must return its own
 prompt identity and produce an exact finished final parent acknowledgement;
 tool echoes, prior prompt replies and later-page supersession cannot pass.
 Multiple/missing recorded conversations are explicit not-run, not an arbitrary
-thread choice. The caller's `ARMADA_TOKEN` must be authorized for both transports.
+thread choice. The caller's `ARMADA_TOKEN` must be authorized for the control API.
 
 Dashboard/CLI rows are separate, including partial success if the second client
 fails. Failures retain the client, safe server code and available HTTP status,
-never raw CLI output/MCP error text. Authentication uses only the explicitly
+never raw CLI output or API error text. Authentication uses only the explicitly
 provided environment token: no saved-session read/write, login or file input.
 The adapter limits clients to the configured origin's control send/log-read endpoints,
 adds the shared deadline and rejects redirects; actual paths, payloads and

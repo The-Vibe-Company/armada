@@ -180,8 +180,27 @@ test("account listing starts the model read while the credential response is pen
   expect(requestsBeforeListResponse).toEqual(["/api/v1/creds/list", "/api/v1/creds/accounts/models"]);
 });
 
+function findElementsByTypeName(root: unknown, name: string) {
+  const matches: Array<{ type: (props: unknown) => unknown; props: unknown }> = [];
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    if (Array.isArray(node)) {
+      stack.push(...node);
+      continue;
+    }
+    const record = node as { type?: unknown; props?: Record<string, unknown> };
+    if (typeof record.type === "function" && record.type.name === name) {
+      matches.push({ type: record.type as (props: unknown) => unknown, props: record.props });
+    }
+    if (record.props && typeof record.props === "object") stack.push(...Object.values(record.props));
+  }
+  return matches;
+}
+
 test.each(["starting", "running", "stopping"] as const)(
-  "sandbox detail renders immediately after getSandbox without blocking on inspector reads while %s",
+  "sandbox detail omits account choices and does not block on inspector reads while %s",
   async (status) => {
     const requests = recordFetch((url) => {
       switch (url.pathname) {
@@ -194,11 +213,42 @@ test.each(["starting", "running", "stopping"] as const)(
       }
     });
 
-    expect(await SandboxPage({ params: Promise.resolve({ id: firstId }) })).toBeTruthy();
-    const urls = requests.mock.calls.map(([input]) => new URL(String(input)).pathname);
-    expect(urls).toEqual(["/rest/v1/sandboxes", "/rest/v1/rpc/sandbox_detail_status"]);
+    const tree = await SandboxPage({ params: Promise.resolve({ id: firstId }) });
+    expect(tree).toBeTruthy();
+    expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+      "/rest/v1/sandboxes",
+      "/rest/v1/rpc/sandbox_detail_status",
+    ]);
+    expect(findElementsByTypeName(tree, "SandboxAccountChoiceSection")).toHaveLength(0);
   },
 );
+
+test("sandbox detail mounts account choices inside Suspense when ready without blocking SSR", async () => {
+  const requests = recordFetch((url) => {
+    switch (url.pathname) {
+      case "/rest/v1/sandboxes":
+        return Response.json([sandboxRow({ status: "ready" })]);
+      case "/rest/v1/rpc/sandbox_detail_status":
+        return Response.json("ready");
+      case "/api/v1/creds/list":
+        return Response.json({ user: [] });
+      case "/api/v1/creds/accounts/models":
+        return Response.json({ connections: [] });
+      default:
+        throw new Error(`Unexpected request ${url.pathname}`);
+    }
+  });
+
+  const tree = await SandboxPage({ params: Promise.resolve({ id: firstId }) });
+  expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+    "/rest/v1/sandboxes",
+    "/rest/v1/rpc/sandbox_detail_status",
+  ]);
+  const sections = findElementsByTypeName(tree, "SandboxAccountChoiceSection");
+  expect(sections).toHaveLength(1);
+  await sections[0]!.type(sections[0]!.props);
+  expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toContain("/api/v1/creds/list");
+});
 
 test("conversation reads request limit 200 with coalesce and skip sandbox/status when threadStatus is returned", async () => {
   const apiBodies: { path: string; body: Record<string, unknown> }[] = [];
@@ -280,6 +330,22 @@ test("conversation reads parallelize queued prompt status on host sandboxes and 
   logsReply.resolve(Response.json({ events: [], cursor: "1", hasMore: false }));
   expect((await pendingRead).body).toMatchObject({ status: "running", prompt: { promptId: requestId } });
   expect(statusBodies).toEqual([{ id: firstId, prompt_id: requestId }]);
+
+  statusBodies.length = 0;
+  recordFetch((url, init) => {
+    if (url.pathname === "/rest/v1/sandboxes") return Response.json([sandboxRow({ provider: "docker" })]);
+    if (url.pathname === "/rest/v1/rpc/sandbox_detail_status") return Response.json("ready");
+    if (url.pathname === "/api/v1/logs/read") return Response.json({ events: [], cursor: "2", hasMore: false });
+    if (url.pathname === "/api/v1/sandbox/status") {
+      statusBodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ status: "running", statusMessage: "Fallback", prompt: null });
+    }
+    throw new Error(`Unexpected request ${url.pathname}`);
+  });
+  const fallbackRead = await readSandboxConversation(firstId, null, "follow");
+  expect(fallbackRead.status).toBe(200);
+  expect(fallbackRead.body).toMatchObject({ status: "running", statusMessage: "Fallback", cursor: "2" });
+  expect(statusBodies).toEqual([{ id: firstId }]);
 });
 
 test("send, steer and interrupt use 1-RTT REST without revalidating while stop still revalidates", async () => {
