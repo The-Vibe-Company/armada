@@ -14,7 +14,7 @@ import { SandboxAccountChoice } from "@/components/sandbox-account-choice";
 import { SandboxActions, StopButton } from "@/components/sandbox-actions";
 import { SandboxAttention } from "@/components/sandbox-attention";
 import { AddSandboxTime } from "@/components/sandbox-attention-actions";
-import { SandboxChat } from "@/components/sandbox-chat";
+import { SandboxChat, SandboxThreadStateProvider, ThreadSandboxState } from "@/components/sandbox-chat";
 import { SandboxCommand } from "@/components/sandbox-command";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
@@ -495,19 +495,14 @@ function ThreadHeader({
           <CopyButton value={sandbox.id} label="Copy sandbox ID" className="size-6" />
         </div>
       </div>
-      <span
-        title={sandbox.status_reason ?? undefined}
-        className="shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 [&>span]:gap-1 [&>span]:text-[11px]"
-      >
-        <SandboxState
-          viewerOwns={sandbox.owner_id === viewer.id}
-          status={sandbox.publicStatus}
-          statusMessage={sandbox.status_reason}
-          readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Waiting"}
-          idlePaused={sandbox.status_reason === "idle_paused"}
-          expiresAt={sandbox.expires_at}
-        />
-      </span>
+      <ThreadSandboxState
+        viewerOwns={sandbox.owner_id === viewer.id}
+        status={sandbox.publicStatus}
+        statusMessage={sandbox.status_reason}
+        readyLabel={parseTaskOutcome(sandbox.task_outcome)?.state === "ready" ? "Finished" : "Ready"}
+        idlePaused={sandbox.status_reason === "idle_paused"}
+        expiresAt={sandbox.expires_at}
+      />
       {life.remaining && (
         <span className="hidden whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground xl:inline">
           {life.remaining}
@@ -549,11 +544,13 @@ function ThreadLayout({
   children: ReactNode;
 }) {
   return (
-    <div data-fit-viewport data-docker-sandbox={docker || undefined} className="min-w-0 space-y-3">
-      <SandboxDetailsPanel bar={bar} overview={overview} usage={usage}>
-        {children}
-      </SandboxDetailsPanel>
-    </div>
+    <SandboxThreadStateProvider>
+      <div data-fit-viewport data-docker-sandbox={docker || undefined} className="min-w-0 space-y-3">
+        <SandboxDetailsPanel bar={bar} overview={overview} usage={usage}>
+          {children}
+        </SandboxDetailsPanel>
+      </div>
+    </SandboxThreadStateProvider>
   );
 }
 
@@ -604,6 +601,7 @@ function RestrictedSandbox({ sandbox, owner }: { sandbox: SandboxListMetadata; o
           <SandboxState
             viewerOwns={false}
             status={sandbox.status}
+            activityLabel={sandbox.status === "running" ? "Running" : undefined}
             idlePaused={sandbox.idlePaused === true}
             readyLabel="Waiting for you"
             expiresAt={sandbox.expiresAt}

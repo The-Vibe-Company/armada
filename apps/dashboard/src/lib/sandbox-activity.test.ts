@@ -82,6 +82,21 @@ test("activity tabs separate active turns from owned, live sandboxes with a fini
   expect(working.counts).toEqual({ all: 18, mine: 15, need: 1, working: 4, stopped: 2, failed: 1, deleted: 0 });
 });
 
+test("workingIds falls back to status running when recorded turns are unavailable", () => {
+  const rows = [
+    row("running-owned", { status: "running" }),
+    row("running-admin-view", { status: "running", ownerId: "other", canOpen: true }),
+    row("running-restricted", { status: "running", ownerId: "other", canOpen: false }),
+    row("ready-idle", { status: "ready" }),
+    row("starting", { status: "starting" }),
+    row("stopped", { status: "stopped" }),
+  ];
+  const page = sandboxActivityPage(rows, "viewer", "working", 1, {}, now, noDeleted);
+  expect(page.rows.map(({ id }) => id)).toEqual(["running-owned", "running-admin-view"]);
+  expect([...page.workingIds]).toEqual(["running-owned", "running-admin-view"]);
+  expect(page.counts.working).toBe(2);
+});
+
 test("attention sort still prioritizes stopped outcomes, preserved work and urgent deadlines", () => {
   const rows = [
     row("ordinary", { status: "stopped" }),

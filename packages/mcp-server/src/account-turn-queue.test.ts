@@ -876,6 +876,7 @@ test("queued public receipts remain usable across server reads, evidence, outcom
           handled: true,
           result: {
             id: input.id,
+            provider: "docker",
             golden: null,
             visibility: "private",
             harness: "codex",

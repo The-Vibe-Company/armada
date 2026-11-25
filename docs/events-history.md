@@ -45,16 +45,21 @@ has `{ originalKind, reason: "event_exceeds_hard_limit", originalBytes, limitByt
 `originalBytes` counts UTF-8 JSON events-array bytes. Clients must accept both as closed gaps and must not rely
 on `reason` being present on journal markers.
 
-Coalescing combines only adjacent message events with matching explicit
-message/conversation/prompt IDs and known text modes, **starting from a native
-snapshot**. Deltas after that snapshot append, subsequent snapshots replace,
-and tool IDs retain latest values. The result uses the newest event ID and
-snapshot mode. Delta-only runs remain raw, even with `coalesce: true`: Armada
-never manufactures a replacement snapshot from a page-local suffix. Thus no
-offset or cross-page snapshot stitching is necessary. Read older pages, put raw
-events in chronological order, then apply snapshots as replacements and deltas
-as appends; do not apply an older page directly over a newer rendered message.
-Legacy/unidentified fragments and non-message events are not combined.
+Coalescing combines adjacent message events with matching explicit
+message/conversation/prompt IDs and known text modes:
+- From a native snapshot, subsequent deltas append, subsequent snapshots replace,
+  and tool IDs retain latest values; the result stays in `snapshot` mode with the
+  newest event ID.
+- Adjacent text-only `delta` events (with empty `tools`) merge by concatenating
+  `text` while staying in `delta` mode, so Armada still never manufactures a
+  synthetic replacement snapshot from a page-local suffix.
+- A native `snapshot` immediately after text-only `delta` events supersedes those
+  deltas and keeps `snapshot` mode.
+- Delta events carrying `tools`, legacy/unidentified fragments, and non-message
+  events are never merged across boundaries.
+Read older pages, put events in chronological order, then apply snapshots as
+replacements and deltas as appends; do not apply an older page directly over a
+newer rendered message.
 
 ### Consumer change from #814 / #818
 
@@ -72,5 +77,5 @@ Follow switches from the initial backward page to forward polling at its newest 
 ## Historical measurement
 
 The #814 synthetic delta-only coalescing measurement no longer describes the
-safe contract: delta-only windows now retain raw events rather than collapsing
-them into a partial snapshot.
+safe contract: delta-only windows coalesce adjacent text-only deltas in `delta`
+mode rather than collapsing them into a synthetic partial snapshot.

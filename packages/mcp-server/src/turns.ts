@@ -10,6 +10,7 @@ import {
   readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
+  type SandboxPlacementProviderId,
   type SandboxPullRequest,
   type SandboxStatus,
   type SandboxUsage,
@@ -79,6 +80,7 @@ export interface StatusReport {
   credentialId?: string | null;
   credentialVersion?: number | null;
   id: string;
+  provider: SandboxPlacementProviderId;
   golden: string;
   visibility: SandboxView["visibility"];
   harness: SandboxView["harness"];
@@ -376,6 +378,7 @@ function report(
     taskOutcome: sandbox.taskOutcome ?? null,
     pullRequests: sandbox.pullRequests ?? [],
     id: sandbox.id,
+    provider: sandbox.provider,
     ...(sandbox.externalRef ? { externalRef: sandbox.externalRef } : {}),
     golden: sandbox.golden,
     visibility: sandbox.visibility,
