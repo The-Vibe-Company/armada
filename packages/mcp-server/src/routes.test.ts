@@ -126,6 +126,7 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /sandbox/test-model-connection",
       "POST /sandbox/viewer-token",
       "POST /sandbox/wait",
+      "POST /sandboxes/{id}/relay-ticket",
       "POST /secrets/commit",
       "POST /secrets/delete",
       "POST /secrets/list",

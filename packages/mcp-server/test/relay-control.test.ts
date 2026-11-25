@@ -137,11 +137,15 @@ test("mints tickets for Boat, Modal, and golden-less Docker sandboxes and enforc
     for (const [id, body] of [
       ["not-a-uuid", { mode: "pty" }],
       [f.boatId, { mode: "preview" }],
-      [f.boatId, `{"mode":"pty","cwd":"/${"a".repeat(33_000)}"}`],
     ] as const) {
       const r = (await f.mint(id, body))!;
       expect([r.status, op.errorOutput.parse(await r.json()).error.code]).toEqual([400, "invalid_request"]);
     }
+    const big = (await f.mint("not-a-uuid", `{"mode":"pty","cwd":"/${"a".repeat(33_000)}"}`))!;
+    expect([big.status, op.errorOutput.parse(await big.json()).error]).toMatchObject([
+      400,
+      { code: "invalid_request", message: expect.stringContaining("too large") },
+    ]);
     const disc = (await f.mint(f.boatId, { mode: "pty" }))!;
     expect([disc.status, op.errorOutput.parse(await disc.json()).error.code]).toEqual([503, "relay_unavailable"]);
     for (const [id, body] of [
