@@ -538,7 +538,7 @@ export function AccountRow({
           aria-haspopup="dialog"
           aria-expanded={expanded}
           aria-controls={expanded ? `${headingId}-detail` : undefined}
-          aria-label={`View ${account.name} details`}
+          aria-label={`${account.name} Details`}
           onClick={() => setExpanded(true)}
           className="inline-flex items-center gap-1 font-medium after:absolute after:inset-0 after:rounded-[10px] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-ring"
         >

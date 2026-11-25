@@ -1,13 +1,16 @@
 import { PageHeader } from "@/components/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HARNESS_ORDER } from "@/lib/model-accounts";
 
 export default function Loading() {
   return (
     <>
-      <PageHeader title="Models" />
+      <PageHeader title="Models" inlineActions>
+        <Skeleton className="h-8 w-36" />
+      </PageHeader>
       <div role="status" aria-label="Loading model accounts" className="space-y-[18px]">
         <div className="flex flex-wrap gap-x-6 gap-y-3 rounded-[10px] border bg-card px-4 py-3">
-          {[0, 1, 2].map((key) => (
+          {HARNESS_ORDER.map((key) => (
             <div key={key} className="space-y-0.5">
               <Skeleton className="h-4 w-16" />
               <Skeleton className="h-8 w-28 rounded-[6px]" />

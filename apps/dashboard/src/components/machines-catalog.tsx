@@ -131,7 +131,6 @@ export function MachinesSection({
           }}
         />
       </CatalogDrawer>
-      {/* Keep previously opened forms mounted so closing the drawer preserves their state. */}
       {hasVisited && <div ref={parking} hidden />}
       {host &&
         createPortal(
