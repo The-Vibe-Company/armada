@@ -24,7 +24,6 @@ import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/ta
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { bindableStatus } from "@/lib/account-recovery";
 import { isUuid } from "@/lib/action";
 import { type BillingAccount, billingAccount } from "@/lib/billing-account";
 import { type AccountChoices, readAccountChoices } from "@/lib/data/account-recovery";
@@ -62,6 +61,10 @@ export const dynamic = "force-dynamic";
 
 type Props = { params: Promise<{ id: string }> };
 
+function canShowAccountChoice(status: SandboxDetail["status"]) {
+  return status === "ready" || status === "stopped";
+}
+
 export default async function SandboxPage({ params }: Props) {
   const { id } = await params;
   if (!isUuid(id)) notFound();
@@ -78,7 +81,7 @@ export default async function SandboxPage({ params }: Props) {
           readDockerLaunchOption(),
           credentialMetadata(supabase, [sandbox.credential_id]),
           hostListForPage(),
-          sandbox.owner_id === viewer.id && sandbox.status !== "deleted"
+          sandbox.owner_id === viewer.id && canShowAccountChoice(sandbox.status)
             ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
             : undefined,
         ])
@@ -96,7 +99,7 @@ export default async function SandboxPage({ params }: Props) {
       findGoldenLabel(supabase, sandbox.golden_id),
       listSandboxConnections(sandbox),
       credentialMetadata(supabase, [sandbox.credential_id]),
-      recovery && owner && bindableStatus(sandbox.status) !== "failed"
+      recovery && owner && canShowAccountChoice(sandbox.status)
         ? readAccountChoices(viewer, sandbox.harness, sandbox.org_id)
         : undefined,
     ]);
@@ -225,7 +228,7 @@ export default async function SandboxPage({ params }: Props) {
                 ["ID", sandbox.id],
               ]}
             />
-            {recovery && owner && (sandbox.status === "ready" || sandbox.status === "stopped") && (
+            {recovery && owner && canShowAccountChoice(sandbox.status) && (
               <details>
                 <summary className="cursor-pointer text-muted-foreground">Change account</summary>
                 {
@@ -415,7 +418,7 @@ function DockerSandbox({
         </>
       }
     >
-      {ownerCanChange && (sandbox.status === "ready" || sandbox.status === "stopped") && (
+      {ownerCanChange && canShowAccountChoice(sandbox.status) && (
         <SandboxAccountChoice
           sandboxId={sandbox.id}
           status={sandbox.status}

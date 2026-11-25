@@ -12,7 +12,6 @@ import { listSelectedRoutines } from "@/lib/data/routines";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { viewerTemplates } from "@/lib/data/templates";
 import { canManageRoutine, type RoutineItem, scheduleLabel } from "@/lib/routines";
-import type { TemplateHeader } from "@/lib/templates";
 
 import styles from "./routines.module.css";
 
@@ -24,7 +23,15 @@ export default async function RoutinesPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedRoutines(), searchParams]);
+  const selectedRead = selectedOrganization();
+  const templatesRead = selectedRead
+    .then(async (selected) => {
+      if (!selected) return null;
+      const control = await viewerTemplates();
+      return control ? control.list(selected.org.id) : null;
+    })
+    .catch(() => null);
+  const [selected, list, query] = await Promise.all([selectedRead, listSelectedRoutines(), searchParams]);
   const header = <PageHeader title="Routines" description={DESCRIPTION} />;
   if (!selected || list.state === "no-org")
     return (
@@ -72,15 +79,9 @@ export default async function RoutinesPage({
         </Alert>
       </>
     );
-  let templates: TemplateHeader[] = [];
-  let templatesUnavailable = false;
-  try {
-    const control = await viewerTemplates();
-    if (control) templates = await control.list(selected.org.id);
-    else templatesUnavailable = true;
-  } catch {
-    templatesUnavailable = true;
-  }
+  const templateList = await templatesRead;
+  const templates = templateList ?? [];
+  const templatesUnavailable = templateList === null;
   const admin = selected.role === "admin",
     orgId = selected.org.id;
   const rows: ResourceRow[] = list.items.map((item) => {
