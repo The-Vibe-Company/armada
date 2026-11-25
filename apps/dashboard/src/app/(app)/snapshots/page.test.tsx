@@ -97,16 +97,17 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
       return { state: "not-configured" };
     });
   }
-
   /* oxlint-enable landmines-testing/no-test-doubles */
   try {
     const page = GoldensPage({ searchParams: Promise.resolve({}) });
     const settledReadsDrained = new Promise<null>((resolve) => setImmediate(() => resolve(null)));
     const element = await Promise.race([page, settledReadsDrained]);
     expect(element).not.toBeNull();
-    const stream = await renderToReadableStream(
+    const rendering = renderToReadableStream(
       <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>,
     );
+    const stream = await Promise.race([rendering, settledReadsDrained]);
+    if (!stream) throw new Error("Snapshot inventory shell stalled on deferred reads.");
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let html = "";
