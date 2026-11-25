@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createClient } from "@supabase/supabase-js";
 import { createControlClient } from "../control";
-import { parseSandboxFilters, sandboxInventoryScope } from "../sandbox-filters";
+import { canPushDownDeletedSearch, parseSandboxFilters, sandboxInventoryScope } from "../sandbox-filters";
 import type { Database } from "../supabase/types";
 import { loadSandboxInventory, readSandboxMetadata } from "./sandbox-inventory";
 import { listSandboxEnrichment } from "./sandboxes";
@@ -435,4 +435,9 @@ test("only sandbox list requests share metadata with the shell, using full inven
   expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("sort=name&page=2&status=invalid"))).toBe("active");
   expect(sandboxInventoryScope("/sandboxes/sandbox-1", new URLSearchParams())).toBeNull();
   expect(sandboxInventoryScope("/api/fleet/live", new URLSearchParams())).toBeNull();
+  expect(canPushDownDeletedSearch("bx_worker-42")).toBe(true);
+  expect(canPushDownDeletedSearch("00000000-0000-4000-8000-000000000001")).toBe(true);
+  expect(canPushDownDeletedSearch("Codex sandbox")).toBe(false);
+  expect(canPushDownDeletedSearch("Nov 24")).toBe(false);
+  expect(canPushDownDeletedSearch("v1.2")).toBe(false);
 });

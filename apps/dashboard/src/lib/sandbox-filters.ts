@@ -68,7 +68,7 @@ const FALLBACK_SOURCES = [...Object.values(HARNESS_LABELS), "agent", "sandbox", 
 );
 const FALLBACK_WORDS = FALLBACK_SOURCES.flatMap((value) => value.split(/[^a-z]+/).filter(Boolean));
 const FALLBACK_CHARS = new Set([...FALLBACK_SOURCES.join(""), ..." ·0123456789,:"]);
-const PUSHABLE_SEARCH = /^[A-Za-z0-9 _./@+-]+$/;
+const PUSHABLE_SEARCH = /^[A-Za-z0-9 _/@+-]+$/;
 
 export function canPushDownDeletedSearch(query: string) {
   if (!query || !PUSHABLE_SEARCH.test(query)) return false;
