@@ -1074,8 +1074,8 @@ export function createSqlData(
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
-            const locked = await tx.query<{ observation_blocked: boolean }>(
-              `select not (${observationFence}) as observation_blocked
+            const locked = await tx.query<{ observation_blocked: boolean; provider: string }>(
+              `select not (${observationFence}) as observation_blocked,s.provider::text
                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
               [...scope, id],
             );
@@ -1105,7 +1105,13 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
-              if (patch.finishActivity && patch.stopRequested) await enqueueBoatStop(tx, id, row.generation);
+              if (locked.rows[0]?.provider === "boat" && admission && patch.stopRequested) {
+                await tx.query(
+                  "update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1 and lifecycle_generation=$2",
+                  [id, row.generation],
+                );
+                await enqueueBoatStop(tx, id, row.generation);
+              }
             }
             return updated;
           });

@@ -634,6 +634,7 @@ export async function settleBoatStop(tx: Sql, id: string, generation: number, no
     if (settled.kind !== "applied") throw new Error("Boat stop settlement changed.");
   }
   await detachBoatExtensionAfterStop(tx, id, generation);
+  await releaseAccountCapacity(tx, id);
 }
 
 export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, generation: string, requestId: string) {

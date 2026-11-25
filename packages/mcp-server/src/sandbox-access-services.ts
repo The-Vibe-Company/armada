@@ -159,49 +159,52 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
-    await sandboxActivity(
-      stopStore,
-      saved,
-      { ...stopAdmission, status: stoppingStatus, stopRequested: true, statusReason },
-      async (signal, token) => {
-        if (!provider)
-          return { result: undefined, patch: { ownerStop: true, status: stoppingStatus, stopRequested: true } };
-        if (
-          (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
-            kind: "activity",
-            token,
-            generation: saved.lifecycleGeneration === undefined ? undefined : saved.lifecycleGeneration + 1,
-            signal,
-          }).catch(() => "pending" as const)) === "pending"
-        )
-          return {
-            result: undefined,
-            patch: { ownerStop: true, status: stoppingStatus, stopRequested: true, statusReason },
-          };
-        signal.throwIfAborted();
-        const observed = await stopAndObserve(
-          provider,
-          saved.id,
-          saved.providerSandboxId,
-          "managed_child_stop",
+    const admission = { ...stopAdmission, status: stoppingStatus, stopRequested: true, statusReason };
+    if (!provider) {
+      await stopStore.update(saved.id, {
+        ...admission,
+        advanceGeneration: true,
+        activityToken: crypto.randomUUID(),
+        ...(saved.lifecycleGeneration !== undefined && { expectedGeneration: saved.lifecycleGeneration }),
+      });
+      return;
+    }
+    await sandboxActivity(stopStore, saved, admission, async (signal, token) => {
+      if (
+        (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
+          kind: "activity",
+          token,
+          generation: saved.lifecycleGeneration === undefined ? undefined : saved.lifecycleGeneration + 1,
           signal,
-          retained,
-        );
-        const terminal =
-          observed.state === "stopped" &&
-          (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || stoppingStatus === "failed");
+        }).catch(() => "pending" as const)) === "pending"
+      )
         return {
           result: undefined,
-          patch: {
-            ownerStop: true,
-            status: stoppingStatus === "failed" ? "failed" : terminal ? "stopped" : "stopping",
-            statusReason,
-            stopRequested: !terminal,
-            stoppedAt: terminal ? (observed.stoppedAt ?? new Date()).toISOString() : null,
-          },
+          patch: { ownerStop: true, status: stoppingStatus, stopRequested: true, statusReason },
         };
-      },
-    );
+      signal.throwIfAborted();
+      const observed = await stopAndObserve(
+        provider,
+        saved.id,
+        saved.providerSandboxId,
+        "managed_child_stop",
+        signal,
+        retained,
+      );
+      const terminal =
+        observed.state === "stopped" &&
+        (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || stoppingStatus === "failed");
+      return {
+        result: undefined,
+        patch: {
+          ownerStop: true,
+          status: stoppingStatus === "failed" ? "failed" : terminal ? "stopped" : "stopping",
+          statusReason,
+          stopRequested: !terminal,
+          stoppedAt: terminal ? (observed.stoppedAt ?? new Date()).toISOString() : null,
+        },
+      };
+    });
   }
   const executor: SandboxChildExecutor = {
     async launch(operation, chosen) {
