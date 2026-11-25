@@ -2677,6 +2677,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
           if (logical.docker_generation !== restore.request.generation) {
             if (logical.docker_generation !== restore.predecessor.request.generation) return;
+            if (logical.status === "starting") deny();
             if (
               !job.result_machine_id ||
               !(await adoptDockerRestoreForCleanup(
