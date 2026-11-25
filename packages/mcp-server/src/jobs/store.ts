@@ -102,6 +102,22 @@ const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
 ))`;
 
+export function queryWithJobLease<T>(sql: Sql, job: Job, statement: string, params: unknown[] = []) {
+  return sql.query<T>(
+    `with locked_sandbox as materialized (
+       select id, org_id, owner_id, provider, runtime_transport, boat_runtime,
+              provider_sandbox_id, stop_requested_at, deleted_at, expires_at, status
+       from public.sandboxes where id=$1 and lifecycle_generation=$2 for update
+     ), locked_job as materialized (
+       select id, sandbox_id, org_id, request_owner_id, outcome, lease_until
+       from public.jobs where sandbox_id=(select id from locked_sandbox)
+         and id=$3 and lease_epoch=$4 and generation=$2 and kind=$5 for update
+     )
+     ${statement}`,
+    [job.sandbox_id, job.generation, job.id, job.lease_epoch, job.kind, ...params],
+  );
+}
+
 export async function withJobLease<T>(
   sql: Sql,
   job: Job,
@@ -111,17 +127,8 @@ export async function withJobLease<T>(
   if (!sql.transaction) throw new Error("Job checkpoint requires a transaction.");
   return sql.transaction(async (tx) => {
     await lockPrerequisites?.(tx);
-    const { rows: sandboxes } = await tx.query(
-      "select id from public.sandboxes where id=$1 and lifecycle_generation=$2 for update",
-      [job.sandbox_id, job.generation],
-    );
-    if (!sandboxes.length) return;
-    const { rows: jobs } = await tx.query(
-      `select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp()
-       and sandbox_id=$3 and generation=$4 and kind=$5 for update`,
-      [job.id, job.lease_epoch, job.sandbox_id, job.generation, job.kind],
-    );
-    if (jobs.length) return write(tx);
+    const { rows } = await queryWithJobLease(tx, job, "select id from locked_job where lease_until>clock_timestamp()");
+    if (rows.length) return write(tx);
   });
 }
 
@@ -497,48 +504,71 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   function modalMachineJournal(
     job: Job,
     journalJobId: string,
-    isCurrent: (tx: Sql) => Promise<boolean> | boolean,
+    isCurrent: ((tx: Sql) => Promise<boolean>) | undefined,
     mayWrite: (
-      tx: Sql,
       revision: number | undefined,
       next: Parameters<ModalMachineJournal["compareAndSet"]>[2],
-    ) => Promise<boolean>,
+    ) => ((tx: Sql) => Promise<boolean>) | undefined,
     checkpointPath = "{modal_machine}",
   ) {
     return {
       async read(key) {
-        const checkpoint = await withJobLease(sql, job, async (tx) => {
-          if (!(await isCurrent(tx))) return;
-          const { rows } = await tx.query<{
-            checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
-          }>(
-            `select outcome #> $2::text[] as checkpoint from public.jobs where id=$1
-           and exists (select 1 from public.jobs claim where claim.id=$3 and claim.lease_until>clock_timestamp())`,
-            [journalJobId, checkpointPath, job.id],
-          );
-          return rows[0]?.checkpoint;
-        });
+        type Row = { checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null };
+        const checkpoint = isCurrent
+          ? await withJobLease(sql, job, async (tx) => {
+              if (!(await isCurrent(tx))) return;
+              const { rows } = await tx.query<Row>(
+                `select outcome #> $2::text[] as checkpoint from public.jobs where id=$1
+                 and exists (select 1 from public.jobs claim where claim.id=$3 and claim.lease_until>clock_timestamp())`,
+                [journalJobId, checkpointPath, job.id],
+              );
+              return rows[0]?.checkpoint;
+            })
+          : (
+              await queryWithJobLease<Row>(
+                sql,
+                job,
+                "select outcome #> $6::text[] as checkpoint from locked_job where lease_until>clock_timestamp()",
+                [checkpointPath],
+              )
+            ).rows[0]?.checkpoint;
         if (checkpoint === undefined) throw new Error("Modal machine journal claim is no longer current.");
         if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
         return checkpoint?.entry;
       },
       async compareAndSet(key, revision, next) {
         if (next.revision !== (revision ?? 0) + 1) return false;
-        return (
-          (await withJobLease(sql, job, async (tx) => {
-            if (!(await isCurrent(tx)) || !(await mayWrite(tx, revision, next))) return false;
-            const { rows } = await tx.query(
-              `update public.jobs set outcome=jsonb_set(
+        const guard = mayWrite(revision, next);
+        const update = (offset: number, lease: string) => `update public.jobs set outcome=jsonb_set(
                case when outcome is null then '{}'::jsonb
                     when jsonb_typeof(outcome) = 'object' then outcome
                     else jsonb_build_object('result', outcome) end,
-               $6::text[], $2::jsonb)
-             where id=$1
-               and exists (select 1 from public.jobs claim where claim.id=$5 and claim.lease_until>clock_timestamp())
-               and (outcome #> $6::text[] is null or (outcome #> $6::text[])->>'key' = $3)
-               and ((outcome #> $6::text[])->'entry'->>'revision')::integer is not distinct from $4::integer
-             returning id`,
-              [journalJobId, JSON.stringify({ key, entry: next }), key, revision ?? null, job.id, checkpointPath],
+               $${offset + 1}::text[], $${offset + 2}::jsonb)
+             where ${lease}
+               and (outcome #> $${offset + 1}::text[] is null or (outcome #> $${offset + 1}::text[])->>'key' = $${offset + 3})
+               and ((outcome #> $${offset + 1}::text[])->'entry'->>'revision')::integer is not distinct from $${offset + 4}::integer
+             returning id`;
+        const params = [checkpointPath, JSON.stringify({ key, entry: next }), key, revision ?? null];
+        if (!isCurrent && !guard) {
+          const { rows } = await queryWithJobLease(
+            sql,
+            job,
+            update(5, "id=(select id from locked_job where lease_until>clock_timestamp())"),
+            params,
+          );
+          return rows.length > 0;
+        }
+        return (
+          (await withJobLease(sql, job, async (tx) => {
+            if ((isCurrent && !(await isCurrent(tx))) || (guard && !(await guard(tx)))) return false;
+            const { rows } = await tx.query(
+              update(
+                0,
+                `id=$5 and exists (
+                 select 1 from public.jobs claim where claim.id=$6 and claim.lease_until>clock_timestamp()
+               )`,
+              ),
+              [...params, journalJobId, job.id],
             );
             return rows.length > 0;
           })) ?? false
@@ -603,12 +633,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
         throw new Error("Modal machine journal requires a launch claim.");
       }
-      return modalMachineJournal(
-        job,
-        job.id,
-        () => true,
-        async (tx, revision, next) =>
-          next.phase !== "creating" || revision !== undefined || !canCreate || canCreate(tx),
+      return modalMachineJournal(job, job.id, undefined, (revision, next) =>
+        next.phase === "creating" && revision === undefined ? canCreate : undefined,
       );
     },
     modalFailedLaunchJournal(
@@ -624,7 +650,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         job,
         launchJobId,
         isCurrent,
-        async (tx, _revision, next) => next.phase === "deleted" || canDispatch(tx),
+        (_revision, next) => (next.phase === "deleted" ? undefined : canDispatch),
         "{evidence,modal_machine}",
       );
     },

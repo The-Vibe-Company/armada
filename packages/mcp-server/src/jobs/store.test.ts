@@ -1852,7 +1852,7 @@ test("Modal launches Antigravity with a selected account confined to private enr
   expect(JSON.stringify([configuration, rows])).not.toContain(key);
 });
 
-test("Modal admission and deferred enrolment use at most 89 SQL statements", async () => {
+test("Modal admission and deferred enrolment use at most 64 SQL statements", async () => {
   const statements: string[] = [];
   const admission = await modalAdmissionFixture("private", statements);
   const log = spyOn(console, "info");
@@ -1875,10 +1875,48 @@ test("Modal admission and deferred enrolment use at most 89 SQL statements", asy
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(89);
+    expect(statements.length).toBeLessThanOrEqual(64);
   } finally {
     log.mockRestore();
   }
+});
+
+test("Modal launch rechecks membership after the lease lock if its first snapshot misses the owner", async () => {
+  const { f, effects, makeRunner, enrolPending, jobId } = await modalLaunchFixture(await modalAdmissionFixture());
+  let missedMembership = false;
+  const runner = makeRunner(
+    undefined,
+    {
+      ...f.sql,
+      async transaction(work) {
+        return f.sql.transaction!((tx) =>
+          work({
+            ...tx,
+            query<T>(query: string, params?: unknown[]) {
+              if (!missedMembership && query.includes("as owner_member")) {
+                missedMembership = true;
+                query = query.replace(
+                  "m.user_id=j.request_owner_id for share",
+                  "m.user_id=j.request_owner_id and false for share",
+                );
+              }
+              return tx.query<T>(query, params);
+            },
+          }),
+        );
+      },
+    },
+    false,
+  );
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(missedMembership).toBe(true);
+  expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
+  await enrolPending();
+  await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "done" }]);
 });
 
 test("JWT inventory keeps an enrolled Modal sandbox starting while launch setup is queued", async () => {
@@ -3243,7 +3281,7 @@ test("owner stop after a lost Modal create reply leaves the exact allocation for
           ...tx,
           async query<T>(query: string, params?: unknown[]) {
             if (query.includes("select public.complete_job")) throw new Error("Worker lost before failure settlement");
-            if (observed && query.includes("select s.provider_sandbox_id from public.sandboxes s"))
+            if (observed && query.includes("select s.provider_sandbox_id") && query.includes("for share of m"))
               checkedDispatchAfterObservation = true;
             return tx.query<T>(query, params);
           },

@@ -78,13 +78,21 @@ export async function prepareModalLaunchHandoff(
 export async function installModalLaunchHandoff(tx: Sql, { scope, record }: ModalLaunchHandoff) {
   const key = scopeKey(scope);
   await tx.query(
-    "insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb) on conflict(scope) do nothing",
-    [key, JSON.stringify(scope)],
-  );
-  await tx.query(
-    `insert into public.modal_machines (scope,org_id,owner_id,visibility,id,request_key,record)
-     values ($1,$2,$3,$4,$5,$6,$7::jsonb)`,
-    [key, scope.orgId, scope.userId, scope.visibility, record.info.id, record.info.name, JSON.stringify(record)],
+    `with scope as (
+       insert into public.modal_server_scopes(scope,context) values($1,$2::jsonb) on conflict(scope) do nothing
+     )
+     insert into public.modal_machines (scope,org_id,owner_id,visibility,id,request_key,record)
+     values ($1,$3,$4,$5,$6,$7,$8::jsonb)`,
+    [
+      key,
+      JSON.stringify(scope),
+      scope.orgId,
+      scope.userId,
+      scope.visibility,
+      record.info.id,
+      record.info.name,
+      JSON.stringify(record),
+    ],
   );
 }
 
