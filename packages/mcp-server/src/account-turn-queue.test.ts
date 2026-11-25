@@ -1602,7 +1602,10 @@ test("terminal admission creates neither queue entries nor reservations", async 
   for (const status of ["stopped", "failed", "expired"]) {
     for (const provider of ["docker", "boat", "modal"]) {
       if (status === "stopped" && provider !== "docker") continue;
-      await database().query("update sandboxes set status=$2,provider=$3 where id=$1", [ids[0], status, provider]);
+      await database().query(
+        "update sandboxes set status=$2,provider=$3,status_reason=case when $2='stopped' then 'agent_finished' end where id=$1",
+        [ids[0], status, provider],
+      );
       await expect(queue.accept(caller, { id: ids[0]!, prompt: "continue" })).rejects.toThrow(
         `Cannot control ${provider} sandbox: ${status}`,
       );

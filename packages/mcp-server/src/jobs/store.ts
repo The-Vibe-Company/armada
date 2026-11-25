@@ -766,6 +766,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                                 else '{}'::jsonb end
                          when kind = 'launch' and $5 <> 'queued' and jsonb_typeof(outcome) = 'object'
                            then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' - 'boat_authority_sha256'
+                         when kind = 'resume' and outcome ? 'restoreDelivered' then
+                           coalesce($6::jsonb, outcome) || jsonb_build_object('restoreDelivered', true)
                          else coalesce($6::jsonb, outcome) end as evidence
              from public.jobs where id = $1
            ) data`,

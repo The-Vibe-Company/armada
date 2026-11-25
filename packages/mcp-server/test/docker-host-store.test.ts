@@ -1241,15 +1241,15 @@ test.each(["explicit replay", "queued send", "ordinary retained stop"] as const)
         stopped_at=case when not $2::boolean then now() end,lifecycle_generation=1,model='gpt-5',reasoning_effort='high' where id=$1`,
       [a.sandboxId, scenario === "ordinary retained stop"],
     );
-    await sql.query("insert into public.runtime_enrolments (sandbox_id,lifecycle_generation,epoch) values($1,1,1)", [
+    await sql.query("insert into public.runtime_enrolments (sandbox_id,lifecycle_generation,epoch) values($1,1,$2)", [
       a.sandboxId,
+      scenario === "ordinary retained stop" ? 2 : 1,
     ]);
-    if (scenario !== "ordinary retained stop")
-      await sql.query(
-        `insert into public.runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
-    values($1,1,$2,0,now())`,
-        [a.sandboxId, randomUUID()],
-      );
+    await sql.query(
+      `insert into public.runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
+       values($1,1,$2,0,now())`,
+      [a.sandboxId, randomUUID()],
+    );
     const unavailable = async () => {
       throw Error("Admission must only enqueue the shared job.");
     };
@@ -1451,79 +1451,99 @@ test.each(["stop", "delete"] as const)(
   },
 );
 
-test("a lost restore pickup with an empty daemon ledger cannot strand stop or start a replacement", async () => {
-  const a = await restoreFixture();
-  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
-  expect(await a.poll()).toEqual(a.restore);
-  await store.enqueueStop(a.owner, a.sandboxId, randomUUID());
-  expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "retry", unattempted: true });
-  const route = createDockerHostRoutes(store, async () => {
-    throw Error("Unexpected caller authentication.");
-  });
-  const poll = async (recover: boolean) => {
-    const response = await route(
-      new Request("https://armada.example/api/docker-host/poll", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${a.hostToken}`,
-          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
-          "x-armada-docker-host-restore": "1",
-          ...(recover ? { "x-armada-docker-host-restore-recovery": "1" } : {}),
-        },
-        body: JSON.stringify({ installationId: a.installationId, version: "13.0.0" }),
+test.each(["active", "revoked"])(
+  "a lost restore pickup with an empty daemon ledger reconciles with %s host authority",
+  async (authority) => {
+    const a = await restoreFixture();
+    await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+    expect(await a.poll()).toEqual(a.restore);
+    await store.enqueueStop(a.owner, a.sandboxId, randomUUID());
+    expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "retry", unattempted: true });
+    const jobs = createJobsStore(sql, key);
+    const worker = randomUUID();
+    const resumed = await jobs.claim("resume", worker, 30, 8);
+    if (!resumed) throw Error("Missing restore runner.");
+    expect(
+      await jobs.complete(resumed, worker, {
+        status: "fail",
+        reason: "resume_dispatch_ended",
+        outcome: { checkpoint: {} },
       }),
+    ).toBe(true);
+    const route = createDockerHostRoutes(store, async () => {
+      throw Error("Unexpected caller authentication.");
+    });
+    const poll = async (recover: boolean) => {
+      const response = await route(
+        new Request("https://armada.example/api/docker-host/poll", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${a.hostToken}`,
+            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+            "x-armada-docker-host-restore": "1",
+            ...(recover ? { "x-armada-docker-host-restore-recovery": "1" } : {}),
+          },
+          body: JSON.stringify({ installationId: a.installationId, version: "13.0.0" }),
+        }),
+      );
+      if (!response?.ok) throw Error("Docker poll failed.");
+      return (await response.json()) as DockerHostPollResponse;
+    };
+    if (authority === "revoked") await store.revoke(a.actor, a.hostId);
+    else expect(await poll(false)).not.toHaveProperty("restoreRecovery");
+    const recovery = await poll(true);
+    expect(recovery.restoreRecovery).toEqual(a.restore);
+    let saved: State = {
+      server: "https://armada.example",
+      hostId: a.hostId,
+      installationId: a.installationId,
+      hostToken: a.hostToken,
+      receipts: [],
+    };
+    const ledger: Store = {
+      async load() {
+        return structuredClone(saved);
+      },
+      async save(state) {
+        saved = structuredClone(state);
+      },
+    };
+    const unexpected = async () => {
+      throw Error("Recovery must only inspect.");
+    };
+    await tick(
+      ledger,
+      {
+        register: unexpected,
+        poll: async () => recovery,
+        async result(_state, receipt) {
+          expect(saved.receipts).toContainEqual(receipt);
+          if (!receipt.outcome) throw Error("Missing durable outcome.");
+          await store.complete(a.hostToken, a.installationId, {
+            requestId: receipt.requestId,
+            outcome: receipt.outcome,
+          });
+        },
+      },
+      {
+        create: unexpected,
+        restore: unexpected,
+        delete: unexpected,
+        stop: unexpected,
+        stopIfExpired: async () => false,
+        async reconcileRestore(request, predecessor) {
+          expect({ request, predecessor }).toEqual({ request: a.restore.request, predecessor: a.restore.predecessor });
+          return null;
+        },
+      },
     );
-    if (!response?.ok) throw Error("Docker poll failed.");
-    return (await response.json()) as DockerHostPollResponse;
-  };
-  expect(await poll(false)).not.toHaveProperty("restoreRecovery");
-  const recovery = await poll(true);
-  expect(recovery.restoreRecovery).toEqual(a.restore);
-  let saved: State = {
-    server: "https://armada.example",
-    hostId: a.hostId,
-    installationId: a.installationId,
-    hostToken: a.hostToken,
-    receipts: [],
-  };
-  const ledger: Store = {
-    async load() {
-      return structuredClone(saved);
-    },
-    async save(state) {
-      saved = structuredClone(state);
-    },
-  };
-  const unexpected = async () => {
-    throw Error("Recovery must only inspect.");
-  };
-  await tick(
-    ledger,
-    {
-      register: unexpected,
-      poll: async () => recovery,
-      async result(_state, receipt) {
-        expect(saved.receipts).toContainEqual(receipt);
-        if (!receipt.outcome) throw Error("Missing durable outcome.");
-        await store.complete(a.hostToken, a.installationId, { requestId: receipt.requestId, outcome: receipt.outcome });
-      },
-    },
-    {
-      create: unexpected,
-      restore: unexpected,
-      delete: unexpected,
-      stop: unexpected,
-      stopIfExpired: async () => false,
-      async reconcileRestore(request, predecessor) {
-        expect({ request, predecessor }).toEqual({ request: a.restore.request, predecessor: a.restore.predecessor });
-        return null;
-      },
-    },
-  );
-  expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "done" });
-  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped" });
-  expect(await poll(true)).not.toHaveProperty("restoreRecovery");
-});
+    expect(await store.restoreRecoveryForHost(a.hostToken, a.installationId, [])).toBeUndefined();
+    if (authority === "active") {
+      expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "done" });
+      expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped" });
+    }
+  },
+);
 
 test("the current runner declines a completed restore receipt without a physical ID", async () => {
   const a = await restoreFixture();
@@ -1743,11 +1763,14 @@ test("an expired restore runner prevents redelivery but permits a late physical 
   expect(await receipt()).toEqual([{ outcome: "completed", cancelled: false }]);
 });
 
-test("authenticated restore expiry settles the exact starting generation before its completion ACK", async () => {
+test("authenticated restore expiry waits for exact replacement identity before settling", async () => {
   const a = await restoreFixture();
   expect(await a.poll()).toEqual(a.restore);
   const expiry = { requestId: a.restore.requestId };
   await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.selection.runnerJobId]);
+  expect(await store.expired(a.hostToken, a.installationId, expiry)).toBe(false);
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
+  await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed", machineId: "c".repeat(64) });
   const interrupted = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
   await expect(
     reportDockerExpiry(sql, key, a.hostToken, a.installationId, expiry, interrupted.faultingSql),
@@ -1757,8 +1780,7 @@ test("authenticated restore expiry settles the exact starting generation before 
   expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([]);
 
   await reportDockerExpiry(sql, key, a.hostToken, a.installationId, expiry);
-  await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed" });
-  await reportDockerExpiry(sql, key, a.hostToken, a.installationId, expiry);
+  expect(await store.expired(a.hostToken, a.installationId, expiry)).toBe(true);
   expect(await lifecycle(a.sandboxId)).toMatchObject({
     status: "stopped",
     status_reason: "expired",

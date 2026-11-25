@@ -2853,18 +2853,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (job.outcome !== "completed" || job.cancelled_at) deny();
           } else {
             if (logical.docker_generation !== restore.predecessor.request.generation) deny();
-            if (job.outcome === "completed" && job.result_machine_id && !job.cancelled_at) {
-              if (
-                !(await adoptDockerRestoreForCleanup(
-                  tx,
-                  logical.id,
-                  logical.lifecycle_generation,
-                  logical.docker_generation,
-                  restore.request.generation,
-                ))
-              )
-                deny();
-            }
+            if (job.outcome === "failed" && !job.cancelled_at) return;
+            if (job.outcome !== "completed" || !job.result_machine_id || job.cancelled_at) return false;
+            if (
+              !(await adoptDockerRestoreForCleanup(
+                tx,
+                logical.id,
+                logical.lifecycle_generation,
+                logical.docker_generation,
+                restore.request.generation,
+              ))
+            )
+              deny();
           }
         } else {
           if (job.bound_operation !== "create" && job.bound_operation !== "bootstrap") deny();

@@ -199,7 +199,7 @@ export function createResumeJob(options: {
             coalesce(c.watermark,archive.watermark)::text as watermark,c.epoch is null as retained_workspace
           from public.runtime_enrolments e
           cross join lateral (select coalesce(max(sequence),0) as watermark from public.runtime_events where sandbox_id=$1) archive
-          left join public.runtime_checkpoints c on c.sandbox_id=e.sandbox_id
+          left join public.runtime_checkpoints c on c.sandbox_id=e.sandbox_id and (not $6::boolean or c.epoch=e.epoch)
           where e.sandbox_id=$1 and e.runtime_hash is null
             and (($6::boolean and c.epoch is null and e.epoch>0)
               or (c.completed_at is not null and c.watermark=archive.watermark
@@ -424,7 +424,6 @@ export function createResumeJob(options: {
             cancelled: boolean;
             docker: boolean;
             actor_epoch: string;
-            restore_delivered: boolean;
             restore_failure: string | null;
             boat_restore_dispatched: boolean;
             boat_restore_authority: string | null;
@@ -437,7 +436,6 @@ export function createResumeJob(options: {
                else least(86400,greatest(1,ceil(extract(epoch from ((j.outcome->>'expiresAt')::timestamptz-j.created_at)))::integer+120))
                end as ttl,
                s.provider='docker' as docker, j.outcome->>'actorEpoch' as actor_epoch,
-               j.outcome ? 'restoreDelivered' as restore_delivered,
                j.outcome->>'restoreFailure' as restore_failure,
                j.outcome ? 'boat_restore_dispatched' as boat_restore_dispatched,
                j.outcome->>'boat_restore_authority' as boat_restore_authority,
@@ -459,7 +457,6 @@ export function createResumeJob(options: {
             requestId: input.requestId,
             checkpoint: resumeProof(input),
             ...(input.boatMachineId ? { boatMachineId: input.boatMachineId } : {}),
-            ...(current.restore_delivered ? { restoreDelivered: true } : {}),
             ...(current.boat_restore_dispatched ? { boat_restore_dispatched: true } : {}),
             ...(current.boat_restore_observed ? { boat_restore_observed: true } : {}),
           },
@@ -697,7 +694,6 @@ export function createResumeJob(options: {
           outcome: {
             requestId: input.requestId,
             checkpoint: resumeProof(input),
-            ...(current.restore_delivered ? { restoreDelivered: true } : {}),
             ...(input.withoutPrompt ? { withoutPrompt: true, actorEpoch: current.actor_epoch } : {}),
           },
           async commit(tx) {

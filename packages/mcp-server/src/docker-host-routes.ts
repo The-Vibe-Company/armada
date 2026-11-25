@@ -396,25 +396,33 @@ export function createDockerHostRoutes(
         const wake = runtimeWakes.watch(`host:${hostId}`);
         try {
           for (;;) {
-            job = await store.poll(
-              token,
-              installationId,
-              version,
-              skipSnapshots,
-              body.resources as DockerHostResources | undefined,
-              body.resourcePolicyVersion as 1 | undefined,
-              body.diskFreeBytes as number | null | undefined,
-              body.stoppedSandboxBytes as number | null | undefined,
-              runningIds,
-              protocol,
-              supportsPhysicalDelete,
-              supportsRestore,
-              preferStartup,
-              supportsMachineBootstrap,
-              supportsRestoreRecovery,
-            );
+            let pickupRefusal: DockerHostDenied | undefined;
+            try {
+              job = await store.poll(
+                token,
+                installationId,
+                version,
+                skipSnapshots,
+                body.resources as DockerHostResources | undefined,
+                body.resourcePolicyVersion as 1 | undefined,
+                body.diskFreeBytes as number | null | undefined,
+                body.stoppedSandboxBytes as number | null | undefined,
+                runningIds,
+                protocol,
+                supportsPhysicalDelete,
+                supportsRestore,
+                preferStartup,
+                supportsMachineBootstrap,
+                supportsRestoreRecovery,
+              );
+            } catch (error) {
+              if (!supportsRestoreRecovery || !(error instanceof DockerHostDenied)) throw error;
+              pickupRefusal = error;
+              job = null;
+            }
             if (supportsRestoreRecovery)
               restoreRecovery = await store.restoreRecoveryForHost(token, installationId, runningIds);
+            if (pickupRefusal && !restoreRecovery) throw pickupRefusal;
             if (job || restoreRecovery) break;
             // Recheck every second with a read-only probe; the full poll above
             // (host reconciliation, heartbeat and claim writes) runs again only
