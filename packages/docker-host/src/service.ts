@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { VERSION } from "../../core/src/version.ts";
 import { machineLabelFilters } from "./container-inventory.ts";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
 import { dockerCli } from "./host.ts";
@@ -102,6 +103,12 @@ type ManagedInstallation = {
   binarySha256: string;
   unit: string;
   pendingBinarySha256?: string;
+  update?: {
+    attempts: string[];
+    version: string;
+    at: number;
+    status: "failed" | "updated" | "pending" | "starting";
+  };
 };
 const digestPattern = /^[a-f0-9]{64}$/;
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -137,7 +144,7 @@ async function ownedFile(path: string, home: string, executable = false): Promis
     await file.close();
   }
 }
-export async function validateInstallation(
+async function readManagedInstallation(
   state: State,
   home = homedir(),
   instance?: string,
@@ -151,7 +158,7 @@ export async function validateInstallation(
     typeof marker !== "object" ||
     Array.isArray(marker) ||
     Object.keys(marker).some(
-      (key) => !["installationId", "binarySha256", "pendingBinarySha256", "unit"].includes(key),
+      (key) => !["installationId", "binarySha256", "pendingBinarySha256", "unit", "update"].includes(key),
     ) ||
     marker.installationId !== state.installationId ||
     typeof marker.binarySha256 !== "string" ||
@@ -159,10 +166,17 @@ export async function validateInstallation(
     ("pendingBinarySha256" in marker &&
       (typeof marker.pendingBinarySha256 !== "string" || !digestPattern.test(marker.pendingBinarySha256))) ||
     (marker.binarySha256 !== actualDigest && marker.pendingBinarySha256 !== actualDigest) ||
+    (marker.update !== undefined && !validUpdate(marker.update, marker.pendingBinarySha256)) ||
     typeof marker.unit !== "string" ||
     marker.unit !== (await ownedFile(p.unit, home)).toString("utf8")
   )
     throw new Error("Installation files changed; inspect them before uninstalling or upgrading.");
+  return marker;
+}
+
+export async function validateInstallation(state: State, home = homedir(), instance?: string) {
+  const marker = await readManagedInstallation(state, home, instance);
+  const directory = stateDirectory(home, instance);
   for (const entry of await readdir(directory)) {
     if (
       !["state.json", "daemon.lock", "managed.json", ...CACHE_DIRECTORIES].includes(entry) &&
@@ -181,6 +195,22 @@ export async function validateInstallation(
   return marker;
 }
 
+const releasePattern = /^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/;
+function validUpdate(value: NonNullable<ManagedInstallation["update"]>, pending?: string) {
+  return (
+    value &&
+    typeof value.version === "string" &&
+    releasePattern.test(value.version) &&
+    Number.isSafeInteger(value.at) &&
+    Array.isArray(value.attempts) &&
+    value.attempts.every((version) => typeof version === "string" && releasePattern.test(version)) &&
+    value.attempts.includes(value.version) &&
+    (value.status === "updated" ||
+      value.status === "failed" ||
+      (!!pending && (value.status === "pending" || value.status === "starting")))
+  );
+}
+
 export interface UpgradeServiceIo extends ServiceIo {
   fetch(input: string, init: RequestInit): Promise<Response>;
 }
@@ -190,13 +220,21 @@ async function fetchUpgradeFile(io: UpgradeServiceIo, url: string) {
   return response;
 }
 
-async function pinnedUpgrade(io: UpgradeServiceIo, origin: string, installed: ManagedInstallation, retry: string) {
+async function pinnedUpgrade(
+  io: UpgradeServiceIo,
+  origin: string,
+  installed: ManagedInstallation,
+  retry: string,
+  target?: string,
+) {
   try {
     const arch = process.arch;
     if (arch !== "x64" && arch !== "arm64") throw new Error("Unsupported host architecture.");
     const manifest = (await (await fetchUpgradeFile(io, `${origin}/api/docker-host/install.json`)).json()) as Partial<
-      Record<"x64" | "arm64", unknown>
+      Record<"version" | "x64" | "arm64", unknown>
     > | null;
+    if (target !== undefined && manifest?.version !== target)
+      throw new Error("Installer manifest does not match the offered release.");
     const digest = manifest?.[arch];
     if (typeof digest !== "string" || !digestPattern.test(digest)) throw new Error("Invalid host artifact pin.");
     if (installed.binarySha256 === digest && installed.pendingBinarySha256 === undefined) return { digest };
@@ -213,6 +251,15 @@ async function pinnedUpgrade(io: UpgradeServiceIo, origin: string, installed: Ma
   }
 }
 
+async function syncDirectory(path: string) {
+  const directory = await open(path, constants.O_RDONLY);
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+
 async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temporaryDirectory = dirname(path)) {
   const temporary = join(temporaryDirectory, `.armada-host-upgrade-${randomUUID()}.tmp`);
   try {
@@ -224,18 +271,175 @@ async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temp
       await file.close();
     }
     await rename(temporary, path);
-    const directory = await open(dirname(path), constants.O_RDONLY);
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectory(dirname(path));
   } finally {
     await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
     });
   }
 }
+const autoUpdateCooldown = 60 * 60_000;
+function isNewerRelease(target: unknown, current: string) {
+  if (typeof target !== "string" || !releasePattern.test(target) || !releasePattern.test(current)) return false;
+  const [major = 0, minor = 0, patch = 0] = target.split(".").map(Number);
+  const [a = 0, b = 0, c = 0] = current.split(".").map(Number);
+  return (major - a || minor - b || patch - c) > 0;
+}
+
+function updatePaths(home: string, instance?: string) {
+  const { binary, unit } = paths(home, instance);
+  const directory = stateDirectory(home, instance);
+  return {
+    binary,
+    unit,
+    directory,
+    previous: `${binary}.previous`,
+    hook: join(`${unit}.d`, "armada-update.conf"),
+    marker: join(directory, "managed.json"),
+  };
+}
+
+const managedFiles = { ownedFile, atomicReplace, mkdir, syncDirectory, readManagedInstallation, safeAncestors };
+type UpdateIo = UpgradeServiceIo & { now(): number; version: string; files?: typeof managedFiles };
+
+export function createManagedUpdater(
+  directory: string,
+  recovering = false,
+  executable = process.execPath,
+  io: UpdateIo = { ...localService(), fetch: globalThis.fetch, now: Date.now, version: VERSION },
+) {
+  const files = io.files ?? managedFiles;
+  const leaf = directory.split("/").at(-1) ?? "";
+  const instance = /^armada-docker-host@([a-f0-9]{64})$/.exec(leaf)?.[1];
+  const p = updatePaths(io.home, instance);
+  if (process.platform !== "linux" || directory !== p.directory || executable !== (recovering ? p.previous : p.binary))
+    return;
+  const expectedHook = `[Service]\nType=notify\nNotifyAccess=all\nTimeoutStartSec=120\nExecStartPre=${quoted(p.previous)} recover-update --state-dir ${quoted(directory)}\n`;
+  const readBinary = (path: string) => files.ownedFile(path, io.home, true);
+  const readMarker = (state: State) => files.readManagedInstallation(state, io.home, instance);
+  const save = (marker: ManagedInstallation) =>
+    files.atomicReplace(p.marker, Buffer.from(JSON.stringify(marker)), 0o600, dirname(directory));
+  const systemd = (...args: string[]) => io.service(["systemctl", "--user", ...args]);
+  let lastAttempt: ManagedInstallation["update"];
+  const unit = serviceName(instance);
+  const deferred = (target: string) =>
+    lastAttempt && (lastAttempt.attempts.includes(target) || io.now() - lastAttempt.at < autoUpdateCooldown);
+  let staged: { bytes: Uint8Array; digest: string; marker: ManagedInstallation } | undefined;
+  return {
+    result() {
+      if (lastAttempt?.status === "updated" || lastAttempt?.status === "failed")
+        return `${lastAttempt.version};${lastAttempt.status}`;
+    },
+    async checkStartup(state: State, healthy: () => Promise<void>) {
+      const marker = await readMarker(state).catch(() => undefined);
+      if (!marker) return;
+      lastAttempt = marker.update;
+      if (marker.update?.status === "pending") throw new Error("Docker host update requires systemd recovery.");
+      if (marker.update?.status !== "starting") return;
+      if (
+        marker.update.version !== io.version ||
+        !marker.pendingBinarySha256 ||
+        sha256(await readBinary(p.binary)) !== marker.pendingBinarySha256
+      )
+        throw new Error("Pending Docker host update does not match the active binary.");
+      await healthy();
+      const updated = { ...marker.update, status: "updated" as const, at: io.now() };
+      const { pendingBinarySha256, ...stable } = marker;
+      await save({ ...stable, binarySha256: pendingBinarySha256, update: updated });
+      lastAttempt = updated;
+    },
+    async stage(state: State, target: string | undefined) {
+      if (!target || !isNewerRelease(target, io.version) || deferred(target)) return false;
+      const loaded = await readMarker(state).catch(() => undefined);
+      if (!loaded || loaded.pendingBinarySha256) return false;
+      lastAttempt = loaded.update;
+      if (deferred(target)) return false;
+      const show = await systemd(
+        "show",
+        unit,
+        "--all",
+        "--property=MainPID,FragmentPath,DropInPaths,NeedDaemonReload,Restart",
+      ).catch(() => undefined);
+
+      if (typeof show !== "string") return false;
+      const properties = new Map(
+        show.split("\n").map((line) => {
+          const index = line.indexOf("=");
+          return [line.slice(0, index), line.slice(index + 1)];
+        }),
+      );
+      const dropIns = properties.get("DropInPaths");
+      if (
+        properties.get("MainPID") !== String(process.pid) ||
+        properties.get("FragmentPath") !== p.unit ||
+        properties.get("NeedDaemonReload") !== "no" ||
+        properties.get("Restart") !== "on-failure" ||
+        (dropIns !== "" && dropIns !== p.hook)
+      )
+        return false;
+      const notifier = await io.service(["systemd-notify", "--version"]).catch(() => undefined);
+      if (typeof notifier !== "string" || Number(/^systemd (\d+) /.exec(notifier)?.[1] ?? 0) < 246) return false;
+      const update = {
+        attempts: [...(loaded.update?.attempts ?? []), target],
+        version: target,
+        at: io.now(),
+        status: "failed" as const,
+      };
+      const marker = { ...loaded, update };
+      await save(marker);
+      lastAttempt = update;
+      const { bytes, digest } = await pinnedUpgrade(io, state.server, marker, "inspect the installer release", target);
+      if (!bytes) return false;
+      staged = { bytes, digest, marker };
+      return true;
+    },
+    async swap() {
+      if (!staged) return false;
+      const { bytes, digest, marker } = staged;
+      if (!marker.update) throw new Error("Missing Docker host update attempt.");
+      const previous = await readBinary(p.binary);
+      if (sha256(previous) !== marker.binarySha256) throw new Error("Active Docker host binary changed.");
+      await files.atomicReplace(p.previous, previous, 0o700);
+      await files.mkdir(dirname(p.hook), { mode: 0o700, recursive: true });
+      await files.safeAncestors(p.hook, io.home);
+      await files.atomicReplace(p.hook, Buffer.from(expectedHook), 0o600);
+      await files.syncDirectory(dirname(p.unit));
+      await systemd("daemon-reload");
+      if ((await systemd("show", unit, "--property=DropInPaths", "--value")) !== p.hook)
+        throw new Error("Systemd did not load the Docker host update hook.");
+      await save({
+        ...marker,
+        pendingBinarySha256: digest,
+        update: { ...marker.update, status: "pending" },
+      });
+      await files.atomicReplace(p.binary, bytes, 0o700);
+      return true;
+    },
+    async beforeStart(state: State) {
+      const marker = await readMarker(state);
+      const { update, pendingBinarySha256, ...stable } = marker;
+      if (!update || !pendingBinarySha256 || update.status === "failed" || update.status === "updated") return;
+      const active = sha256(await readBinary(p.binary));
+      if (active === pendingBinarySha256 && update.status === "pending") {
+        await save({ ...marker, update: { ...update, status: "starting" } });
+        return;
+      }
+      if (active !== stable.binarySha256) {
+        const previous = await readBinary(p.previous);
+        if (sha256(previous) !== stable.binarySha256)
+          throw new Error("Previous Docker host binary failed verification.");
+        await files.atomicReplace(p.binary, previous, 0o700);
+      }
+      await save({ ...stable, update: { ...update, status: "failed", at: io.now() } });
+    },
+  };
+}
+
+export async function notifyServiceReady(required = false) {
+  if (process.env.NOTIFY_SOCKET) await command(["systemd-notify", "--ready"]);
+  else if (required) throw new Error("Updated Docker host must start within its systemd user service.");
+}
+
 export async function upgradeService(
   store: Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> },
   server: string,
@@ -247,6 +451,8 @@ export async function upgradeService(
   if (origin !== initial.server)
     throw new Error("Upgrade server does not match the registered host; registration preserved.");
   const initialMarker = await validateInstallation(initial, io.home, instance);
+  if (initialMarker.update?.status === "pending" || initialMarker.update?.status === "starting")
+    throw new Error("Docker host self-update is pending; let its service reconcile first.");
   const p = paths(io.home, instance);
   const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   const serverArg = shellQuote(origin);
@@ -272,10 +478,24 @@ export async function upgradeService(
       if (state.server !== origin || state.installationId !== initial.installationId || state.hostId !== initial.hostId)
         throw new Error("Installation identity changed; registration preserved.");
       const marker = await validateInstallation(state, io.home, instance);
+      if (marker.update?.status === "pending" || marker.update?.status === "starting")
+        throw new Error("Docker host self-update is pending; let its service reconcile first.");
+      if (marker.update) {
+        const { hook } = updatePaths(io.home, instance);
+        try {
+          await ownedFile(hook, io.home);
+          await unlink(hook);
+          await syncDirectory(dirname(hook));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        await io.service(["systemctl", "--user", "daemon-reload"]);
+      }
       const directory = stateDirectory(io.home, instance);
       const markerFile = join(directory, "managed.json");
       const currentDigest = sha256(await ownedFile(p.binary, io.home, true));
-      const stable = { installationId: marker.installationId, binarySha256: currentDigest, unit: marker.unit };
+      const { pendingBinarySha256: _pending, ...saved } = marker;
+      const stable = { ...saved, binarySha256: currentDigest };
       await atomicReplace(
         markerFile,
         Buffer.from(JSON.stringify({ ...stable, pendingBinarySha256: digest })),
@@ -310,13 +530,20 @@ export async function stopService(instance?: string) {
 export async function removeInstallation(instance?: string, io = localService()) {
   const p = paths(io.home, instance);
   const directory = stateDirectory(io.home, instance);
-  const saved = await Promise.all(
+  const saved: { path: string; bytes: Uint8Array }[] = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({
       path,
       bytes: await readFile(path),
     })),
   );
+  const { hook, previous } = updatePaths(io.home, instance);
   try {
+    saved.push({ path: hook, bytes: await ownedFile(hook, io.home) });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  try {
+    if (saved.some((file) => file.path === hook)) await unlink(hook);
     await unlink(p.unit);
     await io.service(["systemctl", "--user", "daemon-reload"]);
     for (const cache of CACHE_DIRECTORIES) await rm(join(directory, cache), { recursive: true, force: true });
@@ -333,6 +560,7 @@ export async function removeInstallation(instance?: string, io = localService())
     await unlink(join(directory, "managed.json"));
     await rmdir(directory);
     await unlink(p.binary);
+    await rm(previous, { force: true });
   } catch (error) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     for (const file of saved) {

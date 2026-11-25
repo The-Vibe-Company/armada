@@ -2639,3 +2639,87 @@ test("a job of a sandbox whose operation still runs here waits, even if the serv
   expect(f.state().receipts).toEqual([]);
   expect(f.executed).toEqual([]);
 });
+
+test.each(["launch", "build"])(
+  "a verified update drains an in-flight %s and skips the newly offered job",
+  async (kind) => {
+    const f = fixture();
+    const next = fixture();
+    const build: Job = {
+      ...f.job,
+      operation: "buildSnapshot",
+      request: { ...f.job.request, expiresAt: 3600000 },
+      build: {
+        id: f.job.request.sandboxId,
+        armadaVersion: "2.29.0",
+        ownerId: crypto.randomUUID(),
+        visibility: "private",
+        token: "offline-snapshot-access",
+        config: {
+          repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+          init: [],
+        },
+      },
+    };
+    const started = Promise.withResolvers<void>();
+    const offered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    let polls = 0;
+    let draining = false;
+    let completed = false;
+    const launched: string[] = [];
+    f.api.poll = async () =>
+      ++polls === 1
+        ? { job: kind === "build" ? build : f.job, held: true }
+        : { job: next.job, held: true, targetVersion: "999999999.0.0" };
+    f.executor.create = async (request) => {
+      launched.push(request.sandboxId);
+      started.resolve();
+      await finish.promise;
+    };
+    f.executor.buildSnapshot = async () => {
+      started.resolve();
+      await finish.promise;
+      return { imageId: `sha256:${"b".repeat(64)}`, baselineVersion: 1 };
+    };
+    const loop = runJobs(f.store, f.api, f.executor, {
+      stopping: () => draining,
+      sleep: async () => {
+        throw Error("Unexpected idle while draining");
+      },
+      async update(_state, target) {
+        if (!target) return false;
+        await started.promise;
+        draining = true;
+        offered.resolve();
+        return true;
+      },
+      now: () => 0,
+    }).then(() => {
+      completed = true;
+    });
+    await Promise.race([offered.promise, loop]);
+    expect(completed).toBe(false);
+    finish.resolve();
+    await loop;
+    expect(f.acknowledgements).toEqual(["completed"]);
+    expect(launched).toEqual(kind === "launch" ? [f.job.request.sandboxId] : []);
+    expect(polls).toBe(2);
+  },
+);
+
+test("the daemon sends a rollback result on its authenticated poll", async () => {
+  const { store } = fixture();
+  const headers: Headers[] = [];
+  const api = httpApi(
+    Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        headers.push(new Headers(init?.headers));
+        return Response.json({ job: null });
+      },
+      { preconnect: fetch.preconnect },
+    ),
+  );
+  await api.poll(await store.load(), { updateResult: "15.0.0;failed" });
+  expect(headers[0]?.get("x-armada-docker-host-update-result")).toBe("15.0.0;failed");
+});
