@@ -2,20 +2,17 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GitHubHydrationError, type GitHubHydrationPhase, githubHydrationPhase } from "./api-failure.ts";
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { GOLDEN_SSH_RECEIPT_PHASES, GoldenError, snapshotMissingRefMessage } from "./golden-config.ts";
 import { outputCollectorFailureDetail } from "./managed-bun-path.ts";
 import { type PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 import type { Provider } from "./provider.ts";
-import { launchInfrastructure } from "./sandbox-provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 
 export { PRIVATE_SSH_FAILURES, PrivateSshError } from "./private-skill-error.ts";
 export { shellQuote } from "./shell-quote.ts";
-export interface SshExecDeps {
-  /** Opt in only for the private GitHub repair installer, never generic guest output. */
-  githubHydration?: boolean;
+
+interface SshOptions {
   onWarning?: (warning: GoldenBuildWarning) => void;
   mkdtemp?: typeof mkdtemp;
   rm?: typeof rm;
@@ -37,156 +34,16 @@ export async function sshStdinCheckout(
     repositories?: readonly string[];
     refs?: readonly string[];
   },
-  deps: SshExecDeps = {},
+  deps: SshOptions = {},
 ): Promise<void> {
   await sshExchange(provider, input, deps, false, input.timeoutMs);
-}
-
-/** Boat native bridge admission; pause lets it close its private writer before capture. */
-export async function sshNativeAuthAdmission(
-  provider: Pick<Provider, "id" | "sshKey">,
-  sandboxId: string,
-  active: boolean,
-  deps: SshExecDeps = {},
-) {
-  if (!launchInfrastructure(provider.id).managedNativeAuthWriter) throw Error("Native admission requires Boat.");
-  const script = `set +x
-node <<'ARMADA_NATIVE_ADMISSION'
-const fs=require('node:fs');
-try {
- const base='/home/user/.codex', owner=fs.lstatSync('/home/user').uid;
- const dir=fs.lstatSync(base);
- if(dir.isSymbolicLink()||!dir.isDirectory()||dir.uid!==owner)throw Error();
- const marker=base+'/.armada-managed-native';
- const st=fs.lstatSync(marker);
- if(st.isSymbolicLink()||!st.isFile()||st.uid!==owner||(st.mode&0o077)||st.nlink!==1)throw Error();
- const lock=base+'/.armada-native-writer.lock';
- try{const st=fs.lstatSync(lock);if(st.isSymbolicLink()||!st.isFile()||st.uid!==owner||(st.mode&0o077)||st.nlink!==1)throw Error();}catch(e){if(e.code!=='ENOENT')throw e;}
- const fd=fs.openSync(marker,fs.constants.O_WRONLY|fs.constants.O_NOFOLLOW);
- try{fs.writeFileSync(fd,${JSON.stringify(active ? "active" : "paused")});fs.ftruncateSync(fd,6);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
- if(${JSON.stringify(!active)}){
-  const record=base+'/.armada-native-writer.json';
-  let saved;
-  try{
-   const st=fs.lstatSync(record);
-   if(st.isSymbolicLink()||!st.isFile()||st.uid!==owner||(st.mode&0o077)||st.nlink!==1||st.size>4096)throw Error();
-   saved=JSON.parse(fs.readFileSync(record,'utf8'));
-  }catch(e){if(e.code!=='ENOENT')throw e;}
-  if(saved && saved.boot===fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()){
-   if(!Number.isSafeInteger(saved.pid)||saved.pid<=1||typeof saved.start!=='string')throw Error();
-   const lockStat=fs.statSync(lock); let members=0, held=false;
-   for(const name of fs.readdirSync('/proc')){
-    if(!/^[0-9]+$/.test(name))continue;
-    try{
-     const entry='/proc/'+name;
-     const raw=fs.readFileSync(entry+'/stat','utf8'), fields=raw.slice(raw.lastIndexOf(')')+2).split(' ');
-     if(Number(fields[2])!==saved.pid||['Z','X'].includes(fields[0]))continue;
-     if(fs.statSync(entry).uid!==owner||(Number(name)===saved.pid&&fields[19]!==saved.start))throw Error();
-     members++;
-     for(const descriptor of fs.readdirSync(entry+'/fd')){try{
-      const st=fs.statSync(entry+'/fd/'+descriptor);
-      if(st.dev===lockStat.dev&&st.ino===lockStat.ino)held=true;
-     }catch(e){if(!['ENOENT','ESRCH'].includes(e.code))throw e;}}
-    }catch(e){if(!['ENOENT','ESRCH'].includes(e.code))throw e;}
-   }
-   if(members){if(!held)throw Error();process.kill(-saved.pid,'SIGKILL');}
-  }
- }
-}catch{process.exitCode=1;}finally{
- const pub=process.env.ARMADA_SSH_PUBLIC_KEY;
- if(pub)for(const home of ['/home/user','/root']){try{
- const file=home+'/.ssh/authorized_keys',st=fs.lstatSync(file);
- if(st.isSymbolicLink()||!st.isFile())continue;
- fs.writeFileSync(file,fs.readFileSync(file,'utf8').split('\\n').filter(line=>line.trim()!==pub.trim()).join('\\n'),{mode:0o600});
- }catch{}}
-}
-ARMADA_NATIVE_ADMISSION
-`;
-  try {
-    await sshExchange(provider, { sandboxId, token: "", script }, deps, false, 30000);
-  } catch {
-    throw Error("Private native admission failed.");
-  }
-}
-
-/** Private server-only capture. No caller-selected path, command, or public exec journal. */
-export async function sshPrivateAuthState(
-  provider: Provider,
-  sandboxId: string,
-  deps: SshExecDeps = {},
-  quiesced = false,
-  expectedSharedCapability?: string,
-): Promise<string> {
-  const { authPath: path, managedNativeAuthWriter } = launchInfrastructure(provider.id);
-  if (!path) throw Error("Private native auth transport is unavailable.");
-  const script = `set +x
-umask 077
-${quiesced ? "flock -x -w 30 /home/user/.codex/.armada-native-writer.lock " : ""}node <<'ARMADA_PRIVATE_AUTH'
-const fs = require('node:fs');
-const path = ${JSON.stringify(path)};
-function readPrivate(file) {
- let fd;
- try {
-  const parts=file.split('/').filter(Boolean);
-  for(let n=1;n<parts.length;n++) {
-   const stat=fs.lstatSync('/'+parts.slice(0,n).join('/'));
-   if(stat.isSymbolicLink() || !stat.isDirectory()) throw Error('unsafe');
-  }
-  fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
-  const stat=fs.fstatSync(fd);
-  if(!stat.isFile() || stat.uid!==fs.lstatSync('/home/user').uid || stat.nlink!==1 || stat.size>65536 || (stat.mode&0o077)) throw Error('unsafe');
-  const bytes=Buffer.alloc(65537),length=fs.readSync(fd,bytes,0,bytes.length,0);
-  if(length>65536) throw Error('oversized');
-  return bytes.subarray(0,length).toString('utf8');
- } finally { if(fd!==undefined) fs.closeSync(fd); }
-}
-try {
- let text;
- try { text=readPrivate(path); }
- catch(error) {
-  const expected=process.env.ARMADA_GIT_TOKEN;
-  if(${managedNativeAuthWriter} && expected && error.code==='ENOENT' &&
-     JSON.parse(readPrivate('/home/user/.armada/model-access.json')).capability===expected)
-  {
-   let managed=false;
-   try { fs.lstatSync('/home/user/.codex/.armada-managed-native'); managed=true; }
-   catch(e) { if(e.code!=='ENOENT') throw e; }
-   process.stdout.write(managed ? 'pending' : 'null');
-  }
-  else throw error;
- }
- if(text!==undefined) {
-  const value=JSON.parse(text);
-  if(!value.tokens || typeof value.tokens.refresh_token!=='string' ||
-     typeof value.tokens.access_token!=='string' || typeof value.tokens.account_id!=='string') throw Error('invalid');
-  process.stdout.write(text);
- }
-} catch { process.exitCode=1; }
-finally {
-  const pub=process.env.ARMADA_SSH_PUBLIC_KEY;
-  if(pub) for(const home of ['/home/user','/root']) {
-    try {
-      const file=home+'/.ssh/authorized_keys', stat=fs.lstatSync(file);
-      if(stat.isSymbolicLink() || !stat.isFile()) continue;
-      const lines=fs.readFileSync(file,'utf8').split('\\n');
-      fs.writeFileSync(file,lines.filter(line=>line.trim()!==pub.trim()).join('\\n'),{mode:0o600});
-    } catch {}
-  }
-}
-ARMADA_PRIVATE_AUTH
-`;
-  try {
-    return await sshExchange(provider, { sandboxId, token: expectedSharedCapability ?? "", script }, deps, true);
-  } catch {
-    throw Error("Private native auth exchange failed.");
-  }
 }
 
 /** Private Skillpack transport: key and script use SSH stdin, never provider exec or argv. */
 export async function sshPrivateSkillCommand(
   provider: Provider,
   input: { sandboxId: string; key: string; script: string },
-  deps: SshExecDeps = {},
+  deps: SshOptions = {},
 ): Promise<string> {
   try {
     return await sshExchange(
@@ -214,7 +71,7 @@ async function sshExchange(
     repositories?: readonly string[];
     refs?: readonly string[];
   },
-  deps: SshExecDeps,
+  deps: SshOptions,
   capture: boolean,
   timeoutMs = capture ? 30_000 : 600_000,
   privateTransport = false,
@@ -294,8 +151,6 @@ async function sshExchange(
         timeoutMs,
         onWarning: deps.onWarning,
         privateTransport,
-        sandboxId: input.sandboxId,
-        githubHydration: deps.githubHydration === true,
         repositories: input.repositories,
         refs: input.refs,
         buildId: input.buildId,
@@ -369,8 +224,6 @@ function command(
     timeoutMs = capture ? 30_000 : 600_000,
     onWarning,
     privateTransport = false,
-    sandboxId,
-    githubHydration = false,
     repositories,
     refs,
     buildId,
@@ -378,10 +231,8 @@ function command(
   }: {
     capture?: boolean;
     timeoutMs?: number;
-    onWarning?: SshExecDeps["onWarning"];
+    onWarning?: SshOptions["onWarning"];
     privateTransport?: boolean;
-    sandboxId?: string;
-    githubHydration?: boolean;
     repositories?: readonly string[] | undefined;
     refs?: readonly string[] | undefined;
     buildId?: string | undefined;
@@ -396,7 +247,6 @@ function command(
     const c: ChildProcess = spawnImpl(file, args, { stdio: ["pipe", capture ? "pipe" : "ignore", "pipe"] });
     let pending = "";
     let phase: keyof typeof GOLDEN_SSH_RECEIPT_PHASES = "ssh";
-    let hydrationPhase: GitHubHydrationPhase | undefined;
     let exitCode: string | undefined;
     let commandIndex: string | undefined;
     let collectorFailure: string | undefined;
@@ -425,7 +275,6 @@ function command(
     };
     signal?.addEventListener("abort", abort, { once: true });
     c.stderr?.on("data", (d) => {
-      if (capture && !privateTransport) return;
       // Stream only fixed protocol records; discard all tool stderr, including arbitrary secrets.
       pending += String(d);
       const lines = pending.split("\n");
@@ -474,12 +323,6 @@ function command(
             line,
           );
         if (git) gitFailure = { index: Number(git[1]), reason: git[2] as keyof typeof GIT_FAILURE_MESSAGES };
-        const github = githubHydration
-          ? /^ARMADA_GITHUB_FAILURE (privilege|payload|directories|lock|executables|install|token_write|sudo|bootstrap)$/.exec(
-              line,
-            )
-          : null;
-        if (github) hydrationPhase = githubHydrationPhase(github[1]);
         const warning = /^ARMADA_BUILD_WARNING skillpack (download_unavailable|user_local_only)$/.exec(line);
         if (warning)
           onWarning?.(
@@ -530,11 +373,6 @@ function command(
         }
         const reason = timedOut ? "timeout" : `exit_${exitCode ?? code ?? "signal"}`;
         if (!capture) console.error(JSON.stringify({ event: "golden_ssh_failed", buildId, phase, code: reason }));
-        if (hydrationPhase) {
-          console.error(JSON.stringify({ event: "github_hydration_failed", sandboxId, phase: hydrationPhase }));
-          reject(new GitHubHydrationError(hydrationPhase));
-          return;
-        }
         const missingRef = gitFailure?.reason === "branch_missing" ? refs?.[gitFailure.index - 1] : undefined;
         const gitMessage = gitFailure
           ? missingRef
