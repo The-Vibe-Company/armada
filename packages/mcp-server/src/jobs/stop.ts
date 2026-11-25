@@ -63,12 +63,13 @@ export function createStopJob(
       org_id: string;
       owner_is_member: boolean;
       provider_sandbox_id: string;
-      status: "failed" | "stopping";
+      status: "failed" | "stopping" | "stopped";
+      confirmed_exit: boolean;
       retention_required: boolean;
       checkpoint: { epoch: string; watermark: number } | null;
       deadline_at: Date;
     }>(
-      `select s.org_id,s.provider_sandbox_id,s.status,
+      `select s.org_id,s.provider_sandbox_id,s.status,s.stopped_at is not null as confirmed_exit,
        exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member,
        (coalesce(s.status_reason in ('idle_paused','work_merged'),false) or exists(
          select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.generation=$2
@@ -83,11 +84,14 @@ export function createStopJob(
            and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
        ) p on true
        where s.id=$1 and s.lifecycle_generation=$2 and s.provider='modal' and s.runtime_transport='dialout'
-         and s.status in ('stopping','failed') and s.stop_requested_at is not null and s.stopped_at is null
+         and ((s.status in ('stopping','failed') and s.stop_requested_at is not null and s.stopped_at is null)
+           or (s.status in ('stopped','failed') and s.stop_requested_at is null and s.stopped_at is not null))
          and s.provider_sandbox_id is not null and s.deleted_at is null`,
       [sandboxId, generation, job.id],
     );
     if (!target) return { status: "fail", reason: "modal_stop_target_changed" };
+    const publish = (tx: Sql) => enqueueStopOutput(tx, jobs, sandboxId, target.org_id, generation);
+    if (target.confirmed_exit) return { status: "done", commit: publish };
     const prior = job.outcome as {
       modal_checkpoint?: typeof target.checkpoint;
       modal_capture_complete?: boolean;
@@ -176,8 +180,14 @@ export function createStopJob(
     return {
       status: "done",
       async commit(tx) {
-        await settleModalStop(tx, sandboxId, generation, target.status, retentionLost);
-        await enqueueStopOutput(tx, jobs, sandboxId, target.org_id, generation);
+        await settleModalStop(
+          tx,
+          sandboxId,
+          generation,
+          target.status === "failed" ? "failed" : "stopping",
+          retentionLost,
+        );
+        await publish(tx);
       },
     };
   };

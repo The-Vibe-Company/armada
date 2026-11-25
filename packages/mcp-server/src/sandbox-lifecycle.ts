@@ -593,7 +593,7 @@ export function holdModalStop(tx: Sql, sandboxId: string, generation: string) {
 }
 
 export function unresolvedModalStop(sandbox: string) {
-  return `(${sandbox}.provider='modal' and exists(select 1 from public.jobs j where j.sandbox_id=${sandbox}.id
+  return `(${sandbox}.provider='modal' and ${sandbox}.stopped_at is null and exists(select 1 from public.jobs j where j.sandbox_id=${sandbox}.id
     and j.generation=${sandbox}.lifecycle_generation and j.kind='stop' and j.state in ('queued','leased')))`;
 }
 
