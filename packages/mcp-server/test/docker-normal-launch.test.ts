@@ -21,7 +21,6 @@ import {
 } from "@armada/core";
 import { modalLaunchReceipt } from "@armada/core/contract";
 import {
-  createApplicationVault,
   createRoutineService,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
@@ -187,7 +186,6 @@ async function fixture(
   };
   let now = 0,
     drive = true,
-    pollResumeClaims = false,
     failCreate: false | "plain" | "image" | "disk" = false,
     malformedSkills = false;
   let session: Awaited<ReturnType<typeof authority.enrol>> | undefined;
@@ -222,22 +220,7 @@ async function fixture(
   const readStopOutputs = createDockerOutputReader(sql, key, runtimeClock);
   async function step(machineBootstrap = true, deferEnrolment = false) {
     let job: Awaited<ReturnType<typeof hosts.poll>> = null;
-    if (
-      await hosts.mayHaveWork(
-        host.hostToken,
-        installationId,
-        false,
-        [],
-        pollResumeClaims,
-        false,
-        false,
-        machineBootstrap,
-      )
-    ) {
-      if (pollResumeClaims) {
-        for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
-          await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
-      }
+    if (await hosts.mayHaveWork(host.hostToken, installationId, false, [], false, false, machineBootstrap)) {
       const version = options.daemonVersion ?? "2.28.0";
       job = await hosts.poll(
         host.hostToken,
@@ -590,14 +573,8 @@ async function fixture(
       });
       session = await authority.enrol(ticket.enrolmentToken);
     },
-    async resume(controls: ReturnType<typeof createDockerSandboxControls>) {
-      pollResumeClaims = true;
-      try {
-        return await controls.invoke(caller, "resume", { id: body.requestId, request_id: randomUUID() });
-      } finally {
-        pollResumeClaims = false;
-      }
-    },
+    resume: (controls: ReturnType<typeof createDockerSandboxControls>) =>
+      controls.invoke(caller, "resume", { id: body.requestId, request_id: randomUUID() }),
     step,
     deferFirstPrompt: (beforeDelivery = false) => {
       disconnectBeforePrompt = beforeDelivery;
@@ -2201,67 +2178,6 @@ test("Docker GitHub refresh and follow-up send configure the runtime and replay 
   expect((await acquireGitHub(f, initialCapability, "example/project", "gh"))?.status).toBe(403);
 });
 
-test("Docker GitHub capabilities rotate on resume and expire on host revocation", async () => {
-  const { f, body } = await repositoryFixture();
-  await f.service().launch(f.caller, { ...body, prompt: undefined });
-  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap, github: f.github });
-  const initialCapability = configuredGitHubCapability(f);
-  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(200);
-  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await f.resume(controls);
-  expect((await f.github.status(f.caller, f.body.requestId)).configured).toBe(true);
-  expect((await acquireGitHub(f, initialCapability, "example/project"))?.status).toBe(403);
-  const resumedCapability = configuredGitHubCapability(f);
-  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(200);
-  await hosts.revoke(f.admin, f.hostId);
-  expect((await acquireGitHub(f, resumedCapability, "example/project"))?.status).toBe(403);
-});
-
-test("Docker freezes versioned readable bindings and re-delivers them before the first resumed prompt", async () => {
-  const db = database();
-  const f = await fixture();
-  const vault = createApplicationVault(sql, undefined);
-  const value = "europe\n$(not-a-command)";
-  const variableId = await seedPersonalVariable(f.actor.orgId, f.actor.userId, "APP_REGION", value);
-  const body = { ...f.body, variables: [{ key: "APP_REGION", variableId, version: 1 }] };
-  const launched = await f.service().launch(f.caller, body);
-  expect((f.native as { op: string }[]).map((command) => command.op)).toEqual([
-    "health",
-    "configureReadableVariables",
-    "health",
-    "configureMcp",
-    "prompt",
-  ]);
-  expect(JSON.stringify(launched)).not.toContain(value);
-  expect(JSON.stringify(f.jobs)).not.toContain(value);
-  await vault.command(f.caller, "variable", "update", {
-    org: f.actor.orgId,
-    id: variableId,
-    expectedVersion: 1,
-    value: "changed",
-  });
-  expect(await f.service().launch(f.caller, body)).toMatchObject({ promptId: launched.promptId });
-  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
-  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await f.resume(controls);
-  const configurations = (f.native as { op: string; variables: Record<string, string> }[]).filter(
-    (command) => command.op === "configureReadableVariables",
-  );
-  expect(configurations.map((command) => command.variables)).toEqual([{ APP_REGION: value }, { APP_REGION: value }]);
-  await createDockerSandboxControls(sql, key, { sendEnabled: true, clock: f.clock }).invoke(
-    f.caller,
-    "send",
-    { id: f.body.requestId, request_id: randomUUID(), prompt: "Read the variable again" },
-    {},
-  );
-  expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
-    2,
-  );
-  const fresh = { ...body, requestId: randomUUID() };
-  await rejected(f.service().launch(f.caller, fresh), "unavailable");
-  expect((await db.query("select id from public.sandboxes where id=$1", [fresh.requestId])).rows).toHaveLength(0);
-});
-
 test("Docker variable admission rejects unsafe names and inaccessible personal references without allocating", async () => {
   const f = await fixture();
   const variableId = await seedPersonalVariable(f.actor.orgId, f.otherId, "PRIVATE_REGION", "private");
@@ -2312,12 +2228,6 @@ test("Docker delivers value-free secret references through native environment an
   const manifest = JSON.parse(await decryptSecret(claim.request_enc, key));
   expect(manifest.request.secrets).toEqual(body.secrets);
   expect(JSON.stringify(manifest)).not.toContain(canary);
-  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
-  await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-  await f.resume(controls);
-  expect((f.native as { op: string }[]).filter((command) => command.op === "configureReadableVariables")).toHaveLength(
-    2,
-  );
   const sender = createDockerSandboxControls(sql, key, { sendEnabled: true, clock: f.clock });
   const args = { id: f.body.requestId, request_id: randomUUID(), prompt: "Continue" };
   const sent = await sender.invoke(f.caller, "send", args, {});
@@ -2452,9 +2362,9 @@ test.each(["receipt", "runtime refusal"])(
   },
 );
 
-test("Docker re-prepares bound MCP grants before follow-up and after same-host resume, revoking the old epoch lease", async () => {
-  const f = await fixture(),
-    remote = await defaultRemote(f);
+test("Docker re-prepares bound MCP grants before follow-up and revokes old leases", async () => {
+  const f = await fixture();
+  await defaultRemote(f);
   await f.service().launch(f.caller, f.body);
   const native = f.native as import("@armada/agent-runtime").RunnerRequest[];
   const configured = () => native.filter((request) => request.op === "configureMcp");
@@ -2478,23 +2388,8 @@ test("Docker re-prepares bound MCP grants before follow-up and after same-host r
   const second = leaseHash(configured()[1]!);
   expect(second).not.toBe(first);
   expect(await createSqlMcpLeasePort(sql).validate(first, "tools")).toBeNull();
-  const controls = createDockerSandboxControls(sql, key, {
-    clock: f.clock,
-    resume: bootstrap,
-    prepareMcp: f.mcp().prepare,
-  });
-  await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
-  const resumed = await f.resume(controls);
-  expect(resumed).toEqual({ handled: true, result: { id: f.body.requestId, status: "ready" } });
-  expect(configured()).toHaveLength(3);
-  expect(await createSqlMcpLeasePort(sql).validate(second, "tools")).toBeNull();
-  const newest = leaseHash(configured()[2]!);
-  expect(await createSqlMcpLeasePort(sql).validate(newest, "tools")).toMatchObject({
-    sandbox_id: f.body.requestId,
-    connection_id: remote.id,
-  });
   await hosts.revoke(f.admin, f.hostId);
-  expect(await createSqlMcpLeasePort(sql).validate(newest, "tools")).toBeNull();
+  expect(await createSqlMcpLeasePort(sql).validate(second, "tools")).toBeNull();
 });
 
 test("legacy Docker claims without preparation keep their original hash and do not acquire later defaults", async () => {
@@ -3122,21 +3017,6 @@ test.each(["private", "org"] as const)(
     expect(refresh?.input?.command).not.toContain("credential.helper=");
     expect(refresh?.input?.command).not.toContain("git clone");
     expect(refresh?.input?.command).not.toContain("printf built");
-    if (visibility === "org") {
-      const controls = createDockerSandboxControls(sql, key, {
-        clock: f.clock,
-        resume: bootstrap,
-        prepareSnapshotGitHub: f.github.prepareLaunch,
-      });
-      const firstEpoch = f.session()?.epoch;
-      await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-      await f.resume(controls);
-      expect(f.session()?.epoch).not.toBe(firstEpoch);
-      expect(await f.github.status(f.caller, f.body.requestId)).toMatchObject({
-        configured: true,
-        runtime: { epoch: f.session()?.epoch },
-      });
-    }
 
     await expect(
       f.snapshots.command(f.caller, "create", { ...input, requestId: randomUUID(), visibility: "org" }),
@@ -3498,11 +3378,9 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
   let resumeCalls = 0;
   const controls = createDockerSandboxControls(sql, key, {
     clock: f.clock,
-    resume: {
-      async resume(...args) {
-        resumeCalls++;
-        return bootstrap.resume(...args);
-      },
+    async resume() {
+      resumeCalls++;
+      throw Error("Incompatible daemon must not admit a resume.");
     },
   });
   const before = await counts(f);

@@ -23,17 +23,18 @@ import {
   withUsageTotals,
 } from "@armada/core";
 import { readLogsOperation } from "@armada/core/contract";
-import { decryptSecret, type Sql } from "@armada/core/server";
+import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
-import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
-import { createDockerHostStore, DOCKER_JOB_REQUEST_OUTCOME_SQL, DockerHostDenied } from "./docker-host-store.ts";
+import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
+import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { readEventPages } from "./event-pagination.ts";
+import type { createResumeJob } from "./jobs/resume.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { observeProviderCall } from "./request-observability.ts";
@@ -45,6 +46,7 @@ import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { publicSandboxStatusSql } from "./sandbox-readiness.ts";
+import { ResumeTurnDeferred } from "./tool-error.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -136,7 +138,8 @@ export function createDockerSandboxControls(
     prepareMcp?: RuntimeMcp["prepare"];
     prepareSnapshotGitHub?: RuntimeGitHub["prepareLaunch"];
     sendEnabled?: boolean;
-    resume?: Pick<ReturnType<typeof createDockerBootstrapService>, "resume">;
+    resume?: ReturnType<typeof createResumeJob>["resumeDocker"];
+    wakeResume?: ReturnType<typeof createResumeJob>["wake"];
   } = {},
 ) {
   const clock = options.clock ?? realClock;
@@ -642,7 +645,7 @@ export function createDockerSandboxControls(
       await clock.wait(Math.min(250, deadline - clock.now()));
     }
   }
-  async function resume(caller: Caller, row: Row, requestId?: string, claim?: RuntimeTurnClaim) {
+  async function resume(caller: Caller, row: Row, requestId?: string) {
     if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
     if (row.owner_id !== caller.userId) throw denied();
     if (!HARNESS_CAPABILITIES[row.harness].resume)
@@ -659,50 +662,11 @@ export function createDockerSandboxControls(
     if (!supportsDockerHostProtocol(host?.daemon_protocol)) {
       throw new DockerHostUpgradeRequired();
     }
-    const actor = { userId: caller.userId, orgId: row.org_id };
-    const assertClaim = claim
-      ? async (tx?: Sql) => {
-          if (!(await claim.canDispatch(tx)))
-            throw failure("conflict", "Queued Docker turn lease is no longer current.");
-        }
-      : undefined;
-    let requested = await options.resume.resume(actor, row.id, requestId, claim);
-    const deadline = clock.now() + (options.timeoutMs ?? 45_000);
-    const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
-    for (;;) {
-      await assertClaim?.();
-      if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId, claim);
-      // Host ACK is not runtime readiness.
-      const state = (
-        await sql.query<{ outcome: string | null; status_reason: string | null; lifecycle_generation: string }>(
-          `select ${DOCKER_JOB_REQUEST_OUTCOME_SQL} as outcome,s.status_reason,s.lifecycle_generation::text
-           from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
-           where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
-          [requestId, row.id],
-        )
-      ).rows[0];
-      if (state?.outcome === "failed")
-        throw failure(
-          "conflict",
-          state.status_reason === DOCKER_LAUNCH_FAILURE_MESSAGES.disk
-            ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
-            : "Docker resume failed.",
-        );
-      if (state?.outcome === "completed") {
-        const ready = await runtime.ready(actor, row.id, requestId, state.lifecycle_generation, assertClaim);
-        if (ready.state === "ready") {
-          if (!claim) {
-            await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
-            await options.github?.prepareTurn(caller, row.id);
-            if (row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id);
-            await options.prepareMcp?.(caller, row.id);
-          }
-          return { id: row.id, status: "ready" as const };
-        }
-      }
-      if (clock.now() >= deadline) throw failure("conflict", "Docker resume is pending. Retry the same request_id.");
-      await clock.wait(Math.min(250, deadline - clock.now()));
-    }
+    return options.resume(
+      caller,
+      await createDockerSandboxService(sql).get({ userId: caller.userId, orgId: row.org_id }, row.id),
+      requestId,
+    );
   }
   async function control(caller: Caller, row: Row, name: string, args: Record<string, unknown>) {
     if (row.owner_id !== caller.userId) throw denied();
@@ -828,26 +792,12 @@ export function createDockerSandboxControls(
         [row.id, `docker_prompt_${requestId}`],
       )
     ).rows[0];
-    if (!["ready", "running"].includes(row.status)) {
-      if (previous || !["stopped", "starting"].includes(row.status))
-        throw failure("conflict", "Docker sandbox must be running before send. Use a new request_id for a new turn.");
-      if (row.status === "starting") {
-        const pendingResume = await sql.query(
-          `select request_id from public.docker_host_jobs where bound_sandbox_id=$1 and request_id=$2
-           and bound_operation='resume' and bound_actor_id=$3 and outcome is distinct from 'failed'`,
-          [row.id, requestId, caller.userId],
-        );
-        if (!pendingResume.rows.length)
-          throw failure(
-            "unavailable",
-            "Docker sandbox resume is pending. Retry identical input with the same request_id.",
-          );
-      }
-      await resume(caller, row, requestId, claim);
-      row = await visible(caller, row.id);
-      if (!["ready", "running"].includes(row.status))
-        throw failure("conflict", "Docker sandbox resume is still pending.");
+    if (row.status === "stopped" && !previous && claim && options.wakeResume) {
+      const sandbox = await createDockerSandboxService(sql).get({ userId: caller.userId, orgId: row.org_id }, row.id);
+      return options.wakeResume(caller, sandbox, requestId, claim);
     }
+    if (!["ready", "running"].includes(row.status))
+      throw failure("conflict", "Docker sandbox must be running before send. Use a new request_id for a new turn.");
     await assertClaim?.();
     await options.prepareMcp?.(caller, row.id, undefined, assertClaim);
     let conversationId = row.conversation_ids.at(-1);
@@ -987,7 +937,14 @@ export function createDockerSandboxControls(
             })
           : await dispatch();
       } catch (error) {
-        if (error instanceof ProviderError || error instanceof DockerHostUpgradeRequired) throw error;
+        if (
+          error instanceof ProviderError ||
+          error instanceof DockerHostUpgradeRequired ||
+          error instanceof ResumeTurnDeferred
+        )
+          throw error;
+        if (error instanceof VaultError)
+          throw failure(error.code === "conflict" ? "conflict" : "unavailable", error.message);
         if (error instanceof DockerRetentionEnded)
           throw new ProviderError({
             provider: "docker",

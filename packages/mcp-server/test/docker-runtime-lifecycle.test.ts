@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
-import { type AgentEvent, DOCKER_HOST_PROTOCOL, type Sql } from "@armada/core";
+import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { createQueuedSandboxDispatch } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -10,14 +10,11 @@ import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle, DockerRuntimeDenied } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
-import type { Job } from "../src/jobs/runner.ts";
-import { createJobsStore } from "../src/jobs/store.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
-import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 import { queueMailboxCreate } from "./docker-create.fixture.ts";
 import { queueMailboxStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
@@ -746,224 +743,4 @@ test("journal reads acknowledged encrypted events plus saved usage after stop/de
   await denied(disabled.journal(f.admin, f.sandbox.id));
   await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
   await denied(disabled.journal(f.actor, f.sandbox.id));
-});
-
-test("rebound Docker usage has its epoch's admitted prices before the accepted prompt receipt is recorded", async () => {
-  const db = database();
-  const f = await fixture();
-  await ready(f);
-  const stopId = randomUUID();
-  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
-  const stop = await hosts.poll(f.hostToken, f.installationId);
-  if (stop?.operation !== "stop") throw Error("missing retained stop");
-  await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
-  const selected = randomUUID();
-  await db.query(
-    "insert into public.credentials(id,scope,owner_id,kind,name,value_enc) values($1,'user',$2,'openai','Rebound pricing',$3)",
-    [
-      selected,
-      f.actor.userId,
-      await encryptSecret(
-        JSON.stringify({
-          apiKey: "offline-rebound-key",
-          endpoint: { version: 1, baseUrl: "https://pricing.example/v1" },
-          prices: { "gpt-6.1-sol": { input: "3", output: "4", cacheRead: "0", cacheWrite: null, reasoning: null } },
-        }),
-        key,
-      ),
-    ],
-  );
-  await createSandboxAccountChange(sql, launchCredentials(createSqlVaultStore(sql), key))(
-    { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "supabase" },
-    { id: f.sandbox.id, credentialId: selected },
-  );
-  const resumeId = randomUUID();
-  expect((await bootstrap.resume(f.actor, f.sandbox.id, resumeId)).state).toBe("claiming");
-  await hosts.claimResume(f.hostToken, f.installationId, resumeId, true);
-  expect((await bootstrap.resume(f.actor, f.sandbox.id, resumeId)).state).toBe("pending");
-  const resumed = await hosts.poll(f.hostToken, f.installationId);
-  if (resumed?.operation !== "resume") throw Error("missing fresh enrollment");
-  const session = await authority.enrol(resumed.bootstrap.enrolmentToken);
-  await hosts.complete(f.hostToken, f.installationId, { requestId: resumed.requestId, outcome: "completed" });
-  const health = randomUUID();
-  await service.ready(f.actor, f.sandbox.id, health);
-  await complete(session, { ready: true, generation: session.epoch });
-  await service.ready(f.actor, f.sandbox.id, health);
-  const input = { requestId: randomUUID(), text: "Usage before receipt" };
-  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
-  const promptId = randomUUID(),
-    conversationId = randomUUID();
-  const response = await createRuntimeEvents(authority, key).route(
-    new Request("https://armada.example/api/runtime/events", {
-      method: "POST",
-      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
-      body: JSON.stringify({
-        sandboxId: f.sandbox.id,
-        generation: session.epoch,
-        events: [
-          {
-            sequence: 1,
-            event: {
-              id: randomUUID(),
-              at: 1,
-              kind: "other",
-              type: "armada/turnUsage",
-              promptId,
-              data: {
-                model: "gpt-6.1-sol",
-                inputTokens: 100,
-                outputTokens: 10,
-                cachedTokens: 0,
-                cacheWriteTokens: 0,
-                reasoningTokens: 0,
-              },
-            },
-          },
-        ],
-      }),
-    }),
-  );
-  expect(response?.status).toBe(200);
-  expect(
-    (
-      await db.query<{ count: string }>("select count(*)::text as count from sandbox_turn_models where sandbox_id=$1", [
-        f.sandbox.id,
-      ])
-    ).rows[0]?.count,
-  ).toBe("0");
-  const priced = (
-    await db.query<{ usage_turns: { turns: Array<{ pricing: unknown }> } }>(
-      "select usage_turns from sandboxes where id=$1",
-      [f.sandbox.id],
-    )
-  ).rows[0]?.usage_turns.turns[0]?.pricing;
-  expect(priced).toMatchObject({ credentialId: selected, usd: "0.00034", basis: "estimated", unknown: null });
-  await complete(session, { promptId, conversationId, status: "queued" });
-  expect((await service.prompt(f.actor, f.sandbox.id, input)).state).toBe("admitted");
-  const admitted = (
-    await db.query<{ pricing_context: { credentialId: string } }>(
-      "select pricing_context from sandbox_turn_models where sandbox_id=$1 and prompt_id=$2",
-      [f.sandbox.id, promptId],
-    )
-  ).rows[0];
-  expect(admitted?.pricing_context.credentialId).toBe(selected);
-});
-
-test("a queued Docker send resumes the exact host job and fences health enqueue and send", async () => {
-  const f = await fixture();
-  await ready(f);
-  const stopId = randomUUID();
-  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
-  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  await sql.query("update public.sandboxes set stop_requested_at=null where id=$1", [f.sandbox.id]);
-  await sql.query("update public.docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, DOCKER_HOST_PROTOCOL]);
-  const input = { id: f.sandbox.id, request_id: randomUUID(), prompt: "Wake and continue" };
-  const {
-    rows: [stopped],
-  } = await sql.query<{ generation: string }>(
-    "select lifecycle_generation::text as generation from public.sandboxes where id=$1",
-    [input.id],
-  );
-  const store = createJobsStore(sql, key);
-  const payload = { requestId: input.request_id };
-  await store.enqueue("turn_dispatch", input.id, Number(stopped!.generation), input.request_id, payload, {
-    orgId: f.actor.orgId,
-    maxAttempts: 3,
-  });
-  const owner = randomUUID();
-  const {
-    rows: [row],
-  } = await sql.query<Job>(
-    `select id,kind,sandbox_id,generation::text,lease_epoch::text,attempts,max_attempts,outcome
-      from public.claim_job('turn_dispatch',$1,30,32)`,
-    [owner],
-  );
-  if (!row) throw new Error("Missing turn job.");
-  const job = { ...row, payload };
-  const caller = {
-    userId: f.actor.userId,
-    via: "service" as const,
-    orgs: [{ orgId: f.actor.orgId, role: "member" as const }],
-  };
-  let now = 0;
-  let hostAccepted = false;
-  let session: Awaited<ReturnType<Fixture["enrol"]>> | undefined;
-  const promptId = randomUUID();
-  const clock = {
-    now: () => now,
-    async wait(ms: number) {
-      now += ms;
-      if (!hostAccepted) {
-        await hosts.claimResume(f.hostToken, f.installationId, input.request_id, true);
-        hostAccepted = true;
-      } else if (!session) {
-        const resume = await hosts.poll(f.hostToken, f.installationId);
-        if (resume?.operation !== "resume" || resume.requestId !== input.request_id)
-          throw new Error("Missing exact resume job.");
-        session = await authority.enrol(resume.bootstrap.enrolmentToken);
-        await hosts.complete(f.hostToken, f.installationId, { requestId: resume.requestId, outcome: "completed" });
-      } else {
-        const command = (await commands.next(session.runtimeToken, session.epoch)).command;
-        if (!command) throw new Error("Missing wake health or prompt command.");
-        await commands.complete(session.runtimeToken, session.epoch, {
-          epoch: session.epoch,
-          requestId: command.requestId,
-          status: 200,
-          body: {
-            version: 1,
-            requestId: command.requestId,
-            result:
-              command.op === "health"
-                ? { ready: true, generation: session.epoch }
-                : { promptId, conversationId: randomUUID(), status: "running" },
-          },
-        });
-      }
-    },
-  };
-  const controls = createDockerSandboxControls(sql, key, {
-    clock,
-    resume: bootstrap,
-    sendEnabled: true,
-  });
-  const healthId = `docker_ready_${input.request_id}`;
-  const wakeHealth = (tx: Sql) =>
-    tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [input.id, healthId]);
-  let loseAt: "health enqueue" | "dispatch" | undefined = "health enqueue";
-  const claim = {
-    handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
-      store.handoffGeneration(job, owner, handoff),
-    async canDispatch(tx?: Sql) {
-      if (tx && session) {
-        if (loseAt === "health enqueue" && (await wakeHealth(tx)).rows.length) return false;
-        if (loseAt === "dispatch") {
-          const { rows } = await tx.query("select id from public.sandboxes where id=$1 and status='ready'", [input.id]);
-          if (rows.length) return false;
-        }
-      }
-      return (await store.inspect(job, owner, tx)) === "dispatch";
-    },
-  };
-  await expect(controls.invoke(caller, "send", input, { claim })).rejects.toThrow(
-    "Docker sandbox operation is unavailable",
-  );
-  expect((await reservations.get(f.actor, input.id)).status).toBe("starting");
-  expect((await wakeHealth(sql)).rows).toHaveLength(0);
-  loseAt = "dispatch";
-  await expect(controls.invoke(caller, "send", input, { claim })).rejects.toThrow(
-    "Docker sandbox operation is unavailable",
-  );
-  expect((await reservations.get(f.actor, input.id)).status).toBe("ready");
-  expect((await wakeHealth(sql)).rows).toHaveLength(1);
-  loseAt = undefined;
-  await expect(controls.invoke(caller, "send", input, { claim })).resolves.toMatchObject({
-    handled: true,
-    result: { requestId: input.request_id, promptId },
-  });
-  const { rows } = await sql.query(
-    `select s.lifecycle_generation=j.generation and j.generation=$2::bigint+1 as advanced_once
-       from public.sandboxes s join public.jobs j on j.sandbox_id=s.id where j.id=$1`,
-    [job.id, stopped!.generation],
-  );
-  expect(rows).toEqual([{ advanced_once: true }]);
 });

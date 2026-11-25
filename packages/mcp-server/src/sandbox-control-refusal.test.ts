@@ -23,11 +23,11 @@ test("live and retained idle sandboxes stay usable only before expiry", () => {
   }
 });
 
-test("only send resumes preserved stopped cloud sandboxes", () => {
+test("only send resumes preserved stopped sandboxes", () => {
   for (const provider of ["boat", "modal", "docker"]) {
     for (const operation of ["send", "steer", "exec", "interrupt"]) {
       const row = { provider, status: "stopped" };
-      expect(sandboxControlRefusal(row, now, operation) === null).toBe(operation === "send" && provider !== "docker");
+      expect(sandboxControlRefusal(row, now, operation) === null).toBe(operation === "send");
       expect(
         sandboxControlRefusal({ ...row, preservationNote: "checkpoint_failed_disk_not_retained" }, now, operation),
       ).not.toBeNull();
@@ -35,7 +35,7 @@ test("only send resumes preserved stopped cloud sandboxes", () => {
   }
 });
 
-test("retained Docker idle pauses accept a fresh send but terminal Docker stops do not", () => {
+test("ordinary and checkpointed Docker stops can wake only while retained", () => {
   const row = { provider: "docker", status: "stopped", statusReason: "idle_paused", expiresAt: "2026-11-17T00:00:00Z" };
   expect(sandboxControlRefusal(row, now, "send")).toBeNull();
   // A merge stop is admitted through the same retained idle checkpoint.
@@ -46,7 +46,8 @@ test("retained Docker idle pauses accept a fresh send but terminal Docker stops 
       "Send a message to resume its retained idle checkpoint",
     );
   for (const change of [
-    { statusReason: null },
+    { statusReason: "expired", expiresAt: null },
+    { statusReason: "disk_pressure" },
     { expiresAt: now.toISOString() },
     { preservationNote: "checkpoint_failed_disk_not_retained" },
   ])

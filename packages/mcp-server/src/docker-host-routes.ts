@@ -10,6 +10,7 @@ import { isSnapshotBaselineTool } from "@armada/core/server";
 import {
   DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER,
   DOCKER_HOST_PREFER_STARTUP_HEADER,
+  DOCKER_HOST_RESTORE_RECOVERY_HEADER,
   type DockerHostPollResponse,
 } from "../../core/src/docker-host-wire.ts";
 import { type DockerHostResources, validDockerAvailability } from "../../core/src/docker-resource-policy.ts";
@@ -382,11 +383,12 @@ export function createDockerHostRoutes(
               }
             : undefined,
         );
-        let resumeClaims: Awaited<ReturnType<typeof store.resumeClaimsForHost>>;
         let job: Awaited<ReturnType<typeof store.poll>>;
+        let restoreRecovery: Awaited<ReturnType<typeof store.restoreRecoveryForHost>>;
+        const supportsRestoreRecovery = request.headers.get(DOCKER_HOST_RESTORE_RECOVERY_HEADER) === "1";
         const skipSnapshots = body.skipSnapshots === true;
         const supportsPhysicalDelete = request.headers.get("x-armada-docker-host-delete-physical") === "1";
-        const supportsRestore = request.headers.get("x-armada-docker-host-restore") === "1";
+        const supportsRestore = supportsRestoreRecovery && request.headers.get("x-armada-docker-host-restore") === "1";
         const supportsMachineBootstrap = request.headers.get(DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER) === "1";
         const preferStartup = request.headers.get(DOCKER_HOST_PREFER_STARTUP_HEADER) === "1";
         const runningIds = (running as string[] | undefined) ?? [];
@@ -394,24 +396,34 @@ export function createDockerHostRoutes(
         const wake = runtimeWakes.watch(`host:${hostId}`);
         try {
           for (;;) {
-            resumeClaims = body.resumeClaimProtocol === 1 ? await store.resumeClaimsForHost(token, installationId) : [];
-            job = await store.poll(
-              token,
-              installationId,
-              version,
-              skipSnapshots,
-              body.resources as DockerHostResources | undefined,
-              body.resourcePolicyVersion as 1 | undefined,
-              body.diskFreeBytes as number | null | undefined,
-              body.stoppedSandboxBytes as number | null | undefined,
-              runningIds,
-              protocol,
-              supportsPhysicalDelete,
-              supportsRestore,
-              preferStartup,
-              supportsMachineBootstrap,
-            );
-            if (job || resumeClaims.length) break;
+            let pickupRefusal: DockerHostDenied | undefined;
+            try {
+              job = await store.poll(
+                token,
+                installationId,
+                version,
+                skipSnapshots,
+                body.resources as DockerHostResources | undefined,
+                body.resourcePolicyVersion as 1 | undefined,
+                body.diskFreeBytes as number | null | undefined,
+                body.stoppedSandboxBytes as number | null | undefined,
+                runningIds,
+                protocol,
+                supportsPhysicalDelete,
+                supportsRestore,
+                preferStartup,
+                supportsMachineBootstrap,
+                supportsRestoreRecovery,
+              );
+            } catch (error) {
+              if (!supportsRestoreRecovery || !(error instanceof DockerHostDenied)) throw error;
+              pickupRefusal = error;
+              job = null;
+            }
+            if (supportsRestoreRecovery)
+              restoreRecovery = await store.restoreRecoveryForHost(token, installationId, runningIds);
+            if (pickupRefusal && !restoreRecovery) throw pickupRefusal;
+            if (job || restoreRecovery) break;
             // Recheck every second with a read-only probe; the full poll above
             // (host reconciliation, heartbeat and claim writes) runs again only
             // when something may be ready, not once a second per idle host.
@@ -432,7 +444,6 @@ export function createDockerHostRoutes(
                 installationId,
                 skipSnapshots,
                 runningIds,
-                body.resumeClaimProtocol === 1,
                 supportsPhysicalDelete,
                 supportsRestore,
                 supportsMachineBootstrap,
@@ -453,7 +464,8 @@ export function createDockerHostRoutes(
             targetVersion: VERSION,
             containerInventory: 1,
             containerInventoryDeploymentId: inventoryDeploymentId(hostId, installationId),
-            resumeClaims,
+            resumeClaims: [],
+            ...(restoreRecovery ? { restoreRecovery } : {}),
             job,
             // Every generation with a queued resume/bootstrap, so the daemon
             // fences all of them, not only the single job it was handed.
@@ -469,12 +481,6 @@ export function createDockerHostRoutes(
             },
           },
         );
-      }
-      if ("claimed" in body) {
-        if (typeof body.claimed !== "boolean") throw new InvalidInput();
-        const requestId = string(body.requestId);
-        await store.claimResume(token, installationId, requestId, body.claimed);
-        return Response.json({ requestId }, { headers });
       }
       if ("cleaned" in body) {
         if (body.cleaned !== true) throw new InvalidInput();

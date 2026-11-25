@@ -218,6 +218,23 @@ export async function markOutputCollectorSupported(sql: Sql, id: string, generat
 
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
+/** Cleanup can adopt a host-confirmed placement without publishing runtime readiness. */
+export async function adoptDockerRestoreForCleanup(
+  tx: Sql,
+  sandboxId: string,
+  generation: string | number,
+  predecessor: string,
+  replacement: string,
+) {
+  const { rows } = await tx.query(
+    `update public.sandboxes set docker_generation=$4,
+       provider_sandbox_id=concat('armada-',docker_installation_id,'-',docker_host_id,'-',id,'-',$4::uuid)
+     where id=$1 and lifecycle_generation=$2 and provider='docker' and docker_generation=$3 returning id`,
+    [sandboxId, generation, predecessor, replacement],
+  );
+  return rows.length === 1;
+}
+
 export async function attachDockerRestorePlacement(
   tx: Sql,
   claim: Pick<Job, "id" | "sandbox_id" | "generation" | "lease_epoch">,
@@ -365,13 +382,10 @@ export async function publishRuntimeReadiness(
      ) launch on true
      where s.id=$1 and s.status='starting' and s.lifecycle_generation=$3
        and (
-         (s.provider='docker' and $2::boolean = exists(
-           select 1 from public.docker_resume_claims c where c.sandbox_id=s.id
-           and c.lifecycle_generation=s.lifecycle_generation-1 and c.accepted
-         ) and ($2::boolean or exists(
+         (s.provider='docker' and exists(
            select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
            and j.bound_operation='create' and j.outcome='completed'
-         )))
+         ))
          or exists(select 1 from public.jobs j where not $2::boolean and j.kind='resume' and j.sandbox_id=s.id
            and j.generation=s.lifecycle_generation and j.outcome ? 'bootstrap_ticket_enc' and j.state in ('queued','leased'))
          or launch.id is not null
@@ -1117,132 +1131,6 @@ export async function failDockerStartup(
   return true;
 }
 
-export async function failDockerResumeActivation(
-  tx: Sql,
-  sandboxId: string,
-  generation: number | string,
-  requestId: string,
-  reason: string,
-) {
-  const fenced = await tx.query<{ status: "starting" | "ready" | "running"; generation: string }>(
-    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1
-     from public.docker_host_jobs resumed
-     where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker'
-       and s.status in ('starting','ready','running') and s.stop_requested_at is null and s.deleted_at is null
-       and not ${dockerStopPending("s.id", "s.lifecycle_generation")}
-       and resumed.request_id=$3 and resumed.bound_sandbox_id=s.id and resumed.host_id=s.docker_host_id
-       and resumed.bound_operation='resume'
-       and not exists (
-         select 1 from public.docker_host_jobs later where later.bound_sandbox_id=s.id
-           and later.host_id=resumed.host_id and later.bound_operation='resume' and later.position>resumed.position
-       ) returning s.status, s.lifecycle_generation::text as generation`,
-    [sandboxId, generation, requestId],
-  );
-  const activation = fenced.rows[0];
-  if (!activation) return false;
-
-  const result = await transitionSandbox(tx, {
-    sandboxId,
-    expectedGeneration: activation.generation,
-    fromStates: [activation.status],
-    toState: "failed",
-    actor: "docker_host",
-    code: "resume_ack_failed",
-    effects: [],
-  });
-  if (result.kind === "conflict") throw new Error("Docker resume activation changed while settling its failure.");
-  await tx.query("update public.sandboxes set status_reason=$2 where id=$1", [sandboxId, reason]);
-  return true;
-}
-
-export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
-  const {
-    rows: [eligible],
-  } = await tx.query<{ status: "starting" | "failed"; generation: string }>(
-    `select s.status,s.lifecycle_generation::text as generation from public.sandboxes s
-     where s.id=$1 and s.provider='docker' and s.stop_requested_at is null and s.deleted_at is null
-       and s.expires_at>now()
-       and ((s.status='starting' and s.lifecycle_generation=$2::bigint)
-         or (s.status='failed' and s.lifecycle_generation=$2::bigint+1 and exists (
-           select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
-             and t.generation=s.lifecycle_generation and t.from_status='starting'
-             and t.to_status='failed' and t.actor='docker_host' and t.code='resume_ack_failed'
-         )))
-     for update`,
-    [sandboxId, generation],
-  );
-  if (!eligible) return false;
-  const result = await transitionSandbox(tx, {
-    sandboxId,
-    expectedGeneration: eligible.generation,
-    fromStates: [eligible.status],
-    toState: "stopping",
-    actor: "docker_host",
-    code: "docker_resume_refusal_stop",
-    effects: [],
-  });
-  return result.kind === "applied";
-}
-
-export async function confirmRefusedDockerResumeRetention(
-  tx: Sql,
-  sandboxId: string,
-  generation: string | number,
-  requestId: string,
-) {
-  const retained = await tx.query(
-    `select s.id from public.sandboxes s
-     where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker' and s.status='stopping'
-       and s.status_reason is null and s.stopped_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
-       and not s.application_secret_tainted and cardinality(s.conversation_ids)=1
-       and exists (
-         select 1 from public.docker_host_jobs stop
-         join public.docker_hosts h on h.id=stop.host_id
-         join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=stop.bound_actor_id
-         join public.members m on m.org_id=e.org_id and m.user_id=e.user_id
-         join lateral (
-           select r.* from public.docker_host_jobs r
-           where r.bound_sandbox_id=s.id and r.bound_operation='resume' and r.position<stop.position
-           order by r.position desc limit 1
-         ) resume on resume.host_id=stop.host_id and resume.bound_actor_id=stop.bound_actor_id
-             and resume.bound_actor_epoch=stop.bound_actor_epoch
-         where stop.request_id=$3 and stop.bound_sandbox_id=s.id and stop.bound_operation='stop'
-           and stop.host_id=s.docker_host_id and h.installation_id=s.docker_installation_id and h.revoked_at is null
-           and stop.bound_actor_id=s.owner_id and stop.bound_actor_epoch=e.epoch
-           and stop.created_at=s.stop_requested_at and stop.cancelled_at is null
-           and resume.outcome is not null and resume.cancelled_at is null
-           and exists (
-             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
-               and t.generation=s.lifecycle_generation and t.to_status='stopping'
-               and t.actor='docker_host' and t.code='docker_resume_refusal_stop'
-               and t.generation=resume.refused_resume_generation+
-                 case t.from_status when 'starting' then 1 when 'failed' then 2 end
-           )
-           and not exists (
-             select 1 from public.docker_host_jobs earlier where earlier.bound_sandbox_id=s.id
-               and earlier.bound_operation='stop' and earlier.position between resume.position+1 and stop.position-1
-           )
-       )
-       and exists (
-         select 1 from public.runtime_enrolments r
-         join public.runtime_checkpoints p on p.sandbox_id=r.sandbox_id and p.epoch=r.epoch
-         where r.sandbox_id=s.id and p.completed_at is not null
-           and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
-       )`,
-    [sandboxId, generation, requestId],
-  );
-  if (!retained.rows.length) return;
-  await transitionSandbox(tx, {
-    sandboxId,
-    expectedGeneration: generation,
-    fromStates: ["stopping"],
-    toState: "stopped",
-    actor: "lifecycle_runner",
-    code: "docker_resume_retention_confirmed",
-    effects: [],
-  });
-}
-
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(
@@ -1576,9 +1464,7 @@ export function createSandboxLifecycle(
               terminal: info.physicalExitConfirmed === true || ["stopped", "deleted"].includes(info.state),
             }),
           );
-        } catch {
-          /* Diagnostics cannot change lifecycle settlement. */
-        }
+        } catch {}
         physicalExit = info.physicalExitConfirmed === true;
         const physicalDeadline = info.expiresAt?.getTime() ?? Number.NaN;
         const observedBoatDeadline =

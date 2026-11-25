@@ -44,7 +44,7 @@ test("machine capabilities match the approved runtime provider matrix", () => {
       resourceSampler: false,
       sizeResources: "none",
       idleStop: false,
-      resumeAfterStop: false,
+      resumeAfterStop: true,
       sizes: [],
     },
   });
