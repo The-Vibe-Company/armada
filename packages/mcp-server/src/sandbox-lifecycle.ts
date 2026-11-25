@@ -580,6 +580,15 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   });
 }
 
+export async function pendingModalStopOutput(tx: Sql, sandboxId: string, generation: number | string) {
+  const { rows } = await tx.query(
+    `select 1 from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop'
+       and state in ('queued','leased') and outcome ? 'output'`,
+    [sandboxId, generation],
+  );
+  return rows.length > 0;
+}
+
 export function holdModalStop(tx: Sql, sandboxId: string, generation: string) {
   return tx.query(
     `update public.sandboxes set lifecycle_error=$3,reconcile_after='infinity'
