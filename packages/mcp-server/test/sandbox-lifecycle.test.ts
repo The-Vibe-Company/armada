@@ -1171,19 +1171,10 @@ for (const loss of ["membership", "credential", "credential_stale_generation", "
     expect(row.last_observed_at).toBeNull();
     expect(row.stop_requested_at).not.toBeNull();
     expect(row.provider_sandbox_id).toBe("bx_23456789");
-    if (loss === "credential_stale_generation") {
-      expect(row.reconcile_lease).toBeNull();
-      expect(row.lifecycle_error).toBeNull();
-      expect(row.held).toBe(false);
-    } else if (loss === "transient") {
-      expect(row.reconcile_lease).toBeNull();
-      expect(row.lifecycle_error).toBeNull();
-      expect(row.held).toBe(false);
-    } else {
-      expect(row.reconcile_lease).toBeNull();
-      expect(row.lifecycle_error).toContain("Operator cleanup required:");
-      expect(row.held).toBe(true);
-    }
+    expect(row.reconcile_lease).toBeNull();
+    expect(row.held).toBe(true);
+    if (loss === "credential_stale_generation" || loss === "transient") expect(row.lifecycle_error).toBeNull();
+    else expect(row.lifecycle_error).toContain("Operator cleanup required:");
     if (loss !== "credential_stale_generation") expect(await worker.reconcileOne()).toBe(false);
   });
 }

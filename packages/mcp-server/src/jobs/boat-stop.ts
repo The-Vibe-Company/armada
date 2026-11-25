@@ -152,9 +152,10 @@ export function createBoatStop(
       const { machine, outputs, exitEvidence } = await resolve(target, authorize);
       signal.throwIfAborted();
       const observed = await machine.observe({ ...identity, signal });
+      if (observed.kind === "unknown") return retry();
       const absent = observed.receipt?.operation === "delete";
       archiveObserved = observed.kind === "absent" && !absent;
-      if (observed.kind === "unknown" || (absent && (target.retain || !target.backendId))) return retry();
+      if (absent && (target.retain || !target.backendId)) return retry();
       if (observed.kind === "present" && observed.phase === "running" && (await context.canDispatch()))
         await stageStopOutputs(sql, key, job, context, outputs, Math.min(12_000, deadline - 30_000 - now()));
       signal.throwIfAborted();
