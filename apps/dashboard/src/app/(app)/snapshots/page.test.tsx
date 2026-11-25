@@ -111,8 +111,8 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
     const decoder = new TextDecoder();
     let html = "";
     while (!html.includes("Docker snapshot")) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
+      const chunk = await Promise.race([reader.read(), settledReadsDrained]);
+      if (!chunk || chunk.done) break;
       html += decoder.decode(chunk.value, { stream: true });
     }
     expect(html).toContain("Cloud snapshot");
