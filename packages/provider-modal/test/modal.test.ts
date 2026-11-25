@@ -9,7 +9,7 @@ import {
   OUTPUT_COLLECTOR,
   outputEntryCollector,
 } from "@armada/core/server";
-import { type Image, type ModalClient, NotFoundError, type Sandbox } from "modal";
+import { type Image, type ModalClient, NotFoundError, type Sandbox, Volume } from "modal";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createGoldenBuildJob } from "../../mcp-server/src/golden-worker.ts";
 import { createJobsRunner } from "../../mcp-server/src/jobs/runner.ts";
@@ -188,6 +188,7 @@ function fixture(
   let snapshotBudget: number | undefined;
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
   let manifestResult: { exitCode: number | null; stdout: string } | undefined;
+  let artifactVolume: Volume | undefined;
   let failSnapshot = false;
   let loseTerminateResponse = false;
   let failCreate = false;
@@ -221,7 +222,8 @@ function fixture(
       fromName: async (name: string, params: object) => {
         expect(name).toBe("armada-runtime-artifacts");
         expect(params).toEqual({ environment: "main", createIfMissing: false });
-        throw new NotFoundError("No cache volume");
+        if (!artifactVolume) throw new NotFoundError("No cache volume");
+        return artifactVolume;
       },
     },
     sandboxes: {
@@ -436,6 +438,9 @@ function fixture(
     log,
     requestedRuntimes,
     resourceRequests,
+    setArtifactVolume: (volume: Volume) => {
+      artifactVolume = volume;
+    },
     sdkCommands,
     get snapshotBudget() {
       return snapshotBudget;
@@ -1040,6 +1045,23 @@ test("snapshot retirement refuses a live Modal fork reference", async () => {
   await f.provider.delete({ sandboxId: child.id });
   await f.provider.deleteSnapshot(name);
   await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("Modal runtime resume mounts the environment artifact cache read-only", async () => {
+  const f = fixture();
+  const volume = new Volume("vo_public_artifacts");
+  f.setArtifactVolume(volume);
+  const worker = await activeWorker(f);
+  await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+  await resumeRuntime(f.provider, {
+    sandboxId: worker.id,
+    generation: 2,
+    checkpoint: { epoch: "1", watermark: 0 },
+    ttlSeconds: 3600,
+  });
+  expect(f.resourceRequests.at(-1)?.volumes).toEqual({
+    "/opt/armada/artifact-cache": volume.withMountOptions({ readOnly: true }),
+  });
 });
 
 test("enrolled Modal bootstrap rejects a different physical machine before consuming the attempt", async () => {
