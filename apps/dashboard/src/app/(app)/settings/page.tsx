@@ -1,6 +1,7 @@
 import { githubAppFromEnv } from "@armada/core";
 import { GitPullRequestIcon } from "lucide-react";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { disconnectGitHub } from "@/app/actions/github";
 import { ConfirmedAction } from "@/components/confirmed-action";
 import { ConnectionPreferences } from "@/components/connection-preferences";
@@ -41,11 +42,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const installations = connection && !revoked ? storedGitHubInstallations(connection.installations) : [];
 
   return (
-    <div className="mx-auto flex w-full max-w-[880px] flex-col gap-7">
+    <div className="mx-auto flex w-full max-w-[920px] flex-col gap-7">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <PageHeader title="Your connections" />
         <Button asChild variant="outline">
-          <a href="/settings/api-keys">API keys</a>
+          <Link href="/settings/api-keys">API keys</Link>
         </Button>
       </div>
       {result && (
@@ -54,15 +55,15 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </Alert>
       )}
 
-      <Card data-settings="github" className="gap-3 rounded-[10px] border-0 bg-transparent py-0 shadow-none">
-        <CardHeader className="px-0">
+      <Card data-settings="github" className="gap-4">
+        <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <GitPullRequestIcon className="size-4" />
             GitHub
           </CardTitle>
           <CardDescription>Sandboxes commit and push as you.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4 px-0">
+        <CardContent className="space-y-4">
           {!configured && (
             <Alert variant="destructive">
               <AlertDescription>
@@ -72,10 +73,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           )}
 
           {connection && !revoked ? (
-            <div
-              className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border bg-card px-4 py-3.5"
-              data-github-state="connected"
-            >
+            <div className="flex flex-wrap items-center justify-between gap-3" data-github-state="connected">
               <div className="min-w-0 space-y-1">
                 <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
                   <span>
@@ -109,7 +107,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </div>
           ) : (
             <div
-              className="flex flex-wrap items-center justify-between gap-3 rounded-[10px] border bg-card px-4 py-3.5"
+              className="flex flex-wrap items-center justify-between gap-3"
               data-github-state={revoked ? "revoked" : "not-connected"}
             >
               <div className="min-w-0 space-y-1">
@@ -218,13 +216,13 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </Card>
       <PersonalProviderKeys owner={viewer.id} rows={personalKeys} />
       <Card>
-        <CardContent className="flex items-center justify-between gap-3 pt-6">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-sm font-medium">Model accounts</h2>
             <p className="text-sm text-muted-foreground">Subscriptions and API keys your agents run on.</p>
           </div>
           <Button variant="outline" asChild>
-            <a href="/harness">Models</a>
+            <Link href="/harness">Models</Link>
           </Button>
         </CardContent>
       </Card>

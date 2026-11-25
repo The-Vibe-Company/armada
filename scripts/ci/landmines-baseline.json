@@ -92,7 +92,7 @@
     "apps/dashboard/src/components/mod-key.tsx": 2,
     "apps/dashboard/src/components/model-accounts.tsx": 41,
     "apps/dashboard/src/components/model-fields.tsx": 11,
-    "apps/dashboard/src/components/nav-links.tsx": 2,
+    "apps/dashboard/src/components/nav-links.tsx": 1,
     "apps/dashboard/src/components/org-switcher.tsx": 13,
     "apps/dashboard/src/components/page-header.tsx": 4,
     "apps/dashboard/src/components/pages/skills-content.tsx": 3,

@@ -84,10 +84,10 @@ function Toast({ toast, onOpenChange }: { toast: ToastItem; onOpenChange: (open:
       type={toast.tone === "success" ? "background" : "foreground"}
       duration={TOAST_DURATION[toast.tone]}
       className={cn(
-        "group pointer-events-auto relative flex w-full items-start gap-3 rounded-lg border bg-card p-4 pr-10 text-sm text-card-foreground shadow-lg",
+        "group pointer-events-auto relative flex w-full items-start gap-3 rounded-lg border border-transparent bg-card p-4 pr-10 text-sm text-card-foreground shadow-lg",
         toast.tone === "destructive" && "border-destructive/40",
         "data-[swipe=cancel]:translate-x-0 data-[swipe=cancel]:transition-transform data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none",
-        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-right-full data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[swipe=end]:animate-out",
+        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-bottom-full data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-full data-[swipe=end]:animate-out data-[state=closed]:data-[swipe=end]:slide-out-to-bottom-0 data-[state=closed]:data-[swipe=end]:slide-out-to-right-full duration-170 ease-(--ease-out)",
         "motion-reduce:animate-none motion-reduce:transition-none",
       )}
     >

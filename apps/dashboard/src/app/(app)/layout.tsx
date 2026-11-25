@@ -13,8 +13,7 @@ import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
-import { parseSandboxListMetadata } from "@/lib/sandbox-access";
-import { sandboxListName } from "@/lib/sandbox-list-name";
+import { readLiveSandboxes } from "@/lib/live-sandboxes";
 import { createClient } from "@/lib/supabase/server";
 
 /**
@@ -36,7 +35,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <ShellSearch />
     </div>
   );
-  const liveSandboxes = selected ? loadLiveSandboxes(selected.org.id) : Promise.resolve([]);
+  const liveSandboxes = selected
+    ? createClient().then((supabase) => readLiveSandboxes(supabase, selected.org.id))
+    : Promise.resolve(null);
   const shell = (
     <SidebarProvider
       data-shell
@@ -53,7 +54,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
         launch={
           <div
             data-shell-launch
-            className="px-3 pb-2 group-data-[state=collapsed]:px-2 group-data-[state=collapsed]:[&_button]:justify-center group-data-[state=collapsed]:[&_button_span]:sr-only group-data-[state=collapsed]:[&_kbd]:hidden [&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none [&_button:hover]:bg-[var(--raised)]"
+            className="px-3 pb-2 group-data-[state=collapsed]:px-2 group-data-[state=collapsed]:[&_button]:justify-center group-data-[state=collapsed]:[&_button_span]:sr-only group-data-[state=collapsed]:[&_kbd]:hidden [&_button]:h-8 [&_button]:w-full [&_button]:justify-start [&_button]:bg-transparent [&_button]:px-2.5 [&_button]:text-[13px] [&_button]:text-foreground [&_button]:shadow-none fine-hover:[&_button:hover]:bg-[var(--raised)]"
           >
             <SandboxLaunchAction shortcut />
           </div>
@@ -101,7 +102,11 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       </main>
     </SidebarProvider>
   );
-  return <TooltipProvider>{shell}</TooltipProvider>;
+  return (
+    <TooltipProvider delayDuration={350} skipDelayDuration={300}>
+      {shell}
+    </TooltipProvider>
+  );
 }
 
 function SignOut({ compact = false }: { compact?: boolean }) {
@@ -115,30 +120,12 @@ function SignOut({ compact = false }: { compact?: boolean }) {
   );
 }
 
-async function loadLiveSandboxes(orgId: string) {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .rpc("sandbox_list_metadata")
-    .eq("orgId", orgId)
-    .eq("canOpen", true)
-    .in("status", ["starting", "ready", "running", "stopping"])
-    .order("createdAt", { ascending: false })
-    .order("id")
-    .limit(10);
-  if (error) return [];
-  return parseSandboxListMetadata(data).rows.map((row) => ({
-    id: row.id,
-    label: sandboxListName(row),
-    status: row.status,
-  }));
-}
-
 async function ShellNavigation({
   sandboxes,
   organizationId,
   organizationAdmin,
 }: {
-  sandboxes: ReturnType<typeof loadLiveSandboxes>;
+  sandboxes: ReturnType<typeof readLiveSandboxes>;
   organizationId: string | null;
   organizationAdmin: boolean;
 }) {
@@ -147,7 +134,7 @@ async function ShellNavigation({
       organizationId={organizationId}
       organizationAdmin={organizationAdmin}
       className="px-3 pb-4"
-      sandboxes={await sandboxes}
+      initialLive={await sandboxes}
     />
   );
 }

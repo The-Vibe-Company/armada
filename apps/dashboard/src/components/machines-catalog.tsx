@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CatalogDrawer } from "@/components/catalog-drawer";
 import type { ResourceRow } from "@/components/resource-browser";
@@ -18,26 +18,37 @@ export function MachinesSection({
   initial?: string | null;
   empty?: ReactNode;
 }) {
-  const [selected, setSelected] = useState<string | null>(initial);
+  const [{ selected, visited }, setSelection] = useState(() => ({
+    selected: initial,
+    visited: new Set(initial ? [initial] : []),
+  }));
+
+  const updateSelection = useCallback((key: string | null) => {
+    setSelection((previous) => ({
+      selected: key,
+      visited: key && !previous.visited.has(key) ? new Set([...previous.visited, key]) : previous.visited,
+    }));
+  }, []);
   const opener = useRef<HTMLButtonElement | null>(null);
   const root = useRef<HTMLElement>(null);
   const lastSelected = useRef<string | null>(initial);
   const parking = useRef<HTMLDivElement>(null);
   const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const hasVisited = visited.size > 0;
   useLayoutEffect(() => {
-    setHost(document.createElement("div"));
-  }, []);
+    if (hasVisited) setHost(document.createElement("div"));
+  }, [hasVisited]);
   const current = rows.find((row) => row.key === selected);
   useLayoutEffect(() => {
     if (host && !current) parking.current?.appendChild(host);
     if (current) lastSelected.current = current.key;
   }, [host, current]);
   useEffect(() => {
-    const sync = () => setSelected(new URL(window.location.href).searchParams.get("item"));
+    const sync = () => updateSelection(new URL(window.location.href).searchParams.get("item"));
     window.addEventListener("popstate", sync);
     sync();
     return () => window.removeEventListener("popstate", sync);
-  }, []);
+  }, [updateSelection]);
   function select(key: string | null) {
     const url = new URL(window.location.href);
     if (key) url.searchParams.set("item", key);
@@ -45,7 +56,7 @@ export function MachinesSection({
     if (key) window.history.pushState({ machinesDetail: true }, "", url);
     else if (window.history.state?.machinesDetail) window.history.back();
     else window.history.replaceState(window.history.state, "", url);
-    setSelected(key);
+    updateSelection(key);
   }
   return (
     <section ref={root} aria-label={label} className="space-y-3">
@@ -120,14 +131,16 @@ export function MachinesSection({
           }}
         />
       </CatalogDrawer>
-      <div ref={parking} hidden />
+      {hasVisited && <div ref={parking} hidden />}
       {host &&
         createPortal(
-          rows.map((row) => (
-            <div key={row.key} hidden={row.key !== selected}>
-              {row.detail}
-            </div>
-          )),
+          rows
+            .filter((row) => visited.has(row.key))
+            .map((row) => (
+              <div key={row.key} hidden={row.key !== selected}>
+                {row.detail}
+              </div>
+            )),
           host,
         )}
     </section>
