@@ -202,8 +202,8 @@ export const dockerModule: ServerModule = ({ mounts, workers }) => {
 export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);
   workers.managed.set("runtime-idle", idleLane);
-  shutdown.stopSockets = async ({ runtimeSockets, relayHub }) => {
-    await Promise.all([runtimeSockets.stop(), relayHub.stop()]);
+  shutdown.stopSockets = async ({ runtimeSockets, relayHub, relayPreview }) => {
+    await Promise.all([runtimeSockets.stop(), relayPreview.stop(), relayHub.stop()]);
   };
 };
 const modalArtifactWorker = ({ modal, modalArtifactCache, options }: ServerServices) => {

@@ -2,6 +2,7 @@ import type { ServerWebSocket } from "bun";
 import { createHandler } from "./http.ts";
 import { assembleServer } from "./modules.ts";
 import type { RelaySocketData } from "./relay-hub.ts";
+import type { PreviewWsSocketData } from "./relay-preview.ts";
 import { BUN_REQUEST_BODY_BACKSTOP, ingressRequest } from "./request-body-ceiling.ts";
 import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import type { RuntimeSocketData } from "./runtime-sockets.ts";
@@ -13,11 +14,11 @@ import { runtimeWakes, startEventNotifyListener } from "./wake-bus.ts";
 
 export { bunSql } from "./sql.ts";
 
-type ServerSocketData = ({ kind: "channel" } & RuntimeSocketData) | RelaySocketData;
+type ServerSocketData = ({ kind: "channel" } & RuntimeSocketData) | RelaySocketData | PreviewWsSocketData;
 
 export async function startServer(env: Record<string, string | undefined>, options: ServerOptions = {}) {
   const services = await createServerServices(env, options);
-  const { config, control, runtimeSockets, relayHub } = services;
+  const { config, control, runtimeSockets, relayHub, relayPreview } = services;
   const eventStreamShutdown = new AbortController();
   control.eventStreamShutdown = eventStreamShutdown.signal;
   control.stopAdmissionShutdown = eventStreamShutdown.signal;
@@ -69,6 +70,18 @@ export async function startServer(env: Record<string, string | undefined>, optio
             request,
           );
         }
+        if (request.headers.get("upgrade")?.toLowerCase() === "websocket" && relayPreview.isPreviewPath(pathname)) {
+          return observeRequest(
+            () => {
+              const id = currentRequestId()!;
+              return relayPreview.upgradeWebSocket(request, (data, headers) =>
+                instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: id, ...headers } }),
+              );
+            },
+            options.logError,
+            request,
+          );
+        }
         return fetch(request);
       },
       error: (error) =>
@@ -77,18 +90,27 @@ export async function startServer(env: Record<string, string | undefined>, optio
         }, options.logError),
       websocket: {
         ...relayHub.websocket,
-        open: (s) =>
-          s.data.kind === "channel"
-            ? runtimeSockets.websocket.open?.(s as ServerWebSocket<RuntimeSocketData>)
-            : relayHub.websocket.open?.(s as ServerWebSocket<RelaySocketData>),
-        message: (s, m) =>
-          s.data.kind === "channel"
-            ? runtimeSockets.websocket.message(s as ServerWebSocket<RuntimeSocketData>, m)
-            : relayHub.websocket.message(s as ServerWebSocket<RelaySocketData>, m),
-        close: (s, c, r) =>
-          s.data.kind === "channel"
-            ? runtimeSockets.websocket.close?.(s as ServerWebSocket<RuntimeSocketData>, c, r)
-            : relayHub.websocket.close?.(s as ServerWebSocket<RelaySocketData>, c, r),
+        open(s) {
+          if (s.data.kind === "channel")
+            return runtimeSockets.websocket.open?.(s as ServerWebSocket<RuntimeSocketData>);
+          if (s.data.kind === "preview-ws")
+            return relayPreview.websocket.open?.(s as ServerWebSocket<PreviewWsSocketData>);
+          return relayHub.websocket.open?.(s as ServerWebSocket<RelaySocketData>);
+        },
+        message(s, m) {
+          if (s.data.kind === "channel")
+            return runtimeSockets.websocket.message(s as ServerWebSocket<RuntimeSocketData>, m);
+          if (s.data.kind === "preview-ws")
+            return relayPreview.websocket.message(s as ServerWebSocket<PreviewWsSocketData>, m);
+          return relayHub.websocket.message(s as ServerWebSocket<RelaySocketData>, m);
+        },
+        close(s, c, r) {
+          if (s.data.kind === "channel")
+            return runtimeSockets.websocket.close?.(s as ServerWebSocket<RuntimeSocketData>, c, r);
+          if (s.data.kind === "preview-ws")
+            return relayPreview.websocket.close?.(s as ServerWebSocket<PreviewWsSocketData>, c, r);
+          return relayHub.websocket.close?.(s as ServerWebSocket<RelaySocketData>, c, r);
+        },
       },
     }),
     {

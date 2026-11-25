@@ -32,7 +32,13 @@ async function handleMintRelayTicket(request: Request, options: ControlOptions) 
     });
     if (!res.ok) return relayFail(res.status, res.code, res.message);
     return Response.json(
-      { ticket: res.ticket, wsUrl: res.wsUrl, expiresAt: res.expiresAt },
+      {
+        ticket: res.ticket,
+        wsUrl: res.wsUrl,
+        ...(res.bootstrapUrl ? { bootstrapUrl: res.bootstrapUrl } : {}),
+        ...(res.previewUrl ? { previewUrl: res.previewUrl } : {}),
+        expiresAt: res.expiresAt,
+      },
       { headers: { "cache-control": "no-store" } },
     );
   } catch (error) {
