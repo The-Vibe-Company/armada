@@ -28,7 +28,7 @@ import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
-import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
+import { DockerHostUpgradeRequired } from "./docker-host-version.ts";
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
@@ -464,26 +464,11 @@ export function createDockerSandboxControls(
     if (!sql.transaction) throw failure("unavailable", "Docker sandbox cleanup is unavailable.");
     const selected = stop
       ? await hosts.enqueueStop(actor, row.id, requestId, onlyIfIdle ? { idleSequence: row.prompt_sequence } : {})
-      : await sql.transaction(async (tx) => {
-          await tx.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`docker-cleanup:${row.id}:delete`]);
-          const pending = (
-            await tx.query<{ request_id: string; bound_actor_id: string }>(
-              `select request_id,bound_actor_id from public.docker_host_jobs where bound_sandbox_id=$1
-             and bound_operation='delete' and outcome is null order by position limit 1`,
-              [row.id],
-            )
-          ).rows[0];
-          if (pending && (pending.bound_actor_id !== caller.userId || (requestId && requestId !== pending.request_id)))
-            throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
-          const scoped = scopedRuntimeSql(tx);
-          await assertDelete(caller, row.id, scoped);
-          return (
-            await createDockerHostStore(scoped, key).enqueueSandbox(actor, row.id, {
-              requestId: requestId ?? pending?.request_id ?? randomUUID(),
-              operation: "delete",
-            })
-          ).requestId;
-        });
+      : (
+          await hosts.enqueueCleanup(actor, row.id, { requestId, operation: "delete" }, (tx) =>
+            assertDelete(caller, row.id, scopedRuntimeSql(tx)),
+          )
+        ).requestId;
     if (!selected) return result(await visible(caller, row.id));
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
     for (;;) {
@@ -503,29 +488,6 @@ export function createDockerSandboxControls(
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
       await clock.wait(Math.min(250, deadline - clock.now()));
     }
-  }
-  async function resume(caller: Caller, row: Row, requestId?: string) {
-    if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
-    if (row.owner_id !== caller.userId) throw denied();
-    if (!HARNESS_CAPABILITIES[row.harness].resume)
-      throw failure("unavailable", "This harness cannot resume a stopped conversation.");
-    const reclaimed = dockerWorkspaceReclaimedMessage(row.status_reason);
-    if (row.status === "deleted" && reclaimed) throw new DockerRetentionEnded(row.status_reason);
-    if (!requestId) throw invalid();
-    const host = (
-      await sql.query<{ daemon_protocol: number | null }>(
-        "select daemon_protocol from public.docker_hosts where id=$1 and org_id=$2",
-        [row.docker_host_id, row.org_id],
-      )
-    ).rows[0];
-    if (!supportsDockerHostProtocol(host?.daemon_protocol)) {
-      throw new DockerHostUpgradeRequired();
-    }
-    return options.resume(
-      caller,
-      await createDockerSandboxService(sql).get({ userId: caller.userId, orgId: row.org_id }, row.id),
-      requestId,
-    );
   }
   async function control(caller: Caller, row: Row, name: string, args: Record<string, unknown>) {
     if (row.owner_id !== caller.userId) throw denied();
@@ -773,8 +735,13 @@ export function createDockerSandboxControls(
             if (!queued) throw failure("unavailable", "Docker send requires the account turn queue.");
             return { handled: true as const, result: await send(caller, row, args, queued.claim) };
           }
-          if (name === "resume")
-            return { handled: true as const, result: await resume(caller, row, args.request_id as string | undefined) };
+          if (name === "resume") {
+            if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
+            return {
+              handled: true as const,
+              result: await options.resume(caller, row, args.request_id as string | undefined),
+            };
+          }
           const result =
             name === "status"
               ? await status(caller, row, args.prompt_id as string | undefined)

@@ -255,8 +255,10 @@ async function boundFixture(
 ) {
   const db = database();
   const host = registered ?? (await fixture());
-  const sandboxId = placement?.sandboxId ?? randomUUID(),
-    generation = placement?.generation ?? randomUUID();
+  const sandboxId = placement?.sandboxId ?? randomUUID();
+  const generation =
+    placement?.generation ??
+    (await createDockerMachineGenerationBindings(sql, host).bind({ sandboxId, generation: 1 }));
   await db.query(
     `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
       docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at,effective_ttl_seconds,docker_snapshot_id)
@@ -275,8 +277,17 @@ async function boundFixture(
     ],
   );
   const owner = { ...host.actor, userId: host.memberId };
-  const create = { requestId: randomUUID(), operation: "create" as const };
-  return { ...host, sandboxId, generation, owner, create };
+  const create = { requestId: generation, operation: "create" as const };
+  const request = {
+    sandboxId,
+    generation: 1,
+    source: placement?.snapshotId
+      ? { kind: "snapshot" as const, ref: placement.snapshotId }
+      : { kind: "image" as const, ref: placement?.image ?? job().request.image },
+    computeTtlSeconds: 3600,
+    size: null,
+  };
+  return { ...host, sandboxId, generation, owner, create, request };
 }
 
 async function machineCreateFixture(
@@ -871,13 +882,21 @@ test.each(["revocation", "physical removal", "failed physical removal"] as const
     if (fence === "revocation") await store.revoke(a.actor, a.hostId);
     else {
       await database().query("update sandboxes set status='failed' where id=$1", [a.sandboxId]);
-      const requestId = randomUUID();
-      await store.enqueueSandbox(a.owner, a.sandboxId, {
-        requestId,
-        operation: "deletePhysical",
-        machineId: a.machine.machineId,
-        lifecycleGeneration: a.machine.generation,
-      });
+      const adapter = store.machine({ actor: a.owner, hostId: a.hostId, installationId: a.installationId });
+      await expect(adapter.delete({ ...a.machine, scope: "physical-only" })).rejects.toThrow("outcome is pending");
+      const { requestId } = (await store.poll(
+        a.hostToken,
+        a.installationId,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        null,
+        null,
+        [],
+        null,
+        true,
+      ))!;
       await store.complete(a.hostToken, a.installationId, {
         requestId,
         outcome: fence === "failed physical removal" ? "failed" : "completed",
@@ -1008,15 +1027,14 @@ async function prepareRestore(
       ],
     );
   }
-  const allocation = await boundFixture(host, {
+  const a = await boundFixture(host, {
     sandboxId,
     generation: predecessor,
     expiresAt,
     image,
     ...(snapshot && { snapshotId: snapshot.id }),
   });
-  const a = { ...allocation, create: { ...allocation.create, requestId: predecessor } };
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   await store.complete(a.hostToken, a.installationId, {
     requestId: a.create.requestId,
     outcome: "completed",
@@ -1088,7 +1106,37 @@ async function prepareRestore(
   );
   if (!(await recordResumeAuthority(sql, a.sandboxId, 2, turn, new Date(expiresAt).toISOString(), {})))
     throw new Error("Missing Docker resume authority.");
-  const selection = { ...restore, lifecycleGeneration: 2, runnerJobId };
+  const enqueueRestore = async (
+    mailbox = store,
+    overrides: Partial<Parameters<ReturnType<typeof store.machine>["resume"]>[0]> = {},
+  ) => {
+    const {
+      rows: [claim],
+    } = await sql.query<Job>(
+      `update jobs set state='leased',lease_owner=$2,lease_epoch=lease_epoch+1,lease_until='infinity'
+       where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+      [runnerJobId, randomUUID()],
+    );
+    if (!claim) throw Error("Missing restore runner.");
+    const adapter = mailbox.machine({
+      actor: a.owner,
+      hostId: a.hostId,
+      installationId: a.installationId,
+      restoreClaim: claim,
+    });
+    try {
+      return await adapter.resume({
+        sandboxId,
+        generation: 2,
+        size: null,
+        computeTtlSeconds: request.ttlSeconds,
+        predecessor: { kind: "container", sandboxId, generation: 1, ref: restore.predecessor.machineId },
+        ...overrides,
+      });
+    } finally {
+      await sql.query("update jobs set state='queued',lease_owner=null,lease_until=null where id=$1", [runnerJobId]);
+    }
+  };
   const poll = (running: string[] = [], supportsRestore = true, hostStore = store, bootstrap = false) =>
     hostStore.poll(
       a.hostToken,
@@ -1106,12 +1154,12 @@ async function prepareRestore(
       false,
       bootstrap,
     );
-  return { ...a, restore, selection, cleanupId, poll, putIntent, credential };
+  return { ...a, restore, runnerJobId, enqueueRestore, cleanupId, poll, putIntent, credential };
 }
 
 async function restoreFixture() {
   const a = await prepareRestore();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
+  await expect(a.enqueueRestore()).rejects.toThrow("outcome is pending");
   return a;
 }
 
@@ -1310,7 +1358,7 @@ test("an admitted stop refuses fresh restore mailbox work", async () => {
   await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
   try {
     expect(await store.enqueueStop(a.owner, a.sandboxId, randomUUID())).toBeString();
-    await denied(store.enqueueSandbox(a.owner, a.sandboxId, a.selection));
+    await denied(a.enqueueRestore());
     expect(await a.poll()).toBeNull();
   } finally {
     await sql.query("delete from jobs where sandbox_id=$1", [a.sandboxId]);
@@ -1329,7 +1377,7 @@ test.each(["stop", "delete"] as const)(
       expect(await runDockerStop(sql, key, a.sandboxId)).toMatchObject({ status: "retry", unattempted: true });
     } else {
       await sql.query("update sandboxes set status='failed', lifecycle_generation=3 where id=$1", [a.sandboxId]);
-      await expect(store.enqueueSandbox(a.owner, a.sandboxId, { operation, requestId })).rejects.toThrow();
+      await expect(store.enqueueCleanup(a.owner, a.sandboxId, { operation, requestId })).rejects.toThrow();
     }
     await store.complete(a.hostToken, a.installationId, {
       requestId: a.restore.requestId,
@@ -1337,7 +1385,7 @@ test.each(["stop", "delete"] as const)(
       machineId: "c".repeat(64),
     });
     if (operation === "stop") await runDockerStop(sql, key, a.sandboxId);
-    else await store.enqueueSandbox(a.owner, a.sandboxId, { operation, requestId });
+    else await store.enqueueCleanup(a.owner, a.sandboxId, { operation, requestId });
     const cleanup = await a.poll();
     expect(cleanup).toMatchObject({ operation, request: { generation: a.restore.request.generation } });
   },
@@ -1358,7 +1406,7 @@ test.each(["active", "revoked"])(
     } = await sql.query<Job>(
       `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity'
        where id=$1 returning id,sandbox_id,generation::text,kind,lease_epoch::text`,
-      [a.selection.runnerJobId, worker],
+      [a.runnerJobId, worker],
     );
     if (!resumed) throw Error("Missing restore runner.");
     expect(
@@ -1450,7 +1498,7 @@ test("the current runner declines a completed restore receipt without a physical
   } = await database().query<Job>(
     `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
      where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-    [a.selection.runnerJobId, randomUUID()],
+    [a.runnerJobId, randomUUID()],
   );
   if (!claim) throw new Error("Missing fixture runner claim.");
   const { requestId } = a.restore;
@@ -1468,7 +1516,7 @@ test("the current runner attaches only a completed Docker restore and can recove
   } = await db.query<Job>(
     `update jobs set state='leased',lease_owner=$2,lease_epoch=2,lease_until='infinity',attempts=2
      where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-    [a.selection.runnerJobId, randomUUID()],
+    [a.runnerJobId, randomUUID()],
   );
   if (!claim) throw new Error("Missing fixture runner claim.");
   const resume = (hostStore = store, restoreClaim = claim) =>
@@ -1569,33 +1617,25 @@ test("the current runner attaches only a completed Docker restore and can recove
 
 test("restore enqueue rolls back on interruption and freezes one intent per target generation", async () => {
   const a = await prepareRestore();
-  const { selection } = a;
-  const enqueue = (intent = selection, mailbox = store) => mailbox.enqueueSandbox(a.owner, a.sandboxId, intent);
-  const { faultingStore, failure } = failDockerJobCommit(selection.requestId, null);
-  await expect(enqueue(selection, faultingStore)).rejects.toMatchObject({ cause: failure });
-  const retry = { ...selection, predecessor: { ...selection.predecessor, machineId: "b".repeat(64) } };
-  await expect(enqueue(retry)).resolves.toEqual({ requestId: retry.requestId });
-  await expect(enqueue(retry)).resolves.toEqual({ requestId: retry.requestId });
-  await expect(a.poll()).resolves.toEqual({ ...a.restore, predecessor: retry.predecessor });
-  await store.complete(a.hostToken, a.installationId, { requestId: retry.requestId, outcome: "completed" });
-  await denied(enqueue(selection));
-  await denied(enqueue({ ...retry, requestId: randomUUID() }));
+  const { faultingStore, failure } = failDockerJobCommit(a.restore.requestId, null);
+  await expect(a.enqueueRestore(faultingStore)).rejects.toMatchObject({ cause: failure });
+  await expect(a.poll([a.cleanupId])).resolves.toBeNull();
+  await expect(a.enqueueRestore()).rejects.toThrow("outcome is pending");
+  await expect(a.enqueueRestore()).rejects.toThrow("outcome is pending");
+  await expect(a.poll()).resolves.toEqual(a.restore);
+  await denied(
+    a.enqueueRestore(store, {
+      predecessor: { kind: "container", sandboxId: a.sandboxId, generation: 1, ref: "b".repeat(64) },
+    }),
+  );
 });
 
-test("restore enqueue refuses stale generations, unbound targets and altered predecessor inputs", async () => {
+test("restore enqueue refuses stale generations, unbound predecessors and altered machine identity", async () => {
   const a = await prepareRestore();
-  const { selection } = a;
-  const unbound = randomUUID();
-  for (const intent of [
-    { ...selection, lifecycleGeneration: 1 },
-    { ...selection, requestId: unbound, request: { ...selection.request, generation: unbound } },
-    {
-      ...selection,
-      predecessor: { ...selection.predecessor, request: { ...selection.predecessor.request, ttlSeconds: 123 } },
-    },
-  ]) {
-    await denied(store.enqueueSandbox(a.owner, a.sandboxId, intent));
-  }
+  const predecessor = { kind: "container" as const, sandboxId: a.sandboxId, generation: 1, ref: "a".repeat(64) };
+  await denied(a.enqueueRestore(store, { generation: 1 }));
+  await denied(a.enqueueRestore(store, { predecessor: { ...predecessor, generation: 0 } }));
+  await denied(a.enqueueRestore(store, { predecessor: { ...predecessor, ref: "b".repeat(64) } }));
   await expect(a.poll([a.cleanupId])).resolves.toBeNull();
 });
 
@@ -1606,19 +1646,13 @@ test("malformed retired restore history does not prevent a new restore", async (
   await database().query("update docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1", [
     retired,
   ]);
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
+  await expect(a.enqueueRestore()).rejects.toThrow("outcome is pending");
   await expect(a.poll()).resolves.toEqual(a.restore);
 });
 
 test("restore enqueue preserves the frozen host-local snapshot binding", async () => {
   const a = await prepareRestore(undefined, true);
-  const snapshot = a.restore.request.snapshot!;
-  const changed = {
-    ...a.selection,
-    request: { ...a.selection.request, snapshot: { ...snapshot, visibility: "org" as const } },
-  };
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, changed));
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
+  await expect(a.enqueueRestore()).rejects.toThrow("outcome is pending");
   await expect(a.poll()).resolves.toEqual(a.restore);
 });
 
@@ -1632,7 +1666,7 @@ test("a Docker host cannot pick up a restore after its pinned account is revoked
 test("an expired restore runner prevents redelivery but permits a late physical receipt", async () => {
   const a = await restoreFixture();
   expect(await a.poll()).toEqual(a.restore);
-  await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.selection.runnerJobId]);
+  await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.runnerJobId]);
   await createJobsStore(sql, key).enqueue(
     "turn_dispatch",
     a.sandboxId,
@@ -1665,7 +1699,7 @@ test("authenticated restore expiry waits for exact replacement identity before s
   const a = await restoreFixture();
   expect(await a.poll()).toEqual(a.restore);
   const expiry = { requestId: a.restore.requestId };
-  await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.selection.runnerJobId]);
+  await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.runnerJobId]);
   expect(await store.expired(a.hostToken, a.installationId, expiry)).toBe(false);
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
   await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed", machineId: "c".repeat(64) });
@@ -1698,7 +1732,7 @@ test.each(["none", "pending", "settled"] as const)(
     } = await database().query<Job>(
       `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
      where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-      [a.selection.runnerJobId, randomUUID()],
+      [a.runnerJobId, randomUUID()],
     );
     if (!claim) throw new Error("Missing fixture runner claim.");
     const expiry = { requestId: a.restore.requestId };
@@ -1753,7 +1787,7 @@ test("retention cleanup settles an attached restore after expiry with atomic rol
   } = await database().query<Job>(
     `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
      where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-    [a.selection.runnerJobId, randomUUID()],
+    [a.runnerJobId, randomUUID()],
   );
   if (!claim) throw new Error("Missing fixture runner claim.");
   const { requestId } = a.restore;
@@ -1793,7 +1827,7 @@ test.each(["cleanup", "expiry", "outputs", "completion"] as const)(
     } = await database().query<Job>(
       `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
        where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-      [a.selection.runnerJobId, randomUUID()],
+      [a.runnerJobId, randomUUID()],
     );
     if (!claim) throw new Error("Missing fixture runner claim.");
     const { requestId } = a.restore;
@@ -1840,7 +1874,7 @@ test("poll retires obsolete work without fencing a delayed physical completion",
   } = await database().query<Job>(
     `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
      where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-    [a.selection.runnerJobId, randomUUID()],
+    [a.runnerJobId, randomUUID()],
   );
   if (!claim) throw new Error("Missing fixture runner claim.");
   expect(await a.poll([a.cleanupId])).toEqual(a.restore);
@@ -1945,7 +1979,7 @@ test("the daemon recovers pending restores and drains unrelated work with a full
       bound: 1,
       job,
       lifecycleGeneration: "2",
-      runnerJobId: pair.selection.runnerJobId,
+      runnerJobId: pair.runnerJobId,
     });
     pairs.push(pair);
   }
@@ -2027,7 +2061,7 @@ test("the daemon recovers pending restores and drains unrelated work with a full
 
 test("the authenticated allocation result route preserves the exact create ID across replay", async () => {
   const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   const route = createDockerHostRoutes(store, async () => ({ ok: false }));
   const machineId = "a".repeat(64);
   const receipt = { installationId: a.installationId, requestId: a.create.requestId, outcome: "completed" };
@@ -2138,7 +2172,7 @@ test.each(["target", "predecessor", "ciphertext"] as const)(
       mismatch === "ciphertext"
         ? new Uint8Array(32)
         : await encryptSecret(
-            JSON.stringify({ bound: 1, job: intent, lifecycleGeneration: "2", runnerJobId: a.selection.runnerJobId }),
+            JSON.stringify({ bound: 1, job: intent, lifecycleGeneration: "2", runnerJobId: a.runnerJobId }),
             key,
           );
     await database().query("update docker_host_jobs set input_enc=$2 where request_id=$1", [requestId, input]);
@@ -2190,44 +2224,18 @@ function failDockerJobCommit(requestId: string, outcome: "completed" | "failed" 
   });
 }
 
-test("a physical-delete enqueue interrupted before commit can be retried without a conflicting intent", async () => {
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
-  await database().query("update sandboxes set status='failed' where id=$1", [a.sandboxId]);
-  const deletion = {
-    requestId: randomUUID(),
-    operation: "deletePhysical" as const,
-    machineId: "a".repeat(64),
-    lifecycleGeneration: 1,
-  };
-  const { faultingStore, failure } = failDockerJobCommit(deletion.requestId, null);
-  await expect(faultingStore.enqueueSandbox(a.owner, a.sandboxId, deletion)).rejects.toMatchObject({ cause: failure });
-  const replacementIntent = { ...deletion, machineId: "b".repeat(64) };
-  await store.enqueueSandbox(a.owner, a.sandboxId, replacementIntent);
-  await store.enqueueSandbox(a.owner, a.sandboxId, replacementIntent);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, deletion));
-});
-
 test("physical deletion rechecks its lifecycle fence, while late receipts record only physical facts", async () => {
   const db = database();
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
-  const deletion = {
-    requestId: randomUUID(),
-    operation: "deletePhysical" as const,
-    machineId: "a".repeat(64),
-    lifecycleGeneration: 1,
-  };
-  await db.query(`update sandboxes set status='stopped',stopped_at=now() where id=$1`, [a.sandboxId]);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, deletion));
-  await db.query(`update sandboxes set status='failed' where id=$1`, [a.sandboxId]);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...deletion, lifecycleGeneration: 2 }));
-  await store.enqueueSandbox(a.owner, a.sandboxId, deletion);
+  const a = await machineStopFixture();
+  await db.query("update sandboxes set status='failed' where id=$1", [a.sandboxId]);
+  const adapter = store.machine({ actor: a.owner, hostId: a.hostId, installationId: a.installationId });
+  const removal = { ...a.machine, scope: "physical-only" as const };
+  await denied(adapter.delete({ ...removal, generation: 2 }));
+  await expect(adapter.delete(removal)).rejects.toThrow("outcome is pending");
   const poll = (mailbox = store) =>
     mailbox.poll(a.hostToken, a.installationId, undefined, false, undefined, undefined, null, null, [], null, true);
-  expect(await poll()).toMatchObject({ requestId: deletion.requestId, machineId: deletion.machineId });
+  const deletion = (await poll())!;
+  expect(deletion).toMatchObject({ operation: "deletePhysical", machineId: removal.machineId });
   await denied(store.cleaned(a.hostToken, a.installationId, { requestId: deletion.requestId }));
   await db.query(`update sandboxes set lifecycle_generation=2 where id=$1`, [a.sandboxId]);
   const { faultingStore, failure } = failDockerJobCommit(deletion.requestId, "failed");
@@ -2263,24 +2271,24 @@ test("physical deletion rechecks its lifecycle fence, while late receipts record
 
 test("uninstall cancels pending optional physical deletion even without a capable poll", async () => {
   const db = database();
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+  const a = await machineStopFixture();
+  const adapter = store.machine({ actor: a.owner, hostId: a.hostId, installationId: a.installationId });
   await db.query(`update sandboxes set status='deleted',deleted_at=now() where id=$1`, [a.sandboxId]);
-  const deletion = {
-    requestId: randomUUID(),
-    operation: "deletePhysical" as const,
-    machineId: "a".repeat(64),
-    lifecycleGeneration: 1,
-  };
-  await store.enqueueSandbox(a.owner, a.sandboxId, deletion);
-  const { faultingStore, failure } = failDockerJobCommit(deletion.requestId, "failed");
+  await expect(adapter.delete({ ...a.machine, scope: "physical-only" })).rejects.toThrow("outcome is pending");
+  const {
+    rows: [deletion],
+  } = await db.query<{ request_id: string }>(
+    "select request_id from docker_host_jobs where bound_sandbox_id=$1 and bound_operation='deletePhysical'",
+    [a.sandboxId],
+  );
+  if (!deletion) throw Error("Missing physical removal intent.");
+  const { faultingStore, failure } = failDockerJobCommit(deletion.request_id, "failed");
   await expect(faultingStore.unregister(a.hostToken, a.installationId)).rejects.toMatchObject({ cause: failure });
   const state = () =>
     db.query(
       `select j.outcome,j.cancelled_at,h.draining_at,h.revoked_at from docker_host_jobs j
         join docker_hosts h on h.id=j.host_id where j.request_id=$1`,
-      [deletion.requestId],
+      [deletion.request_id],
     );
   expect((await state()).rows).toEqual([{ outcome: null, cancelled_at: null, draining_at: null, revoked_at: null }]);
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
@@ -2294,12 +2302,12 @@ test("bound member admission derives immutable machine fields and cannot redirec
   const db = database();
   const a = await boundFixture(),
     b = await boundFixture();
-  await denied(store.enqueueSandbox(a.actor, a.sandboxId, a.create)); // admin is not the private owner
-  await denied(store.enqueueSandbox(b.owner, a.sandboxId, b.create));
-  await denied(store.enqueueSandbox(a.owner, randomUUID(), a.create));
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...a.create, request: job().request } as never));
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await createDockerHostStore(sql, key).enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await denied(store.submitMachineCreate(a.actor, a.request)); // admin is not the private owner
+  await denied(store.submitMachineCreate(b.owner, a.request));
+  await denied(store.submitMachineCreate(a.owner, { ...a.request, sandboxId: randomUUID() }));
+  await denied(store.submitMachineCreate(a.owner, { ...a.request, source: { kind: "image", ref: "other-image" } }));
+  await store.submitMachineCreate(a.owner, a.request);
+  await createDockerHostStore(sql, key).submitMachineCreate(a.owner, a.request);
   const delivered = await store.poll(a.hostToken, a.installationId);
   expect(delivered).toEqual({
     ...a.create,
@@ -2319,9 +2327,9 @@ test("bound member admission derives immutable machine fields and cannot redirec
   ).rows[0];
   expect(metadata).toEqual({ bound_actor_id: a.owner.userId, bound_operation: "create", bound_actor_epoch: "1" });
   if (!delivered) throw Error("missing bound job");
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...a.create, requestId: randomUUID() }));
+  await denied(store.submitMachineCreate(a.owner, { ...a.request, generation: 2 }));
   await db.query(`update sandboxes set status='ready',expires_at=now()+interval '2 hours' where id=$1`, [a.sandboxId]);
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   const sealed = (
     await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
       `select input_enc from docker_host_jobs where request_id=$1`,
@@ -2335,7 +2343,6 @@ test("bound member admission derives immutable machine fields and cannot redirec
   const { parseDockerHostJob } = await import("../../core/src/docker-host-job.ts");
   expect(() => parseDockerHostJob({ ...envelope, requestId: a.create.requestId })).toThrow("Invalid host job");
   expect(Object.keys(delivered).sort()).toEqual(["operation", "request", "requestId"]);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...a.create, requestId: randomUUID() }));
 });
 
 test("poll retires stale actor grants without starving authorized cleanup; ACK remains a machine fact", async () => {
@@ -2343,10 +2350,10 @@ test("poll retires stale actor grants without starving authorized cleanup; ACK r
   for (const change of ["demotion", "removal", "rejoin"] as const) {
     const a = await boundFixture();
     await db.query(`update members set role='admin' where org_id=$1 and user_id=$2`, [a.owner.orgId, a.owner.userId]);
-    await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+    await store.submitMachineCreate(a.owner, a.request);
     await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
     const stale = { requestId: randomUUID(), operation: "stop" as const };
-    await store.enqueueSandbox(a.owner, a.sandboxId, stale);
+    await store.enqueueCleanup(a.owner, a.sandboxId, stale);
     if (change === "demotion")
       await db.query(`update members set role='member' where org_id=$1 and user_id=$2`, [
         a.owner.orgId,
@@ -2376,7 +2383,7 @@ test("poll retires stale actor grants without starving authorized cleanup; ACK r
   }
 
   const b = await boundFixture();
-  await store.enqueueSandbox(b.owner, b.sandboxId, b.create);
+  await store.submitMachineCreate(b.owner, b.request);
   expect((await store.poll(b.hostToken, b.installationId))?.requestId).toBe(b.create.requestId);
   await db.query(`delete from members where org_id=$1 and user_id=$2`, [b.owner.orgId, b.owner.userId]);
   await store.complete(b.hostToken, b.installationId, { requestId: b.create.requestId, outcome: "completed" });
@@ -2464,7 +2471,7 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   const a = await boundFixture();
   const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
   const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   const initial = await store.poll(a.hostToken, a.installationId);
   if (!initial) throw Error("missing create");
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
@@ -2506,7 +2513,7 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   ).toBeNull();
   await db.query(`update sandboxes set expires_at=now()-interval '1 second' where id=$1`, [a.sandboxId]);
   expect((await store.poll(a.hostToken, a.installationId))?.request).toEqual(initial.request);
-  await denied(store.enqueueSandbox(a.actor, a.sandboxId, { requestId: randomUUID(), operation: "delete" }));
+  await denied(store.enqueueCleanup(a.actor, a.sandboxId, { requestId: randomUUID(), operation: "delete" }));
   // Recover an ACK already committed by an older server without its logical transition.
   await db.query(`update docker_host_jobs set outcome='completed',completed_at=now() where request_id=$1`, [
     stop.requestId,
@@ -2519,7 +2526,7 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   if (!followup) throw Error("missing stop");
   await store.complete(a.hostToken, a.installationId, { requestId: followup.requestId, outcome: "completed" });
   const remove = { requestId: randomUUID(), operation: "delete" as const };
-  await store.enqueueSandbox(a.actor, a.sandboxId, remove);
+  await store.enqueueCleanup(a.actor, a.sandboxId, remove);
   expect((await store.poll(a.hostToken, a.installationId))?.request).toEqual(initial.request);
   await db.query(`update docker_host_jobs set outcome='completed',completed_at=now() where request_id=$1`, [
     remove.requestId,
@@ -2534,8 +2541,7 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   expect(terminal?.status).toBe("deleted");
   expect(terminal?.stopped_at).not.toBeNull();
   expect(terminal?.deleted_at).not.toBeNull();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...a.create, requestId: randomUUID() }));
+  await denied(store.submitMachineCreate(a.owner, a.request));
   expect(
     (await db.query<{ status: string }>(`select status from sandboxes where id=$1`, [a.sandboxId])).rows[0]?.status,
   ).toBe("deleted");
@@ -2573,7 +2579,7 @@ async function boundStartup(operation: "create" | "bootstrap") {
   const a = await boundFixture();
   const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
   const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   const ticket = await authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
   let startup = a.create as { requestId: string; operation: "create" | "bootstrap" };
   if (operation === "bootstrap") {
@@ -2658,7 +2664,7 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
     expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
     expect(await lifecycle(a.sandboxId)).toEqual(stopped);
     const remove = { requestId: randomUUID(), operation: "delete" as const };
-    await store.enqueueSandbox(a.actor, a.sandboxId, remove);
+    await store.enqueueCleanup(a.actor, a.sandboxId, remove);
     expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(remove.requestId);
     await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
     const deleted = await lifecycle(a.sandboxId);
@@ -2734,7 +2740,7 @@ test("an attached Docker restore can publish the replacement's retained outputs"
   } = await database().query<Job>(
     `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
      where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
-    [a.selection.runnerJobId, randomUUID()],
+    [a.runnerJobId, randomUUID()],
   );
   if (!claim) throw new Error("Missing fixture runner claim.");
   const { requestId } = a.restore;
@@ -2815,7 +2821,7 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
   const db = database();
   const a = await boundFixture(),
     b = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   const before = await lifecycle(a.sandboxId);
   await denied(store.expired(b.hostToken, b.installationId, { requestId: a.create.requestId }));
   await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.create.requestId }));
@@ -2854,7 +2860,7 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
     expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
     expect(await lifecycle(a.sandboxId)).toEqual(current);
     const later = await boundFixture(a);
-    await store.enqueueSandbox(later.owner, later.sandboxId, later.create);
+    await store.submitMachineCreate(later.owner, later.request);
     await db.query(`update docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1`, [
       later.create.requestId,
     ]);
@@ -2931,7 +2937,7 @@ test.each(["create", "bootstrap"] as const)(
       await reportDockerExpiry(sql, key, a.hostToken, a.installationId, { requestId: a.startup.requestId });
       expect(await lifecycle(a.sandboxId)).toEqual({ ...physicallyStopped, stop_requested_at: expect.anything() });
       const remove = { requestId: randomUUID(), operation: "delete" as const };
-      await store.enqueueSandbox(a.actor, a.sandboxId, remove);
+      await store.enqueueCleanup(a.actor, a.sandboxId, remove);
       await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
       expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
     }
@@ -2989,10 +2995,28 @@ test("a failed startup receipt cannot replace durable stop intent", async () => 
 });
 
 // Real migrated mailbox/ACK flow protects drain order and lost-revocation-response recovery.
-test("uninstall drains bound machines through stop/delete ACKs before idempotent revocation", async () => {
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
+test("uninstall drains a pre-cutover allocation through stop/delete ACKs before idempotent revocation", async () => {
+  const placement = { sandboxId: randomUUID(), generation: randomUUID(), expiresAt: Date.UTC(2099, 0, 1) };
+  const a = await boundFixture(undefined, placement);
+  const requestId = randomUUID();
+  const create = {
+    operation: "create",
+    request: { ...placement, image: job().request.image, ttlSeconds: 3600 },
+  };
+  await sql.query(
+    `insert into docker_host_jobs(request_id,host_id,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,input_enc)
+     select $1,$2,$3,user_id,epoch,'create',$4 from mcp_actor_epochs where org_id=$5 and user_id=$6`,
+    [
+      requestId,
+      a.hostId,
+      a.sandboxId,
+      await encryptSecret(JSON.stringify({ bound: 1, job: create }), key),
+      a.owner.orgId,
+      a.owner.userId,
+    ],
+  );
+  expect(await store.poll(a.hostToken, a.installationId)).toMatchObject({ ...create, requestId });
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
   const stop = await store.poll(a.hostToken, a.installationId, "2.27.0");
   expect(stop?.operation).toBe("stop");
@@ -3036,15 +3060,42 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   await denied(store.unregister(a.hostToken, randomUUID()));
 });
 
+test("host drain waits for a delete admitted after the drain snapshot", async () => {
+  const a = await boundFixture();
+  await store.submitMachineCreate(a.owner, a.request);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "failed" });
+  const remove = { requestId: randomUUID(), operation: "delete" as const };
+  let interleave = true;
+  const draining = createDockerHostStore(
+    {
+      ...sql,
+      async transaction(work) {
+        const result = await sql.transaction!(work);
+        if (interleave) {
+          interleave = false;
+          await store.enqueueCleanup(a.owner, a.sandboxId, remove);
+        }
+        return result;
+      },
+    },
+    key,
+  );
+
+  expect(await draining.unregister(a.hostToken, a.installationId)).toBe(false);
+  expect(await store.poll(a.hostToken, a.installationId)).toMatchObject(remove);
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
+});
+
 test("a completed Docker delete proves exit and journals deletion of a failed sandbox", async () => {
   const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "failed" });
   const failed = await lifecycle(a.sandboxId);
   expect(failed).toMatchObject({ status: "failed", stopped_at: null });
 
   const remove = { requestId: randomUUID(), operation: "delete" as const };
-  await store.enqueueSandbox(a.owner, a.sandboxId, remove);
+  await store.enqueueCleanup(a.owner, a.sandboxId, remove);
   const deleteReceipt = { requestId: remove.requestId, outcome: "completed" as const };
   const db = database();
   await db.query(
@@ -3090,7 +3141,7 @@ test("a completed uninstall ends the drain, so its snapshots report the revoked 
       `sha256:${"c".repeat(64)}`,
     ],
   );
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(false);
   const stop = await store.poll(a.hostToken, a.installationId);
@@ -3350,7 +3401,7 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
     await reportDockerExpiry(sql, key, a.hostToken, a.installationId, { requestId: a.startup.requestId });
     expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
     const remove = { requestId: randomUUID(), operation: "delete" as const };
-    await store.enqueueSandbox({ userId: a.backupAdmin, orgId: a.actor.orgId }, a.sandboxId, remove);
+    await store.enqueueCleanup({ userId: a.backupAdmin, orgId: a.actor.orgId }, a.sandboxId, remove);
     expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("delete");
     await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
     await store.cleaned(a.hostToken, a.installationId, { requestId: a.startup.requestId });
@@ -3362,7 +3413,7 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
 test("revoking a host retires a queued create without claiming physical cleanup and releases its capacity slot", async () => {
   const db = database();
   const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   expect((await store.list(a.actor))[0]?.running).toBe(1);
   await store.revoke(a.actor, a.hostId);
   const failed = await lifecycle(a.sandboxId);
@@ -3389,14 +3440,14 @@ test("revoking a host retires a queued create without claiming physical cleanup 
     ).rows[0]?.cancelled_at,
   ).not.toBeNull();
   // The retired startup cannot be retried on the revoked host.
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, a.create));
+  await denied(store.submitMachineCreate(a.owner, a.request));
   await denied(store.poll(a.hostToken, a.installationId));
 });
 
 test("a late completed create ACK after cancellation restores the reservation instead of losing compute", async () => {
   const db = database();
   const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   await store.revoke(a.actor, a.hostId);
   expect((await store.list(a.actor))[0]?.running).toBe(0);
   // The host may have executed the job before the revoke fenced its next poll.
@@ -3422,7 +3473,7 @@ test("a late completed create ACK after cancellation restores the reservation in
 test("a cancelled job's first host receipt is terminal and a later conflicting receipt is denied", async () => {
   const db = database();
   const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   await store.revoke(a.actor, a.hostId);
   // The host reports the machine fact it actually observed: the create failed.
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "failed" });
@@ -3525,7 +3576,7 @@ test("a cancelled snapshot build rejects a late completed receipt instead of cla
 test("removing the host owner retires queued startup before the denied poll", async () => {
   const db = database();
   const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   await db.query("delete from members where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
   await denied(store.poll(a.hostToken, a.installationId));
   const failed = await lifecycle(a.sandboxId);
@@ -3547,8 +3598,8 @@ test("revocation rolls back queued startups, snapshot and mailbox cancellation t
   const db = database();
   const a = await boundFixture();
   const second = await boundFixture(a);
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.enqueueSandbox(second.owner, second.sandboxId, second.create);
+  await store.submitMachineCreate(a.owner, a.request);
+  await store.submitMachineCreate(second.owner, second.request);
   const snapshotId = randomUUID(),
     ownerId = a.memberId,
     generation = randomUUID(),
@@ -3659,7 +3710,7 @@ test("retirement cancels undispatchable startup without claiming physical cleanu
   const db = database();
   for (const retired of ["removed", "revoked"] as const) {
     const a = await boundFixture();
-    await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+    await store.submitMachineCreate(a.owner, a.request);
     if (retired === "removed") {
       await db.query("delete from members where org_id=$1 and user_id=$2", [a.actor.orgId, a.actor.userId]);
     } else {
@@ -3684,8 +3735,8 @@ test("poll reports every generation with pending start intent, and per-generatio
   const a = await boundFixture();
   const second = await boundFixture(a);
   // Both creates are acknowledged; the second sandbox is then stopped and resumed.
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await store.enqueueSandbox(a.owner, second.sandboxId, second.create);
+  await store.submitMachineCreate(a.owner, a.request);
+  await store.submitMachineCreate(a.owner, second.request);
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
   await store.complete(a.hostToken, a.installationId, { requestId: second.create.requestId, outcome: "completed" });
   const stop = { requestId: randomUUID(), operation: "stop" as const };
@@ -3759,7 +3810,7 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
       )
     ).rows.map((row) => `${row.activation}:${row.stage}`);
   expect(await stages()).toEqual(["1:accepted"]);
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.submitMachineCreate(a.owner, a.request);
   expect(await stages()).toEqual(["1:accepted"]);
   expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("create");
   expect(await stages()).toEqual(["1:accepted", "1:provider_claimed"]);

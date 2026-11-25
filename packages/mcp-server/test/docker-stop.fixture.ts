@@ -71,7 +71,7 @@ export async function queueMailboxStop(sql: Sql, key: string, actor: Actor, sand
         'stopping','owner','docker_stop_admitted','[]'::jsonb) from (select id,lifecycle_generation from sandboxes where id=$1 for update) s`,
       [sandboxId],
     );
-    return createDockerHostStore(scopedRuntimeSql(tx), key).enqueueSandbox(actor, sandboxId, {
+    return createDockerHostStore(scopedRuntimeSql(tx), key).enqueueCleanup(actor, sandboxId, {
       operation: "stop",
       requestId,
     });

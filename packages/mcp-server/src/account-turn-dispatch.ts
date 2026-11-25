@@ -84,7 +84,7 @@ export const TURN_FIFO_ELIGIBLE = `((s.provider is distinct from 'docker' and no
 export const ACCEPTED_RUNTIME_RESUME = `exists(
   select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=q.request_id and r.receipt is not null
 )`;
-export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
+const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
   or ${ACCEPTED_RUNTIME_RESUME}
   or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;

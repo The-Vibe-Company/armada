@@ -90,13 +90,6 @@ export function resolveMachineSize(
   };
 }
 
-/** POST /api/v1/golden/size-policy; omission of policy reads, a full policy replaces defaults. */
-export interface MachineSizePolicyRequest {
-  golden: string;
-  org?: string;
-  provider?: SandboxProviderId;
-  policy?: MachineSizePolicy;
-}
 export interface MachineSizePolicyResult {
   goldenId: string;
   provider: SandboxProviderId;

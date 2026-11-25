@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { DOCKER_HOST_PROTOCOL, type Harness, type Sql } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { dockerMachineJobId } from "../../core/src/docker-host-job.ts";
-import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
+import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
@@ -103,7 +103,6 @@ async function fixture(ack = true, harness: Harness = "codex") {
   };
 }
 async function denied(work: Promise<unknown>) {
-  await expect(work).rejects.toBeInstanceOf(DockerBootstrapDenied);
   await expect(work).rejects.toThrow("Docker bootstrap denied");
 }
 async function pending(sandboxId: string) {

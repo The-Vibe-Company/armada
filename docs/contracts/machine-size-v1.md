@@ -5,7 +5,7 @@ Source of truth: browser-safe `@armada/core` exports from
 
 ## Transport
 
-- POST `/api/v1/golden/size-policy`: `MachineSizePolicyRequest` -> `MachineSizePolicyResult`.
+- POST `/api/v1/golden/size-policy`: reads or replaces the policy and returns `MachineSizePolicyResult`.
   Omit policy to read. Supply a complete version-1 policy to replace atomically.
   Clear with `{version:1,golden:null,repositories:{}}`.
 - HTTP launch accepts optional `size` and `repo` on `POST /api/v1/sandbox/launch`.

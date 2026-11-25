@@ -53,16 +53,15 @@ All exported from @armada/core in connections.ts:
   auto result (public connected or OAuth not_connected); acquire(connectionId,
   refreshOwner,seconds?) leases refresh exclusively; rotate(id,refreshOwner,
   version,generation,ciphertext|null) CAS-commits only within the current refresh
-  lease. McpGrantSnapshot is trusted-server-only ciphertext and fencing metadata.
+  lease. The refresh snapshot contains trusted-server-only ciphertext and fencing metadata.
 - createSqlMcpLaunchPort(sql,registry): validate(actor,ids,visibility) before fork,
   bind(sandboxId,ids) after recording. SQL trigger independently refuses personal
   grants on org sandboxes, mismatched owners/orgs, removed memberships and revoked
   or disconnected grants.
 - createSqlMcpLeasePort(sql): issue({sandboxId,connectionId,tokenHash,operations,
-  expiresAt}), validate(tokenHash,operation), invalidateSandbox(sandboxId).
+  expiresAt}), validate(tokenHash,operation).
   Only a random opaque token's lowercase SHA-256 digest is stored. Operations:
-  tools/resources/prompts. Validation returns McpLeaseClaims|null, not upstream
-  credentials. Grant revocation/changes, sandbox stop/failure/deletion/generation
+  tools/resources/prompts. Validation returns lease claims or null. Grant revocation/changes, sandbox stop/failure/deletion/generation
   change and membership removal immediately fence authorization.
 
 ControlOptions.mcp accepts {registry,broker?}; startServer wires the SQL registry.
@@ -121,8 +120,7 @@ old authentication and advances its generation; it cannot recover an old token.
 
 ### Pending OAuth
 
-Exports: McpPendingOAuthFlow and
-createSqlMcpPendingOAuthPort(sql,encryptionKey).
+The factory is createSqlMcpPendingOAuthPort(sql,encryptionKey).
 
 - put({stateHash,actorId,orgId,connectionId,generation,expiresAt,payload}): hash is
   SHA-256 hex of random OAuth state, never raw state. Payload is sealed internally
@@ -157,7 +155,7 @@ performed by this control route.
 
 ### Cross-replica live revocation
 
-Exports: McpInvalidation and createSqlMcpInvalidationPort(sql).
+The factory is createSqlMcpInvalidationPort(sql).
 
 Database triggers transactionally append service-only outbox metadata on grant
 generation/revocation changes, definition changes/deletion, sandbox generation

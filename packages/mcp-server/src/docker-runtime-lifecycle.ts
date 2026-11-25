@@ -9,7 +9,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export class DockerRuntimeDenied extends Error {
+class DockerRuntimeDenied extends Error {
   constructor() {
     super("Docker runtime denied");
     this.name = "DockerRuntimeDenied";

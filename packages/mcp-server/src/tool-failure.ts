@@ -116,13 +116,3 @@ export function unknownMutationOutcome(error: unknown): never {
     );
   throw error;
 }
-
-export function publicationFailure(error: unknown, acknowledged: boolean): never {
-  if (acknowledged)
-    throw new LaunchError(
-      "outcome_unknown",
-      "The operation was accepted but its result could not be published. Check sandbox status before retrying.",
-      { cause: error },
-    );
-  throw error;
-}

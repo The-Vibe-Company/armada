@@ -67,7 +67,7 @@ export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: str
   const preservationNote = `${await runtimePreservationNote(sql, row.id)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
   await sql.query("update public.sandboxes set preservation_note=$2 where id=$1", [row.id, preservationNote]);
   await admit();
-  await createDockerHostStore(scopedRuntimeSql(sql), key).enqueueSandbox(
+  await createDockerHostStore(scopedRuntimeSql(sql), key).enqueueCleanup(
     { userId: ownerId, orgId: row.org_id },
     row.id,
     { requestId: crypto.randomUUID(), operation: "stop" },
@@ -135,7 +135,7 @@ export function createFinishedDockerCleanup(sql: Sql, key: string) {
         ).rows[0];
         if (!row) return false;
         signal.throwIfAborted();
-        await createDockerHostStore(scopedRuntimeSql(tx), key).enqueueSandbox(
+        await createDockerHostStore(scopedRuntimeSql(tx), key).enqueueCleanup(
           { userId: row.owner_id, orgId: row.org_id },
           candidate.id,
           { requestId: crypto.randomUUID(), operation: row.status === "stopped" ? "delete" : "stop" },

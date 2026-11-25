@@ -221,14 +221,6 @@ export interface DockerSandboxRecord extends Omit<SandboxRecord, "provider" | "g
   hostId: string;
   image: string;
 }
-/** Durable server admission before native execution starts. Read status with this stable promptId. */
-export interface DockerQueuedPromptReceipt {
-  id: string;
-  requestId: string;
-  promptId: string;
-  conversationId: string;
-  status: "queued";
-}
 export interface DockerLaunchResult {
   sandbox: DockerSandboxRecord;
   golden: null;
