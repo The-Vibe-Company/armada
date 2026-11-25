@@ -78,7 +78,7 @@ export function turnModelDisplay(
         turnModel.modelSelectionReason === "model_selection_mismatch"
           ? ("The agent used a different model" as const)
           : ("The model could not be verified" as const),
-      requestedModel: requested ? (isDefaultModelAlias(requested) ? DEFAULT_MODEL_LABEL : requested) : null,
+      requestedModel: isDefaultModelAlias(requested) ? DEFAULT_MODEL_LABEL : requested,
       observedModel: concreteObserved,
       message: turnModel.modelSelectionMessage ?? null,
     };
