@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { GitHubBroker } from "../src/github-broker.ts";
+import { runGitHubClient } from "../src/github-client.ts";
 
 // Own upstream-outage refusal and recovery without installing wrappers or spawning native peers.
 test("broker distinguishes private acquisition failures and recovers without serving a stale credential", async () => {
@@ -45,4 +46,39 @@ test("broker distinguishes private acquisition failures and recovers without ser
   expect(await broker.acquire("acme/repo", "git")).toBe("offline_second");
   expect(registered.has("offline_first")).toBe(true);
   expect(registered.has("offline_second")).toBe(true);
+});
+
+test("the GitHub client reports a broker deadline without exposing the transport error", async () => {
+  const timeout = AbortSignal.abort(new DOMException("private_transport_detail", "TimeoutError"));
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Trigger the request deadline without elapsed time.
+  const deadline = spyOn(AbortSignal, "timeout").mockReturnValue(timeout);
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Feed the aborted request back at the Unix transport boundary without opening a socket.
+  const transport = spyOn(globalThis, "fetch").mockImplementation((async (_url, options) => {
+    options?.signal?.throwIfAborted();
+    throw Error("expected an aborted request");
+  }) as typeof fetch);
+  let stderr = "";
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Capture the wrapper's user-facing diagnostic.
+  const output = spyOn(process.stderr, "write").mockImplementation((line) => {
+    stderr += line.toString();
+    return true;
+  });
+  try {
+    const status = await runGitHubClient([
+      "gh",
+      "/offline/credentials.sock",
+      "gh",
+      "git",
+      "pr",
+      "ready",
+      "-R",
+      "acme/repo",
+    ]);
+    expect(status).toBe(1);
+    expect(stderr).toBe("Managed GitHub credentials unavailable (broker_timeout).\n");
+  } finally {
+    output.mockRestore();
+    transport.mockRestore();
+    deadline.mockRestore();
+  }
 });

@@ -234,13 +234,21 @@ function gitExecution(git: string, args: string[], env: NodeJS.ProcessEnv) {
   return "redact";
 }
 
-function post(socket: string, path: string, body: string | Buffer, headers?: Record<string, string>) {
+const BROKER_TIMEOUT_MS = 20_000;
+
+function post(
+  socket: string,
+  path: string,
+  body: string | Buffer,
+  headers?: Record<string, string>,
+  signal = AbortSignal.timeout(BROKER_TIMEOUT_MS),
+) {
   return fetch(`http://private${path}`, {
     unix: socket,
     method: "POST",
     body,
     redirect: "error",
-    signal: AbortSignal.timeout(20000),
+    signal,
     headers: headers ?? { "Content-Type": "application/json" },
   });
 }
@@ -342,6 +350,7 @@ export async function runGitHubClient(argv: string[]) {
   const secrets = [...new Set([env.GH_TOKEN, env.GITHUB_TOKEN].filter((value): value is string => !!value))];
   const redactor = join(dirname(socket), "redact.sock");
   let stage = "repository_selection";
+  let brokerDeadline: AbortSignal | undefined;
   try {
     if (!executable) throw Error();
     if (mode === "native") {
@@ -393,7 +402,8 @@ export async function runGitHubClient(argv: string[]) {
       if (!status) repo = ghRepository(args, index, git, env);
       if (!repo) {
         stage = "broker_request";
-        const response = await post(socket, "/repositories", "{}");
+        brokerDeadline = AbortSignal.timeout(BROKER_TIMEOUT_MS);
+        const response = await post(socket, "/repositories", "{}", undefined, brokerDeadline);
         if (!response.ok) throw Error();
         const { repositories } = JSON.parse((await readBody(response.body, 262144)).toString()) as {
           repositories: string[];
@@ -413,7 +423,14 @@ export async function runGitHubClient(argv: string[]) {
       }
     } else throw Error();
     stage = "broker_request";
-    const response = await post(socket, "/", JSON.stringify({ repository: repo, operation: mode }));
+    brokerDeadline = AbortSignal.timeout(BROKER_TIMEOUT_MS);
+    const response = await post(
+      socket,
+      "/",
+      JSON.stringify({ repository: repo, operation: mode }),
+      undefined,
+      brokerDeadline,
+    );
     if (!response.ok) {
       stage = "broker_denied";
       const { error } = JSON.parse((await readBody(response.body, 1024)).toString()) as { error: unknown };
@@ -437,6 +454,8 @@ export async function runGitHubClient(argv: string[]) {
       redactor,
     );
   } catch {
+    if (brokerDeadline?.aborted && ["broker_request", "broker_denied", "broker_response"].includes(stage))
+      stage = "broker_timeout";
     process.stderr.write(
       stage === "repository_selection"
         ? "No repository selected or unsupported GitHub command: run inside a checkout or pass -R owner/repo.\n"
