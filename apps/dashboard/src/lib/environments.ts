@@ -1,8 +1,7 @@
 import type { SandboxProviderId } from "@armada/core";
 import { type CapacityState, type LaunchReadiness, PROVIDER_LABELS } from "./golden-form.ts";
 import { CLOUD_PROVIDERS_LABEL } from "./labels.ts";
-import { CLOUD_PROVIDERS_PATH } from "./provider-setup.ts";
-import type { Blocker, ResourceState } from "./resource-list.ts";
+import type { ResourceState } from "./resource-list.ts";
 
 /**
  * The Environments page (#808): one row per golden, its state in plain words and the one action the viewer can take
@@ -50,52 +49,6 @@ export function environmentState({
   return { bucket: "rest", tone: readiness.tone, label: readiness.label, detail: readiness.detail, action: null };
 }
 
-/**
- * What keeps the viewer from launching, for the strip on top of the page: a provider to connect (the whole org's
- * when none is, otherwise each one an environment waits for), then each environment the viewer can snapshot.
- */
-export function environmentBlockers({
-  providerPending,
-  rows,
-}: {
-  /** The org has no sandbox provider yet: nothing builds or launches until one is connected. */
-  providerPending: boolean;
-  rows: readonly { key: string; name: string; provider: SandboxProviderId; state: EnvironmentState }[];
-}): Blocker[] {
-  const blockers: Blocker[] = [];
-  if (providerPending)
-    blockers.push({
-      key: "provider",
-      label: "Connect a sandbox provider",
-      detail: "New builds and launches are paused until the organization connects one.",
-      target: { href: CLOUD_PROVIDERS_PATH },
-    });
-  else {
-    const waiting = new Map<SandboxProviderId, number>();
-    for (const row of rows)
-      if (row.state.action === "connect") waiting.set(row.provider, (waiting.get(row.provider) ?? 0) + 1);
-    for (const [provider, count] of waiting)
-      blockers.push({
-        key: `connect-${provider}`,
-        label: `Connect ${PROVIDER_LABELS[provider]}`,
-        detail: `${count} ${count === 1 ? "snapshot waits" : "snapshots wait"} for it.`,
-        target: { href: CLOUD_PROVIDERS_PATH },
-      });
-  }
-  const snapshots = rows.filter((row) => row.state.action === "snapshot");
-  for (const row of snapshots) {
-    // Twins (one name on each provider) are told apart by their provider.
-    const twin = snapshots.some((other) => other !== row && other.name === row.name);
-    blockers.push({
-      key: `snapshot-${row.key}`,
-      label: `Build ${row.name}${twin ? ` on ${PROVIDER_LABELS[row.provider]}` : ""}`,
-      detail: "Build it once before launching from it.",
-      target: { item: row.key },
-    });
-  }
-  return blockers;
-}
-
 /** One provider's part of the capacity line under the list. */
 type CapacityPart = { provider: SandboxProviderId; kind: CapacityState["kind"]; text: string; reason?: string };
 
@@ -125,10 +78,4 @@ export function capacityParts(
       text: `${label} allows ${state.capacity} ${state.capacity === 1 ? "snapshot" : "snapshots"} here; ${state.used} ${state.used === 1 ? "is" : "are"} using that capacity.${held}${full ? " There is no room for another snapshot." : ""}`,
     };
   });
-}
-
-/** Whether a new Boat golden would be refused: its slots are all taken (or over-taken by older goldens). */
-export function boatFull(capacities: Partial<Record<SandboxProviderId, CapacityState>>): boolean {
-  const boat = capacities.boat;
-  return boat?.kind === "full" || boat?.kind === "legacy";
 }

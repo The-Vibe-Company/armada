@@ -9,13 +9,12 @@ import {
   type AccountList,
   listSelectedAccounts,
   readAccountUsage,
-  readAuthCapabilities,
   readConnectionTestChoices,
 } from "@/lib/data/model-accounts";
 import { selectedOrganization } from "@/lib/data/selected-org";
 import { requireViewer } from "@/lib/data/viewer";
 
-import { type AuthCapabilities, HARNESS_PATH } from "@/lib/model-accounts";
+import { HARNESS_PATH } from "@/lib/model-accounts";
 
 export const metadata: Metadata = { title: "Models" };
 export const dynamic = "force-dynamic";
@@ -28,26 +27,18 @@ export const maxDuration = 320;
 export default async function HarnessPage() {
   await requireViewer();
   const selected = await selectedOrganization();
-  const [accounts, capabilities] = await Promise.all([
-    listSelectedAccounts(),
-    selected ? readAuthCapabilities(selected.org.id) : null,
-  ]);
+  const accounts = await listSelectedAccounts();
   const now = Date.now();
 
   return (
     <>
       <PageHeader title="Models" inlineActions>
         {selected && accounts.state === "ready" && (
-          <AddAccountDialog
-            orgId={selected.org.id}
-            orgName={selected.org.name}
-            isAdmin={selected.role === "admin"}
-            capabilities={capabilities}
-          />
+          <AddAccountDialog orgId={selected.org.id} orgName={selected.org.name} isAdmin={selected.role === "admin"} />
         )}
       </PageHeader>
 
-      <HarnessSections list={accounts} selected={selected} capabilities={capabilities} now={now} />
+      <HarnessSections list={accounts} selected={selected} now={now} />
     </>
   );
 }
@@ -55,12 +46,10 @@ export default async function HarnessPage() {
 async function HarnessSections({
   list,
   selected,
-  capabilities,
   now,
 }: {
   list: AccountList;
   selected: Awaited<ReturnType<typeof selectedOrganization>>;
-  capabilities: AuthCapabilities | null;
   now: number;
 }) {
   if (list.state === "no-org" || !selected)
@@ -141,7 +130,6 @@ async function HarnessSections({
           orgId={selected.org.id}
           orgName={selected.org.name}
           isAdmin={selected.role === "admin"}
-          capabilities={capabilities}
           triggerLabel="Add account"
           triggerVariant="outline"
         />
