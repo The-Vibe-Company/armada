@@ -147,7 +147,7 @@ export class AntigravityDriver implements Driver {
       Object.keys(variables).some(
         (key) =>
           /^(AGY_|GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_)/.test(key) ||
-          /^(TMPDIR|SSH_CONNECTION|DISPLAY|WAYLAND_DISPLAY|BROWSER)$/.test(key),
+          /^(TMPDIR|SSH_CONNECTION|DISPLAY|WAYLAND_DISPLAY|BROWSER|GIT_CONFIG_GLOBAL)$/.test(key),
       )
     )
       throw Error("invalid_request");

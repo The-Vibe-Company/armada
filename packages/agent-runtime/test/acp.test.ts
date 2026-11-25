@@ -374,6 +374,9 @@ antigravityTest("Antigravity passes the Gemini key only in a private child envir
     for (const name of ambient) process.env[name] = "ambient-fixture-value";
     const driver = f.driver();
     expect(() => driver.configureReadableVariables({ GEMINI_API_KEY: "replacement" })).toThrow("invalid_request");
+    expect(() => driver.configureReadableVariables({ GIT_CONFIG_GLOBAL: "/tmp/other-config" })).toThrow(
+      "invalid_request",
+    );
     driver.configureReadableVariables({ APP_REGION: "fixture-region" });
     await expect(driver.start(f.context("environment", "default")).done).resolves.toBe("finished");
     const event = f.events.find((value) => value.kind === "message" && !value.partial);
