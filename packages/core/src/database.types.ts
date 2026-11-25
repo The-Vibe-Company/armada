@@ -5411,7 +5411,6 @@ export type Database = {
           transition_context: Json | null;
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
-          native_drain_pending: boolean;
         };
         Insert: {
           id?: string;
@@ -5489,7 +5488,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          native_drain_pending?: boolean;
         };
         Update: {
           id?: string;
@@ -5567,7 +5565,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          native_drain_pending?: boolean;
         };
         Relationships: [
           {
@@ -5963,8 +5960,6 @@ export type ModalServerAppRow = Database["public"]["Tables"]["modal_server_apps"
 export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_harnesses"]["Row"];
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
-export type NativeSteerCursorRow = Database["public"]["Tables"]["native_steer_cursors"]["Row"];
-export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];
 export type NotifySubscription = Database["public"]["Tables"]["notify_subscriptions"]["Row"];
 export type OAuthClient = Database["public"]["Tables"]["oauth_clients"]["Row"];
 export type OAuthCode = Database["public"]["Tables"]["oauth_codes"]["Row"];

@@ -32,7 +32,6 @@ function fixture(
   };
   const writes: Array<{ sql: string; values: unknown[] }> = [];
   let stops = 0;
-  let strictStop = false;
   const sql: Sql = {
     query: async (query, values = []) => {
       if (query.startsWith("update")) {
@@ -40,7 +39,6 @@ function fixture(
         return { rows: [{ id }] } as never;
       }
       if (query.includes("from public.jobs")) return { rows: pendingOutput ? [{ id }] : [] } as never;
-      if (query.includes("native_drain_stop_requests")) return { rows: strictStop ? [{ id }] : [] } as never;
       if (query.includes("from public.sandboxes s")) return { rows: [{ ...row }] } as never;
       return { rows: [{ id: selected }] } as never;
     },
@@ -61,10 +59,7 @@ function fixture(
     row.status = "stopped";
     row.stopped_at = "2026-11-13";
   };
-  const markStrictStop = () => {
-    strictStop = true;
-  };
-  return { row, writes, caller, bind, selected, quiesce, markStrictStop, stopped: () => stops };
+  return { row, writes, caller, bind, selected, quiesce, stopped: () => stops };
 }
 
 test("owner account changes quiesce live compute before replacing stopped pins", async () => {

@@ -52,11 +52,10 @@ beforeAll(async () => {
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
       provider_sandbox_id text,conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
       activity_lease_id uuid,activity_until timestamptz,task_prompt_id text,lifecycle_generation bigint default 1,stop_generation bigint not null default 0,reconcile_lease_until timestamptz,
-      application_secret_tainted boolean not null default false,native_drain_pending boolean not null default false,
+      application_secret_tainted boolean not null default false,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
     create table sandbox_transitions(id bigint generated always as identity, sandbox_id uuid,
       to_status text, actor text, code text, generation bigint);
-    create table native_drain_stop_requests(sandbox_id uuid primary key references sandboxes(id) on delete cascade,stop_generation bigint not null);
     create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint,enrolment_hash text,docker_issuer_fence text);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid,
