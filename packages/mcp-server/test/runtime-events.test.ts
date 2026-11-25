@@ -418,6 +418,7 @@ test("a lost HTTP ACK survives journal reopen and server replacement without dup
     generation: active.epoch,
     expiresAt: Date.UTC(2100, 0, 1),
   };
+  const text = "😀".repeat(60000);
   const root = await mkdtemp(join(tmpdir(), "event-ack-"));
   const path = join(root, "journal");
   const openJournal = () => new Journal(path, (value) => value);
@@ -452,7 +453,7 @@ test("a lost HTTP ACK survives journal reopen and server replacement without dup
         id: "unicode-head",
         at: 1,
         kind: "message",
-        text: "😀".repeat(100000),
+        text,
         partial: false,
         tools: [],
       });
@@ -464,6 +465,10 @@ test("a lost HTTP ACK survives journal reopen and server replacement without dup
     }
     const archive = await f.rows();
     expect(archive).toHaveLength(2);
+    expect(JSON.parse(await decryptSecret(archive[0]!.event_enc, ENCRYPTION_KEY))).toMatchObject({
+      id: "unicode-head",
+      text,
+    });
     expect(await f.aggregate()).toMatchObject({ turnCount: 1, turns: [{ inputTokens: 100, outputTokens: 20 }] });
 
     const reopened = openJournal();
