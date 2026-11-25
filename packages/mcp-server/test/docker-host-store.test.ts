@@ -18,18 +18,17 @@ import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createDockerMachineGenerationBindings } from "../src/docker-machine-bindings.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
-import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createResumeJob } from "../src/jobs/resume.ts";
 import type { Job, JobKind } from "../src/jobs/runner.ts";
 import { createStopJob } from "../src/jobs/stop.ts";
-import { createJobsStore, recordResumeAuthority } from "../src/jobs/store.ts";
+import { createJobsStore, JOBS_WAKE, recordResumeAuthority } from "../src/jobs/store.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { createSandboxOutputs, OUTPUTS_CAPTURE } from "../src/sandbox-outputs.ts";
-import { ResumeTurnDeferred } from "../src/tool-error.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { queueMailboxStop, reportDockerExpiry, runDockerStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
@@ -1204,7 +1203,7 @@ async function prepareRestore(
   if (!(await recordResumeAuthority(sql, a.sandboxId, 2, turn, new Date(expiresAt).toISOString(), {})))
     throw new Error("Missing Docker resume authority.");
   const selection = { ...restore, lifecycleGeneration: 2, runnerJobId };
-  const poll = (running: string[] = [], supportsRestore = true, hostStore = store) =>
+  const poll = (running: string[] = [], supportsRestore = true, hostStore = store, bootstrap = false) =>
     hostStore.poll(
       a.hostToken,
       a.installationId,
@@ -1218,6 +1217,8 @@ async function prepareRestore(
       null,
       false,
       supportsRestore,
+      false,
+      bootstrap,
     );
   return { ...a, restore, selection, cleanupId, poll, putIntent, credential };
 }
@@ -1228,13 +1229,11 @@ async function restoreFixture() {
   return a;
 }
 
-test.each(["competing wakes", "queued send"] as const)(
+test.each(["explicit replay", "queued send"] as const)(
   "Docker %s admits one shared resume and pins the checkpoint",
   async (scenario) => {
     const a = await prepareRestore(undefined, false, false);
-    const db = database();
     const requestId = randomUUID();
-    const second = randomUUID();
     await sql.query("delete from public.jobs where sandbox_id=$1", [a.sandboxId]);
     await sql.query(
       "update public.sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now(),lifecycle_generation=1,model='gpt-5',reasoning_effort='high' where id=$1",
@@ -1323,53 +1322,56 @@ test.each(["competing wakes", "queued send"] as const)(
       await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1 and kind=$2", [a.sandboxId, kind]);
       return result.status;
     };
+    await sql.query("delete from account_turn_queue where sandbox_id=$1", [a.sandboxId]);
+    await sql.query("update docker_hosts set daemon_protocol=$2 where id=$1", [a.hostId, DOCKER_HOST_PROTOCOL]);
+    await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
+    const controls = createDockerSandboxControls(sql, key, {
+      sendEnabled: true,
+      wakeResume: resume.wake,
+      resume: resume.resumeDocker,
+      clock: runtimeClock,
+    });
+    const dispatch = createTurnDispatchJob(sql, key, async (actor, input, claim) => {
+      const result = await controls.invoke(actor, "send", { ...input }, claim ? { claim } : {});
+      if (!result.handled) throw Error("Docker sandbox was not handled.");
+      return result.result;
+    });
+    const input = { id: a.sandboxId, request_id: requestId, prompt: "Continue" };
+    let receipts: Promise<unknown> | undefined;
     if (scenario === "queued send") {
-      await sql.query("delete from account_turn_queue where sandbox_id=$1", [a.sandboxId]);
-      await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "failed" });
-      const controls = createDockerSandboxControls(sql, key, {
-        sendEnabled: true,
-        wakeResume: resume.wake,
-        clock: runtimeClock,
-      });
-      const dispatch = createTurnDispatchJob(sql, key, async (actor, input, claim) => {
-        const result = await controls.invoke(actor, "send", { ...input }, claim ? { claim } : {});
-        if (!result.handled) throw Error("Docker sandbox was not handled.");
-        return result.result;
-      });
-      const input = { id: a.sandboxId, request_id: requestId, prompt: "Continue" };
       await queue.accept(caller, input);
       expect(await run("turn_dispatch", dispatch)).toBe("retry");
-      expect(await run("resume", resume.handler)).toBe("retry");
-      const restore = await a.poll();
-      if (restore?.operation !== "restore") throw Error("Missing Docker restore job.");
-      await store.complete(a.hostToken, a.installationId, {
-        requestId: restore.requestId,
-        outcome: "completed",
-        machineId: "c".repeat(64),
-      });
-      expect(await run("resume", resume.handler)).toBe("retry");
-      const boot = await store.poll(
-        a.hostToken,
-        a.installationId,
-        undefined,
-        false,
-        undefined,
-        undefined,
-        null,
-        null,
-        [],
-        null,
-        false,
-        true,
-        false,
-        true,
-      );
-      if (boot?.operation !== "bootstrap") throw Error("Missing restored bootstrap job.");
-      session = await enrolments.enrol(boot.bootstrap.enrolmentToken);
-      expect(session.configuration).toMatchObject({
-        restoreCheckpoint: { epoch: "1", watermark: 0, conversationId: conversation },
-      });
-      expect(await run("resume", resume.handler)).toBe("done");
+    } else {
+      const admitted = Promise.withResolvers<void>();
+      const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, admitted.resolve);
+      try {
+        const invoke = () => controls.invoke(caller, "resume", { id: a.sandboxId, request_id: requestId });
+        receipts = Promise.all([invoke(), invoke()]);
+        await Promise.race([admitted.promise, receipts]);
+      } finally {
+        unsubscribe();
+      }
+    }
+    expect(await run("resume", resume.handler)).toBe("retry");
+    const restore = await a.poll();
+    if (restore?.operation !== "restore") throw Error("Missing Docker restore job.");
+    await store.complete(a.hostToken, a.installationId, {
+      requestId: restore.requestId,
+      outcome: "completed",
+      machineId: "c".repeat(64),
+    });
+    expect(await run("resume", resume.handler)).toBe("retry");
+    const boot = await a.poll([], true, store, true);
+    if (boot?.operation !== "bootstrap") throw Error("Missing restored bootstrap job.");
+    session = await enrolments.enrol(boot.bootstrap.enrolmentToken);
+    expect(session.configuration).toMatchObject({
+      restoreCheckpoint: { epoch: "1", watermark: 0, conversationId: conversation },
+    });
+    expect(await run("resume", resume.handler)).toBe("done");
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+    if (receipts) {
+      expect(await receipts).toEqual(Array(2).fill({ handled: true, result: { id: a.sandboxId, status: "ready" } }));
+    } else {
       expect(await run("turn_dispatch", dispatch)).toBe("done");
       expect(await queue.accept(caller, input)).toMatchObject({ promptId });
       expect(
@@ -1380,49 +1382,11 @@ test.each(["competing wakes", "queued send"] as const)(
           )
         ).rows,
       ).toEqual([{ request_id: `docker_prompt_${requestId}` }]);
-      return;
     }
-    await sql.query("update public.account_turn_queue set request_id=$2 where sandbox_id=$1", [a.sandboxId, requestId]);
-    await sql.query(
-      `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,
-    credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
-    select sandbox_id,$2,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation
-    from public.account_turn_queue where sandbox_id=$1 and request_id=$3`,
-      [a.sandboxId, second, requestId],
-    );
-    await sql.query(
-      "update public.account_turn_queue set dispatch_generation=1,dispatch_until='infinity' where sandbox_id=$1",
-      [a.sandboxId],
-    );
-    const snapshot = await createDockerSandboxService(sql).get(a.owner, a.sandboxId);
-    const results = await Promise.allSettled([
-      resume.wake(caller, snapshot, requestId),
-      resume.wake(caller, snapshot, second),
-    ]);
-    const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-    if (!failures.some((error) => error instanceof ResumeTurnDeferred))
-      throw new AggregateError(failures, "Admission never committed.");
-    expect(failures).toHaveLength(2);
-    expect(failures.filter((error) => error instanceof ResumeTurnDeferred)).toHaveLength(1);
-    const job = await createJobsStore(sql, key).claim("resume", randomUUID(), 30, 8);
-    expect(job).toMatchObject({
-      sandbox_id: a.sandboxId,
-      generation: "2",
-      payload: { source: "1", target: "2", watermark: 0 },
-    });
+    expect(await lifecycle(a.sandboxId)).toMatchObject({ lifecycle_generation: "2" });
     expect(
-      (
-        await db.query("select lifecycle_generation::text as generation from public.sandboxes where id=$1", [
-          a.sandboxId,
-        ])
-      ).rows,
-    ).toEqual([{ generation: "2" }]);
-    expect(
-      (
-        await db.query("select count(*)::int as total from public.jobs where kind='resume' and sandbox_id=$1", [
-          a.sandboxId,
-        ])
-      ).rows,
+      (await sql.query("select count(*)::int as total from jobs where kind='resume' and sandbox_id=$1", [a.sandboxId]))
+        .rows,
     ).toEqual([{ total: 1 }]);
   },
 );

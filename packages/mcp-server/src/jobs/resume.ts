@@ -289,15 +289,11 @@ export function createResumeJob(options: {
   const resumeDocker = async (caller: Caller, sandbox: DockerSandbox, requestId: string) => {
     const { id } = sandbox;
     if (sandbox.ownerId !== caller.userId) throw new VaultError("not_found", "No owned Docker resume target.");
-    const wait = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
-    const signal = AbortSignal.timeout(30_000);
-    try {
-      let admitted = false;
-      while (!signal.aborted) {
-        const {
-          rows: [prior],
-        } = await sql.query<{ state: string }>(
-          `select j.state from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+    const readReceipt = async () => {
+      const {
+        rows: [prior],
+      } = await sql.query<{ state: string }>(
+        `select j.state from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
            where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and j.kind='resume'
@@ -305,12 +301,24 @@ export function createResumeJob(options: {
              and coalesce(j.outcome->'evidence',j.outcome)->>'withoutPrompt'='true'
              and coalesce(j.outcome->'evidence',j.outcome)->>'actorEpoch'=e.epoch::text
            order by j.generation desc limit 1`,
-          [id, caller.userId, sandbox.orgId, requestId],
-        );
+        [id, caller.userId, sandbox.orgId, requestId],
+      );
+      return prior;
+    };
+    const wait = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
+    const signal = AbortSignal.timeout(30_000);
+    try {
+      let admitted = false;
+      while (!signal.aborted) {
+        const prior = await readReceipt();
         if (prior?.state === "done") return { id, status: "ready" as const };
         if (prior?.state === "failed") throw conflict("Docker resume failed.");
         if (!prior && !admitted) {
-          await admitResume(caller, sandbox, requestId, undefined, true);
+          try {
+            await admitResume(caller, sandbox, requestId, undefined, true);
+          } catch (error) {
+            if (!(error instanceof VaultError) || error.code !== "conflict" || !(await readReceipt())) throw error;
+          }
           admitted = true;
         }
         await wait.wait(signal, 250, waitForTimeout);
@@ -321,7 +329,7 @@ export function createResumeJob(options: {
     }
   };
 
-  const resume = async (caller: Caller, found: SandboxView | DockerSandbox, input: RuntimeResumeInput) => {
+  const resume = async (caller: Caller, found: SandboxView, input: RuntimeResumeInput) => {
     const wait = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
     const signal = AbortSignal.timeout(30_000);
     const request = { id: found.id, request_id: input.request_id, prompt: input.prompt };

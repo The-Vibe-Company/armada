@@ -704,11 +704,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
        join public.sandboxes s on s.id=later.bound_sandbox_id and s.docker_host_id=later.host_id
        join public.docker_machine_bindings target on target.sandbox_id=s.id
          and target.host_id=s.docker_host_id and target.installation_id=s.docker_installation_id
-         and target.machine_generation=s.lifecycle_generation and target.daemon_generation<>s.docker_generation
+         and target.machine_generation between s.lifecycle_generation-case
+           when s.status in ('failed','stopping','stopped') then 1 else 0 end and s.lifecycle_generation
+         and target.daemon_generation<>s.docker_generation
        join public.docker_machine_bindings source on source.sandbox_id=s.id
          and source.host_id=s.docker_host_id and source.installation_id=s.docker_installation_id
          and source.daemon_generation=s.docker_generation and source.machine_generation<target.machine_generation
-       where later.bound_sandbox_id=$1 and later.request_id<>$2 and later.bound_operation='restore'`,
+       where later.bound_sandbox_id=$1 and later.request_id<>$2 and later.bound_operation='restore'
+         and (later.outcome is distinct from 'failed' or later.cancelled_at is not null)`,
       [job.bound_sandbox_id, job.request_id],
     );
     for (const row of rows) {
@@ -883,6 +886,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
       return generation;
     return undefined;
   }
+  function restoreCleanupGeneration(row: Sandbox, generation: string) {
+    return (
+      String(row.lifecycle_generation) === generation ||
+      (["stopping", "stopped", "failed"].includes(row.status) &&
+        BigInt(row.lifecycle_generation) === BigInt(generation) + 1n)
+    );
+  }
+
   async function reconcileRestoreStop(tx: Sql, row: Sandbox) {
     const {
       rows: [resume],
@@ -2661,16 +2672,23 @@ export function createDockerHostStore(sql: Sql, key: string) {
           const { job: restore, lifecycleGeneration } = await readStoredJob(job);
           if (restore.operation !== "restore" || restore.request.generation !== job.request_id || !lifecycleGeneration)
             deny();
-          if (logical.docker_generation !== restore.request.generation) {
-            const awaitingAttachment =
-              logical.status === "starting" &&
-              String(logical.lifecycle_generation) === lifecycleGeneration &&
-              logical.docker_generation === restore.predecessor.request.generation;
-            if (awaitingAttachment) deny();
-            return;
-          }
+          if (!restoreCleanupGeneration(logical, lifecycleGeneration)) return;
           if (job.outcome !== "completed" || job.cancelled_at) deny();
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
+          if (logical.docker_generation !== restore.request.generation) {
+            if (logical.docker_generation !== restore.predecessor.request.generation) return;
+            if (
+              !job.result_machine_id ||
+              !(await adoptDockerRestoreForCleanup(
+                tx,
+                logical.id,
+                logical.lifecycle_generation,
+                logical.docker_generation,
+                restore.request.generation,
+              ))
+            )
+              deny();
+          }
         } else {
           logical = await currentOrSupersededMachine(tx, job, host, installationId);
           if (
@@ -2804,18 +2822,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
             deny();
           if (logical.status === "deleted") return;
           const attached = logical.docker_generation === restore.request.generation;
-          const sameGeneration = lifecycleGeneration === String(logical.lifecycle_generation);
-          const attachedAtNextStopGeneration =
-            attached &&
-            ["stopping", "stopped"].includes(logical.status) &&
-            BigInt(logical.lifecycle_generation) === BigInt(lifecycleGeneration) + 1n;
-          if (!sameGeneration && !attachedAtNextStopGeneration) return;
+          if (!restoreCleanupGeneration(logical, lifecycleGeneration)) return;
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
           if (attached) {
             if (job.outcome !== "completed" || job.cancelled_at) deny();
           } else {
             if (logical.docker_generation !== restore.predecessor.request.generation) deny();
-            if (logical.status !== "starting" && logical.status !== "stopping") return;
             if (job.outcome === "completed" && job.result_machine_id && !job.cancelled_at) {
               if (
                 !(await adoptDockerRestoreForCleanup(

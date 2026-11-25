@@ -324,6 +324,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     as unrecoverable_dispatch,
                   ${unresolvedResume("s")} as resuming,
                   case when ${unresolvedResume("s")} then (statement_timestamp()+interval '1 second')::text
+                    when ${adjacentRuntimeDispatch()} and s.status in ('ready','running')
+                      and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
+                    then q.dispatch_until::text
                   end as defer_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
