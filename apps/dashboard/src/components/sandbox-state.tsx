@@ -35,26 +35,35 @@ export function SandboxState({
         : status === "ready"
           ? (readyLabel ?? look.label)
           : look.label);
-  const hollow = paused || status === "stopped";
+  const working = label === "Working" && !waiting;
+  const hollow = !working && (paused || status === "stopped");
+  const dotClass = hollow
+    ? "border border-muted-foreground"
+    : working
+      ? "bg-success"
+      : !viewerOwns || waiting
+        ? "bg-muted-foreground/60"
+        : label === "Waiting for you"
+          ? "bg-warning"
+          : status === "failed"
+            ? "bg-destructive"
+            : "bg-muted-foreground/60";
   return (
     <span
       className={cn("inline-flex items-center gap-2 text-sm", status === "failed" && viewerOwns && "text-destructive")}
     >
       <span
         aria-hidden="true"
-        className={cn(
-          "size-2 shrink-0 rounded-full",
-          hollow
-            ? "border border-muted-foreground"
-            : !viewerOwns || waiting || look.tone === "neutral"
-              ? "bg-muted-foreground/60"
-              : label === "Waiting for you"
-                ? "bg-warning"
-                : status === "failed"
-                  ? "bg-destructive"
-                  : "bg-success",
+        data-pulse={working || undefined}
+        className={cn("relative inline-flex size-2 shrink-0", !working && "rounded-full", !working && dotClass)}
+      >
+        {working && (
+          <>
+            <span className={cn("absolute inset-0 rounded-full motion-safe:animate-live", dotClass)} />
+            <span className={cn("relative block size-full rounded-full", dotClass)} />
+          </>
         )}
-      />
+      </span>
       {label}
     </span>
   );

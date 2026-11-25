@@ -30,9 +30,14 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { INLINE_LIVE_LIMIT, LIVE_SANDBOXES_HREF, type LiveSandboxes } from "@/lib/live-sandbox-view";
+import {
+  INLINE_LIVE_LIMIT,
+  LIVE_FLEET_REFRESH_EVENT,
+  LIVE_SANDBOXES_HREF,
+  type LiveSandboxes,
+  liveSandboxLook,
+} from "@/lib/live-sandbox-view";
 import { isActiveLink, NAV_GROUPS, type NavIcon } from "@/lib/navigation";
-import { statusLook } from "@/lib/status-tone";
 import { cn } from "@/lib/utils";
 
 /** Each destination's glyph; the order and labels live in `NAV_GROUPS`. */
@@ -54,7 +59,6 @@ const ICONS: Record<NavIcon, LucideIcon> = {
 function useLiveSandboxes(
   organizationId: string | null,
   initialLive: LiveSandboxes | null | undefined,
-  mobileDrawer: boolean,
   enabled: boolean,
 ) {
   const [update, setUpdate] = useState<{ initial: typeof initialLive; organizationId: string; live: LiveSandboxes }>();
@@ -63,23 +67,34 @@ function useLiveSandboxes(
     const scope = organizationId;
     const url = `/api/fleet/live?organizationId=${encodeURIComponent(organizationId)}`;
     let pending: AbortController | undefined;
+    let queuedRefresh = false;
     const active = () => document.visibilityState === "visible" && document.hasFocus();
     async function poll() {
-      if (!active() || pending) return;
+      if (!active()) return;
+      if (pending) {
+        queuedRefresh = true;
+        return;
+      }
       const request = new AbortController();
       pending = request;
+      queuedRefresh = false;
       try {
         const response = await fetch(url, { signal: request.signal });
         if (!response.ok) return;
         const rows: LiveSandboxes["rows"] = await response.json();
-        const total = Number(response.headers.get("X-Live-Count"));
+        const rawTotal = response.headers.get("X-Live-Count");
+        const parsedTotal = rawTotal === null ? Number.NaN : Number(rawTotal);
+        const total = Number.isFinite(parsedTotal) ? parsedTotal : rows.length;
         if (active() && !request.signal.aborted) {
           setUpdate({ initial: initialLive, organizationId: scope, live: { rows, total } });
         }
       } catch {
         return;
       } finally {
-        if (pending === request) pending = undefined;
+        if (pending === request) {
+          pending = undefined;
+          if (queuedRefresh && active() && !request.signal.aborted) void poll();
+        }
       }
     }
 
@@ -91,19 +106,21 @@ function useLiveSandboxes(
       }
     }
 
-    if (mobileDrawer) void poll();
+    void poll();
     const interval = window.setInterval(poll, 30_000);
     window.addEventListener("focus", onActivity);
     window.addEventListener("blur", onActivity);
+    window.addEventListener(LIVE_FLEET_REFRESH_EVENT, onActivity);
     document.addEventListener("visibilitychange", onActivity);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", onActivity);
       window.removeEventListener("blur", onActivity);
+      window.removeEventListener(LIVE_FLEET_REFRESH_EVENT, onActivity);
       document.removeEventListener("visibilitychange", onActivity);
       pending?.abort();
     };
-  }, [enabled, initialLive, mobileDrawer, organizationId]);
+  }, [enabled, initialLive, organizationId]);
   return update && update.initial === initialLive && update.organizationId === organizationId
     ? update.live
     : initialLive;
@@ -150,7 +167,7 @@ export function NavLinks({
 }) {
   const pathname = usePathname();
   const { isMobile, openMobile, setOpenMobile } = useSidebar();
-  const live = useLiveSandboxes(organizationId, initialLive, isMobile === true, !isMobile || openMobile);
+  const live = useLiveSandboxes(organizationId, initialLive, isMobile === false || openMobile);
   return (
     <SidebarContent className={cn("gap-0", className)}>
       <nav id="main-navigation-links" aria-label="Main">
@@ -198,7 +215,7 @@ export function NavLinks({
                       {href === "/sandboxes" && live && live.total > 0 && (
                         <ul className="my-1 ml-[15px] space-y-px border-l pl-2 group-data-[collapsible=icon]:hidden">
                           {live.rows.map((sandbox) => {
-                            const look = statusLook(sandbox.status);
+                            const look = liveSandboxLook(sandbox);
                             return (
                               <li key={sandbox.id}>
                                 <IntentLink
