@@ -18,7 +18,7 @@ import {
   type LaunchEnvelope,
   streamSandboxEvents,
 } from "@armada/core/contract";
-import { runtimeHarnessSupported } from "@armada/core/harnesses";
+import { type ModelCredentialKind, runtimeHarnessSupported } from "@armada/core/harnesses";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -532,12 +532,21 @@ function seedLarge(target: State): void {
       });
     }
   }
+  // Keep numbered accounts stable across harness catalog changes. Launch and template journeys use 006 for Claude.
+  const accountKinds: readonly ModelCredentialKind[] = [
+    "claude_oauth",
+    "anthropic",
+    "morph",
+    "openai",
+    "codex_auth",
+    "opencode",
+  ];
   for (let i = 0; i < 12; i++)
     target.credentials.push({
       id: id(12000 + i),
       scope: "org",
       owner_id: LARGE,
-      kind: MODEL_CREDENTIAL_KINDS[i % MODEL_CREDENTIAL_KINDS.length],
+      kind: accountKinds[i % accountKinds.length],
       name: name("model-account", i),
       value_enc: "\\x0102",
       created_at: now,
