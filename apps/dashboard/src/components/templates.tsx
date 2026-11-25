@@ -109,6 +109,7 @@ export function CreateTemplateDialog(props: {
   catalog: ModelCatalog;
 }) {
   const [open, setOpen] = useState(false);
+  const [generation, setGeneration] = useState(0);
   const toast = useToast();
   const onDone = useCallback(
     (message: string) => {
@@ -123,10 +124,13 @@ export function CreateTemplateDialog(props: {
       title="New template"
       description="A saved launch you can start in a click or run on a routine."
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setGeneration((value) => value + 1);
+      }}
       triggerAttrs={{ "data-new-template": "" }}
     >
-      <TemplateForm {...props} action={createTemplate} onDone={onDone} />
+      <TemplateForm key={generation} {...props} action={createTemplate} onDone={onDone} />
     </CreateDialog>
   );
 }
