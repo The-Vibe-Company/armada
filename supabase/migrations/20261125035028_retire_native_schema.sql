@@ -1,5 +1,17 @@
 begin;
 
+lock table public.sandboxes in access exclusive mode;
+
+-- A legacy delete could leave an unresolved provider operation after the old
+-- worker exited. Preserve its marker and update policy until it is reconciled.
+do $$
+begin
+  if exists (select 1 from public.sandboxes where native_drain_pending) then
+    raise exception 'Reconcile pending native sandbox drains before retiring their markers';
+  end if;
+end;
+$$;
+
 -- Dispatch recovery and webhook alias resolution still consume the queue
 -- receipt when a sandbox publishes a task prompt.
 create function public.record_account_turn_prompt() returns trigger
