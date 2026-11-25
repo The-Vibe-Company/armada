@@ -438,7 +438,8 @@ export async function stageStopOutputs(
   reader: OutputReader,
   remaining: number,
 ) {
-  if (!job.sandbox_id || !job.generation || job.outcome || remaining <= 0) return;
+  if (!job.sandbox_id || !job.generation || (job.outcome as { output?: StagedOutput } | null)?.output || remaining <= 0)
+    return;
   const signal = AbortSignal.any([context.signal, AbortSignal.timeout(remaining)]);
   await captureFinalOutputs(sql, reader, job.sandbox_id, {
     key,

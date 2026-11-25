@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { SandboxPatch } from "@armada/core";
 import { createSqlData, type SandboxView, type ServerSandboxStore } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
+import { settleBoatStop } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -286,15 +287,7 @@ test.each([false, true])(
     const stoppedAt = "2026-01-01T00:00:00.000Z";
     if (rejectDetach) await db.exec(rejectExtensionDetach);
     try {
-      const stop = store.update(id, {
-        ownerStop: true,
-        status: "failed",
-        finishActivity: true,
-        stopRequested: false,
-        stoppedAt,
-        activityToken,
-        expectedGeneration: 2,
-      });
+      const stop = db.transaction!((tx) => settleBoatStop(tx, id, 2, null, new Date(stoppedAt)));
       if (rejectDetach) await expect(stop).rejects.toThrow("reject_detach");
       else await stop;
       expect(await store.get(id)).toMatchObject({ status: "failed", stoppedAt: rejectDetach ? null : stoppedAt });
