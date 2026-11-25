@@ -79,8 +79,7 @@ builds outside that release path need the same generated
 `packages/core/src/official-sandbox-image.json` for their package version before
 building; the checked-in null file is not a production pin. Do not manually
 invent a digest or use a different release's pin. The operator lifecycle helper's
-`--image` is now an expected-image assertion for normal launches, not a selector;
-only its existing private preview route still sends it.
+`--image` compares the expected image to the recorded `sandbox/status` response.
 
 Host fetching and plain fetch-failure reporting are owned by #1525; this slice
 adds dashboard progress but does not duplicate the host pull implementation.

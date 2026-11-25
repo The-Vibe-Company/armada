@@ -231,7 +231,6 @@
     "packages/mcp-server/test/docker-normal-launch.test.ts": 27.51,
     "packages/mcp-server/test/docker-runtime-lifecycle.test.ts": 5.336,
     "packages/mcp-server/test/docker-sandbox-controls.test.ts": 5.764,
-    "packages/mcp-server/test/docker-sandbox-routes.test.ts": 2.79,
     "packages/mcp-server/test/docker-sandbox-service.test.ts": 2.508,
     "packages/mcp-server/test/exec-selected-org-api.test.ts": 2.969,
     "packages/mcp-server/test/github-account-api.test.ts": 2.497,
@@ -380,7 +379,6 @@
       "files": [
         "packages/core/test/provider-identity-db.test.ts",
         "packages/mcp-server/test/docker-sandbox-controls.test.ts",
-        "packages/mcp-server/test/docker-sandbox-routes.test.ts",
         "packages/mcp-server/test/golden-restore-api.test.ts",
         "packages/mcp-server/test/resource-advice.test.ts",
         "packages/mcp-server/test/resource-store.test.ts",
