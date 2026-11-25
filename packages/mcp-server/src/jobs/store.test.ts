@@ -1860,7 +1860,7 @@ test("Modal launches Antigravity with a selected account confined to private enr
   expect(JSON.stringify([configuration, rows])).not.toContain(key);
 });
 
-test("Modal admission and deferred enrolment use at most 53 SQL statements", async () => {
+test("Modal admission and deferred enrolment use at most 54 SQL statements", async () => {
   const statements: string[] = [];
   const checkpoints: number[] = [];
   const admission = await modalAdmissionFixture("private", statements);
@@ -1888,8 +1888,8 @@ test("Modal admission and deferred enrolment use at most 53 SQL statements", asy
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(53);
-    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 32, 7, 6]);
+    expect(statements.length).toBeLessThanOrEqual(54);
+    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 33, 7, 6]);
   } finally {
     log.mockRestore();
   }

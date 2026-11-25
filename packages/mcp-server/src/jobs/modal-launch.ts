@@ -1062,7 +1062,6 @@ export async function runModalLaunch(
       rows: [receipt],
     } = await tx.query<{
       org_id: string;
-      dispatchable: boolean;
       credential_id: string | null;
       credential_version: number | null;
       provider_sandbox_id: string | null;
@@ -1078,9 +1077,6 @@ export async function runModalLaunch(
       ticket_issued: boolean;
     }>(
       `select s.org_id, s.provider_sandbox_id, s.credential_id, s.credential_version,
-              coalesce(j.lease_owner=$4 and j.lease_epoch=$5 and j.lease_until>clock_timestamp()
-                and j.attempts<=j.max_attempts and (j.deadline_at is null or j.deadline_at>clock_timestamp()), false)
-                as dispatchable,
               j.outcome #>> '{modal_machine,entry,machineId}' as journaled_id,
               j.outcome #> '{modal_machine,entry}' is not null as has_intent,
               s.stop_requested_at is not null as stop_requested,
@@ -1105,7 +1101,7 @@ export async function runModalLaunch(
          and s.provider_sandbox_id is not null
        where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
          and s.status in ('starting','ready','running') and s.deleted_at is null`,
-      [sandboxId, job.id, provider, job.lease_owner ?? null, job.lease_epoch],
+      [sandboxId, job.id, provider],
     );
     return receipt;
   };
@@ -1142,7 +1138,7 @@ export async function runModalLaunch(
     const row = await readEnrolment(tx);
     if (row?.starting) return row;
   };
-  let skipProvider = pending.cancel_without_provider || (!hasJournal && !pending.dispatchable);
+  let skipProvider = pending.cancel_without_provider || (!hasJournal && !(await context.canDispatch()));
   let plan: ModalLaunchPlan | undefined;
   if (!skipProvider) {
     try {
