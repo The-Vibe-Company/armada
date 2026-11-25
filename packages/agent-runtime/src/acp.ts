@@ -205,7 +205,11 @@ export class AcpDriver implements Driver {
             ) {
               const title = typeof u.title === "string" ? u.title : "";
               const redact = (text: string) => c.redactToolText?.(text) ?? text;
-              const label = redact(title.replaceAll("\0", "")).trim();
+              const redactIdentifier = (text: string) => {
+                const scrubbed = redact(text);
+                return scrubbed.includes("\0") ? redact(scrubbed.replaceAll("\0", "")) : scrubbed;
+              };
+              const label = redactIdentifier(title).trim();
               const name = toolIdentifier(label, u.sessionUpdate === "tool_call_update" ? "tool_result" : "tool");
               const input = u.rawInput === undefined && label.length > name.length ? redact(title) : u.rawInput;
               c.emit({
@@ -214,7 +218,7 @@ export class AcpDriver implements Driver {
                 partial: false,
                 tools: [
                   {
-                    id: toolIdentifier(redact(u.toolCallId.replaceAll("\0", ""))),
+                    id: toolIdentifier(redactIdentifier(u.toolCallId)),
                     name,
                     ...(input === undefined ? {} : { input }),
                     ...(u.status === "completed" || u.status === "failed"

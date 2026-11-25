@@ -86,7 +86,7 @@ test("emits server-valid tool metadata after literal and short application redac
         tools: [
           { id: expands, name: expands, server: expands },
           { id: value, name: "", server: "\0" },
-          { id: "other", name: "other" },
+          { id: "other", name: shortMask ? "x\0y" : "long\0secrt" },
         ],
       });
       const events = journal.events();
@@ -99,7 +99,7 @@ test("emits server-valid tool metadata after literal and short application redac
       expect(event.tools).toEqual([
         { id: redacted, name: redacted, server: redacted },
         { id: `${"a".repeat(254)}😀`, name: "tool", server: "tool" },
-        { id: "other", name: "other" },
+        { id: "other", name: "[REDACTED]" },
       ]);
     } finally {
       journal.close();

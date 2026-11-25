@@ -564,7 +564,10 @@ export class Journal {
         scrubbed.text = appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask);
       scrubbed.tools = scrubbed.tools.map((tool, index) => {
         const original = event.tools[index]!;
-        const field = (before: string, after: string) => toolIdentifier(mask ? maskText(before, after, mask) : after);
+        const field = (before: string, after: string) => {
+          const text = mask ? maskText(before, after, mask) : after;
+          return toolIdentifier(text.includes("\0") ? this.redactLiteralText(text.replaceAll("\0", "")) : text);
+        };
         return {
           ...tool,
           id: field(original.id, tool.id),
