@@ -1,5 +1,48 @@
 # Changelog
 
+## [13.0.0](https://github.com/The-Vibe-Company/armada/compare/v12.0.0...v13.0.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **architecture:** native counter to zero; delete the drain script and the frozen-path rules ([#4112](https://github.com/The-Vibe-Company/armada/issues/4112))
+
+### Features
+
+* **accounts:** one-step Antigravity Google sign-in from the CLI ([#4136](https://github.com/The-Vibe-Company/armada/issues/4136)) ([96598eb](https://github.com/The-Vibe-Company/armada/commit/96598eb76a172510e160ff4eae99c98fb14f4b2a))
+* **dashboard:** connect an Antigravity account in the model-account dialog ([#4137](https://github.com/The-Vibe-Company/armada/issues/4137)) ([a44e559](https://github.com/The-Vibe-Company/armada/commit/a44e5599b8c4597a10841301c7640d55945ec815))
+* **harness:** admit and deliver Antigravity launches on Modal and Docker ([#4134](https://github.com/The-Vibe-Company/armada/issues/4134)) ([e641358](https://github.com/The-Vibe-Company/armada/commit/e64135894075a720cf19eebc07955bddf99107b4))
+* **launch:** Boat launch runs as the same launch job ([#4152](https://github.com/The-Vibe-Company/armada/issues/4152)) ([2f45a86](https://github.com/The-Vibe-Company/armada/commit/2f45a869d79bfbc6b2480091c859d4a245f445d1))
+* **lifecycle:** stop runs as a job (capture outputs, then stop the machine) ([#4157](https://github.com/The-Vibe-Company/armada/issues/4157)) ([adb336f](https://github.com/The-Vibe-Company/armada/commit/adb336f3f75fa0f1abfe586b733007f48aeeeaa5))
+
+
+### Bug Fixes
+
+* **boat:** owner stop stuck in stopping when snapshot verifiedAt precedes stoppedAt (regression after [#3904](https://github.com/The-Vibe-Company/armada/issues/3904)) ([#4124](https://github.com/The-Vibe-Company/armada/issues/4124)) ([7b7a5fd](https://github.com/The-Vibe-Company/armada/commit/7b7a5fd118137b77237756f3029537e52fe057cc))
+* **dashboard:** project sandbox readiness after launch setup ([#4128](https://github.com/The-Vibe-Company/armada/issues/4128)) ([c332bf1](https://github.com/The-Vibe-Company/armada/commit/c332bf1bf4dd66080cfe36cf4bb1362a7a9357bc))
+* **dashboard:** responsive mobile/tablet layout, drop 30s full-page refresh and dead route shims ([#4141](https://github.com/The-Vibe-Company/armada/issues/4141)) ([685b3c3](https://github.com/The-Vibe-Company/armada/commit/685b3c301ae51c6ebefe03d5d6899a1c61395846))
+* **delegation:** scoped child message fails with child_outcome_unconfirmed (sandbox_not_ready) after async child launch ([#4163](https://github.com/The-Vibe-Company/armada/issues/4163)) ([#4179](https://github.com/The-Vibe-Company/armada/issues/4179)) ([5bd3196](https://github.com/The-Vibe-Company/armada/commit/5bd3196580adab13146e36a0552123a12830f769))
+* **docker-host:** 'armada-docker-host upgrade' run from the installed binary reports success without upgrading ([#4122](https://github.com/The-Vibe-Company/armada/issues/4122)) ([8d42367](https://github.com/The-Vibe-Company/armada/commit/8d4236742062e02d6d2cd88181da7eec74925e19))
+* **docker-host:** flag outdated daemon versions in the CLI and dashboard ([#4132](https://github.com/The-Vibe-Company/armada/issues/4132)) ([7976c40](https://github.com/The-Vibe-Company/armada/commit/7976c40283e538f2fe651c3718283fabb7837f09))
+* **docker-host:** open review findings merged with the Docker Machine adapter ([#4111](https://github.com/The-Vibe-Company/armada/issues/4111)) must be fixed before the cutover ([#4135](https://github.com/The-Vibe-Company/armada/issues/4135)) ([6a12184](https://github.com/The-Vibe-Company/armada/commit/6a12184866be72cacaae6c9973229d2b4e005d2b))
+* **docker-host:** prevent cleanup retry starvation at the poll exclusion limit ([#4131](https://github.com/The-Vibe-Company/armada/issues/4131)) ([49e3e36](https://github.com/The-Vibe-Company/armada/commit/49e3e3634b5e11fcda2b18e09385bdb4a049bc9a))
+* **docker:** intermittent docker.launch.machine_start failure after harness_ready marks sandbox failed ([#4169](https://github.com/The-Vibe-Company/armada/issues/4169)) ([cd38e3b](https://github.com/The-Vibe-Company/armada/commit/cd38e3b165120b070feb2719927a7356bdd16369))
+* **server:** a queued send wakes a stopped Modal runtime sandbox but the turn is never dispatched ([#4119](https://github.com/The-Vibe-Company/armada/issues/4119)) ([d23bc72](https://github.com/The-Vibe-Company/armada/commit/d23bc72248dcf9f6f663b369265028c40dabb221))
+* **smoke:** investigate Docker real-model readiness timeout and stop conflict ([#4117](https://github.com/The-Vibe-Company/armada/issues/4117)) ([a067aea](https://github.com/The-Vibe-Company/armada/commit/a067aeabe4d524274bb831b37859f82688253824))
+* **smoke:** investigate Docker real-model readiness timeout and stop conflict ([#4127](https://github.com/The-Vibe-Company/armada/issues/4127)) ([2b2fc17](https://github.com/The-Vibe-Company/armada/commit/2b2fc1756bbc3a842c100ea4c2601fad6a184427))
+* **turns:** fence expired shared dispatch workers from successor receipts ([#4158](https://github.com/The-Vibe-Company/armada/issues/4158)) ([c34d16d](https://github.com/The-Vibe-Company/armada/commit/c34d16dc05de1274df2653402bbd56bba4075920))
+
+
+### Performance Improvements
+
+* **dashboard:** remove layout server round-trips, bound sidebar/list queries, and trim dead scripts ([#4153](https://github.com/The-Vibe-Company/armada/issues/4153)) ([95b1fe7](https://github.com/The-Vibe-Company/armada/commit/95b1fe7e99e4d4ed51a1310da334d322dda09336))
+* **dashboard:** stream live sandbox chat updates over SSE instead of 2s polling ([#4160](https://github.com/The-Vibe-Company/armada/issues/4160)) ([7628d04](https://github.com/The-Vibe-Company/armada/commit/7628d046b073d56b93555679a4af96d5abf3dd54))
+
+
+### Miscellaneous Chores
+
+* **architecture:** native counter to zero; delete the drain script and the frozen-path rules ([#4112](https://github.com/The-Vibe-Company/armada/issues/4112)) ([fa68997](https://github.com/The-Vibe-Company/armada/commit/fa68997ac7cd06ecc7bf7dfee174b974ad240dc1))
+
 ## [12.0.0](https://github.com/The-Vibe-Company/armada/compare/v11.0.1...v12.0.0) (2026-11-24)
 
 
