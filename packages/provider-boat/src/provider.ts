@@ -204,6 +204,7 @@ interface BoatRuntimeHost {
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
 export interface BoatProvider extends Provider {
+  fork(request: ForkRequest): Promise<SandboxInfo>;
   /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
    * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
   listSandboxInventory(request?: {
