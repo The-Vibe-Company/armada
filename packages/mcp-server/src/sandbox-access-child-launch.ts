@@ -66,7 +66,7 @@ const childLaunchAuthority = `
     and d.revoked_at is null and d.acknowledged_at is not null and d.expires_at>clock_timestamp()
     and 'worker:launch'=any(d.scopes)`;
 
-const childLaunchLockBudget = "set local lock_timeout = '2s'";
+export const childLaunchLockBudget = "set local lock_timeout = '2s'";
 
 // WARNING: Lock the parent sandbox before the access parent to match the lifecycle fence.
 async function lockChildLaunchParent(tx: Sql, operationId: string, sandboxId: string) {
@@ -85,12 +85,7 @@ async function lockChildLaunchParent(tx: Sql, operationId: string, sandboxId: st
 }
 
 export async function lockChildLaunchAdmission(tx: Sql, operation: ChildOperation) {
-  await tx.query(childLaunchLockBudget);
-  const { rows: members } = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
-    operation.orgId,
-    operation.ownerId,
-  ]);
-  if (!members.length || !(await lockChildLaunchParent(tx, operation.id, operation.sandboxId)))
+  if (!(await lockChildLaunchParent(tx, operation.id, operation.sandboxId)))
     throw new ChildLaunchNotAllocated("preallocation_rejected", "parent_authority");
   const {
     rows: [row],

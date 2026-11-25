@@ -107,16 +107,18 @@ export class DelegatedAuthority {
         kind: string;
       }
     >(
-      `select o.id,o.sandbox_id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids,d.scopes,o.kind
+      `with grant_row as materialized (
+        select o.id,o.sandbox_id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids,d.scopes,o.kind,d.expires_at
         from public.orchestrator_delegations d
         join public.armada_access_parents o on o.id=d.orchestrator_id
         join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
         join public.sandboxes s on s.id=o.sandbox_id
         where d.hash=$1 and d.revoked_at is null and d.acknowledged_at is not null
-        and d.expires_at>now() and d.epoch=o.authority_epoch and o.state='ready'
+        and d.expires_at>clock_timestamp() and d.epoch=o.authority_epoch and o.state='ready'
         and d.native_generation=s.orchestrator_native_generation and s.status not in ('stopped','deleted','failed')
         and s.stop_requested_at is null and ($2::text is null or $2=any(d.scopes))
-        ${lockDelegation ? "for no key update of d" : ""}`,
+        ${lockDelegation ? "for no key update of d" : ""}
+      ) select * from grant_row where expires_at>clock_timestamp()`,
       [digest(token), scope],
     );
     return result.rows[0] ?? deny();
@@ -135,8 +137,38 @@ export class DelegatedAuthority {
     return this.sql.transaction(async (tx) => {
       const candidate = await this.activeGrant(tx, token, scope);
       await lockAuthorityMember(tx, candidate);
-      // WARNING: Launch/setup workers acquire the child sandbox before revalidating parent authority.
-      if (request.method !== "launch" && request.method !== "finish") {
+      let launchAccount: Parameters<AuthorizeDelegatedAccount>[1] | undefined;
+      if (request.method === "launch") {
+        if (
+          !request.goldenId ||
+          !candidate.golden_ids.includes(request.goldenId) ||
+          !request.credentialId ||
+          !candidate.account_ids.includes(request.credentialId) ||
+          !isHarness(request.harness) ||
+          !Number.isSafeInteger(request.credentialVersion) ||
+          (request.credentialVersion ?? 0) < 1
+        )
+          return deny();
+        const golden = await tx.query(
+          `select id from public.goldens where id=$1 and org_id=$2
+          and removed_at is null and (visibility='org' or owner_id=$3) for update`,
+          [request.goldenId, candidate.org_id, candidate.owner_id],
+        );
+        if (!golden.rows.length) return deny();
+        await tx.query(
+          `select id from public.credentials where id=$1
+           and ((scope='user' and owner_id=$2) or (scope='org' and owner_id=$3)) for update`,
+          [request.credentialId, candidate.owner_id, candidate.org_id],
+        );
+        launchAccount = {
+          userId: candidate.owner_id,
+          orgId: candidate.org_id,
+          harness: request.harness,
+          credentialId: request.credentialId,
+          credentialVersion: request.credentialVersion as number,
+        };
+      } else if (request.method !== "finish") {
+        // WARNING: Launch/setup workers lock the child before revalidating parent authority.
         const child = await tx.query(
           `select c.sandbox_id from public.orchestrator_children c
           join public.sandboxes s on s.id=c.sandbox_id
@@ -151,30 +183,10 @@ export class DelegatedAuthority {
       await lockAuthorityParent(tx, candidate);
       const row = await this.activeGrant(tx, token, scope, true);
       if (row.id !== candidate.id || row.sandbox_id !== candidate.sandbox_id) return deny();
-      if (request.method === "launch") {
-        if (
-          !request.goldenId ||
-          !row.golden_ids.includes(request.goldenId) ||
-          !request.credentialId ||
-          !row.account_ids.includes(request.credentialId) ||
-          !isHarness(request.harness) ||
-          !Number.isSafeInteger(request.credentialVersion) ||
-          (request.credentialVersion ?? 0) < 1
-        )
+      if (launchAccount) {
+        if (!row.golden_ids.includes(request.goldenId ?? "") || !row.account_ids.includes(launchAccount.credentialId))
           return deny();
-        const golden = await tx.query(
-          `select id from public.goldens where id=$1 and org_id=$2
-          and removed_at is null and (visibility='org' or owner_id=$3) for update`,
-          [request.goldenId, row.org_id, row.owner_id],
-        );
-        if (!golden.rows.length) return deny();
-        await this.authorizeAccount(tx, {
-          userId: row.owner_id,
-          orgId: row.org_id,
-          harness: request.harness,
-          credentialId: request.credentialId,
-          credentialVersion: request.credentialVersion as number,
-        });
+        await this.authorizeAccount(tx, launchAccount);
       } else if (request.method === "finish") {
         // Self completion has no caller-selected target and never grants child/owner authority.
         const self = await tx.query(
