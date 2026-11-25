@@ -6,6 +6,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDuration } from "@/lib/lifecycle";
 import { costFigure, costTitle, formatTokens, formatUsd } from "@/lib/sandbox-cost";
+import { costModelsLabel, turnModelLabel } from "@/lib/sandbox-model";
 import { cn } from "@/lib/utils";
 
 /**
@@ -21,7 +22,7 @@ export function SandboxCostCard({ cost, totalClassName }: { cost: SandboxCost; t
     ["Output", formatTokens(cost.tokens.output)],
     ["Turns", String(cost.turnCount)],
     ["Compute time", cost.computeSeconds === null ? "Not recorded" : formatDuration(cost.computeSeconds)],
-    ["Model", cost.models.length > 0 ? cost.models.join(", ") : "Not reported"],
+    ["Model", costModelsLabel(cost.models)],
   ];
   return (
     <Card className="gap-3 py-5" data-sandbox-cost={figure.kind}>
@@ -96,7 +97,7 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
   // A turn is a prompt: its rows (one per model) share its number.
   const numbers = new Map<string, number>();
   for (const turn of cost.turns) if (!numbers.has(turn.promptId)) numbers.set(turn.promptId, numbers.size + 1);
-  const several = cost.models.length > 1 || cost.turns.some((turn) => turn.model === null);
+  const several = cost.models.length > 1 || cost.turns.some((turn) => !turn.model?.trim());
   return (
     <Table className="w-full text-xs tabular-nums" aria-label="Cost per turn">
       <TableHeader className="[&_tr]:border-0">
@@ -128,8 +129,11 @@ function TurnTable({ cost }: { cost: SandboxCost }) {
               {numbers.get(turn.promptId)}
               {/* A turn can call more than one model (Claude Code's background model): each row names its own. */}
               {several && (
-                <span className="block max-w-28 truncate text-muted-foreground" title={turn.model ?? undefined}>
-                  {turn.model ?? "Model not reported"}
+                <span
+                  className="block max-w-28 truncate text-muted-foreground"
+                  title={turn.model?.trim() ? turnModelLabel(turn.model) : undefined}
+                >
+                  {turnModelLabel(turn.model)}
                 </span>
               )}
             </TableCell>

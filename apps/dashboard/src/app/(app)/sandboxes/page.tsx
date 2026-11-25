@@ -49,6 +49,7 @@ import {
   SANDBOX_STATUSES,
 } from "@/lib/sandbox-filters";
 import { sandboxListName } from "@/lib/sandbox-list-name";
+import { displayedSandboxModel, isDefaultModelAlias } from "@/lib/sandbox-model";
 import { createClient } from "@/lib/supabase/server";
 import { cn } from "@/lib/utils";
 
@@ -190,7 +191,9 @@ async function SandboxesContent({ searchParams }: Props) {
                         : key === "model"
                           ? value === "unknown"
                             ? "Not recorded"
-                            : value
+                            : isDefaultModelAlias(value)
+                              ? "Account default"
+                              : value
                           : capitalize(value);
               const options = values
                 .filter(
@@ -266,7 +269,7 @@ async function SandboxesContent({ searchParams }: Props) {
                     : "Machine name unavailable"
                 : undefined;
             const model = sandbox.canOpen
-              ? (sandbox.model ?? facts?.cost?.models.join(", ") ?? "Model not reported")
+              ? (displayedSandboxModel(sandbox.harness, sandbox.model, facts?.cost?.models) ?? "Model not reported")
               : "–";
             const owner = displayUser(directory, sandbox.ownerId, viewer.id);
             const lifetime =
