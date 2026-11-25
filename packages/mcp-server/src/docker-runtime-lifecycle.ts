@@ -6,6 +6,7 @@ import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeCommands, readDockerPromptReceipt, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { clearDockerTaskOutcome, recordDockerPromptProjection } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -49,20 +50,14 @@ export async function projectDockerPromptReceipt(
     orgs: [{ orgId: actor.orgId, role: "member" }],
     via: "service",
   }).sandboxes.recordTurnModel!(sandboxId, receipt.promptId, model, pricing?.captured ? pricing.context : null);
-  await tx.query(
-    `update public.sandboxes s set task_prompt_id=$2 where s.id=$1 and exists (
-   select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id=$3 and c.epoch=$4
-   and not exists(select 1 from public.runtime_commands newer where newer.sandbox_id=c.sandbox_id
-     and newer.epoch=c.epoch and newer.sequence>c.sequence and starts_with(newer.request_id,'docker_prompt_')))`,
-    [sandboxId, receipt.promptId, id, epoch],
+  await recordDockerPromptProjection(
+    tx,
+    sandboxId,
+    receipt.promptId,
+    id,
+    epoch,
+    saveConversation ? receipt.conversationId : undefined,
   );
-  if (saveConversation) {
-    // This service-owned projection must not advance lifecycle_generation.
-    await tx.query(`update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1`, [
-      sandboxId,
-      receipt.conversationId,
-    ]);
-  }
 }
 
 /** One native conversation per allocation. No provider projection or network/waiting in this service. */
@@ -273,9 +268,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string) {
           }
           if (!previous.rows.length)
             // A reported outcome belongs to the turn it names; the report history stays in pull_request_reports.
-            await tx.query("update public.sandboxes set task_outcome=null,task_prompt_id=null where id=$1", [
-              sandboxId,
-            ]);
+            await clearDockerTaskOutcome(tx, sandboxId);
           const commands = createRuntimeCommands(authority, key);
           const queued = await commands.enqueue(actor.userId, {
             version: 1,

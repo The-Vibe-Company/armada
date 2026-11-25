@@ -21,14 +21,8 @@ packages/mcp-server/src/data.ts	sandboxes	update
 packages/mcp-server/src/data.ts	sandboxes	update
 packages/mcp-server/src/data.ts	sandboxes	update
 packages/mcp-server/src/data.ts	sandboxes	update
-packages/mcp-server/src/docker-host-store.ts	sandboxes	update
-packages/mcp-server/src/docker-host-store.ts	sandboxes	update
 packages/mcp-server/src/docker-outputs.ts	runtime_commands	delete
 packages/mcp-server/src/docker-outputs.ts	runtime_commands	update
-packages/mcp-server/src/docker-runtime-lifecycle.ts	sandboxes	update
-packages/mcp-server/src/docker-runtime-lifecycle.ts	sandboxes	update
-packages/mcp-server/src/docker-runtime-lifecycle.ts	sandboxes	update
-packages/mcp-server/src/docker-sandbox-service.ts	sandboxes	insert
 packages/mcp-server/src/resource-store.ts	sandboxes	update
 packages/mcp-server/src/runtime-commands.ts	account_turn_queue	update
 packages/mcp-server/src/runtime-events.ts	sandbox_turn_models	update
