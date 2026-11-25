@@ -48,7 +48,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     outputs: { captureJob: { concurrency: 4, run: neverCall } },
     webhooks: { run: neverCall },
     delegatedAccess: { childWorker: passiveLane },
-    accountTurns: passiveLane,
+    accountTurns: {},
     runtimeMcp: { prepare: neverCall },
     langfuse: { exportJob: { concurrency: 1 } },
     modal: { ...modalCleanup, inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
@@ -75,7 +75,6 @@ test("server assembly preserves worker lane order and isolation", () => {
         "jobs",
         "delegated-access",
         "docker-cleanup",
-        "account-turns",
         "runtime-idle",
       ],
     }
@@ -122,22 +121,16 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture", "launch"],
     },
   ]) {
-    if (encryptionKey) expected.push("resume", "stop");
+    if (encryptionKey) expected.push("resume", "stop", "turn_dispatch");
     const claimed = new Set<string>();
     const errors: string[] = [];
-    let backfillAttempts = 0;
     const lane = createLane({
       githubApp,
       control: {},
       options: { logError: (message: string) => errors.push(message) },
       config: { encryptionKey },
       resumeJob,
-      accountTurns: {
-        async backfillDispatchJobs() {
-          backfillAttempts++;
-          throw new Error("Backfill unavailable");
-        },
-      },
+      accountTurns: {},
       runtimeMcp: { prepare: neverCalled },
       modal: modalCleanup,
       launchJob: modalRuntime ? { concurrency: 1, run: neverCalled } : undefined,
@@ -159,7 +152,6 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     expect(claimed).toEqual(
       new Set(["delete", ...(encryptionKey ? ["launch_initial_turn"] : []), ...expected, "snapshot_retirement"]),
     );
-    expect(backfillAttempts).toBe(encryptionKey ? 1 : 0);
-    expect(errors).toEqual(encryptionKey ? ["armada: queued turn job backfill unavailable."] : []);
+    expect(errors).toEqual([]);
   }
 });

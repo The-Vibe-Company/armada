@@ -179,7 +179,7 @@ type TurnClaim = { job: Job; canDispatch(tx?: Sql): Promise<boolean> };
 
 class TurnAdmissionLeaseLost extends Error {}
 
-function turnJobRequest(job: Job) {
+export function turnJobRequest(job: Job) {
   const { kind, sandbox_id, payload } = job;
   if (
     kind !== "turn_dispatch" ||
@@ -204,7 +204,7 @@ export async function admitClaimedAccountTurn(sql: Sql, claim: TurnClaim) {
   return candidate ? admitAccountTurn(sql, candidate, claim) : null;
 }
 
-export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, claim?: TurnClaim) {
+async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, claim: TurnClaim) {
   if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
   const recovering = candidate.state === "dispatching";
   return sql
@@ -224,28 +224,15 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         "select lifecycle_generation::text as generation from public.sandboxes where id=$1 for update",
         [candidate.sandbox_id],
       );
-      if (claim && (!live || live.generation !== claim.job.generation || !(await claim.canDispatch(tx)))) return null;
+      if (!live || live.generation !== claim.job.generation || !(await claim.canDispatch(tx))) return null;
       const current = await tx.query(
         `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
       where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
-      and (q.state='queued' or q.dispatch_until<=clock_timestamp() or $4::boolean)
       and (q.state<>'queued' or not ${TURN_LIFECYCLE_WAITING})
       and ${TURN_FIFO_ELIGIBLE} for update of q`,
-        [candidate.sandbox_id, candidate.request_id, candidate.state, Boolean(claim)],
+        [candidate.sandbox_id, candidate.request_id, candidate.state],
       );
       if (!current.rows.length) return null;
-      if (recovering && !claim) {
-        const abandoned = await tx.query(
-          `select s.id from public.sandboxes s
-         join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
-         where s.id=$1 and not coalesce(${RUNTIME_LANE},false) and ${DISPATCH_ABANDONED} for update of s`,
-          [candidate.sandbox_id, candidate.request_id],
-        );
-        if (abandoned.rows.length) {
-          await resetAbandonedTurn(tx, candidate.sandbox_id, candidate.request_id);
-          return null;
-        }
-      }
       const valid = await tx.query<{ id: string; runtime: boolean }>(
         `select s.id,${RUNTIME_LANE} as runtime from public.sandboxes s join public.credentials c on c.id=s.credential_id
      where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.credential_id=$4 and s.credential_version=$5
@@ -269,10 +256,10 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
           "update public.account_turn_queue set state='failed',failure_reason='Authorization or sandbox lifecycle changed.' where sandbox_id=$1 and request_id=$2 and state='queued'",
           [candidate.sandbox_id, candidate.request_id],
         );
-        if (claim && !(await claim.canDispatch(tx))) throw new TurnAdmissionLeaseLost();
+        if (!(await claim.canDispatch(tx))) throw new TurnAdmissionLeaseLost();
         return null;
       }
-      if (claim && recovering) {
+      if (recovering) {
         const { rows } = await tx.query(
           `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
            where q.sandbox_id=$1 and q.request_id=$2
@@ -315,7 +302,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
          where sandbox_id=$1 and request_id=$2 and state=$3 returning dispatch_until::text`,
         [candidate.sandbox_id, candidate.request_id, candidate.state],
       );
-      if (claim && !(await claim.canDispatch(tx))) throw new TurnAdmissionLeaseLost();
+      if (!(await claim.canDispatch(tx))) throw new TurnAdmissionLeaseLost();
       if (!claimed) return null;
       return {
         entry: { ...candidate, dispatch_until: claimed.dispatch_until },
@@ -335,6 +322,8 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
 
 export type DispatchTurn = (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => Promise<unknown>;
 
+export const TURN_DISPATCH_BUDGET_EXPIRED = "dispatch_budget_expired";
+
 export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchTurn, now = Date.now) {
   return {
     concurrency: 32,
@@ -343,7 +332,7 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
       if (!(await context.canDispatch()))
         return {
           status: "fail",
-          reason: "dispatch_budget_expired",
+          reason: TURN_DISPATCH_BUDGET_EXPIRED,
           unattempted: true,
           async commit(tx) {
             // WARNING: Waiting for the receipt here can deadlock with receipt-first claim reconciliation.
@@ -409,19 +398,14 @@ async function lockTurnReceiptWrites(tx: Sql) {
   await tx.query("lock table public.account_turn_queue in row exclusive mode");
 }
 
-async function settleAccountTurn<T>(
-  sql: Sql,
-  entry: AdmittedEntry,
-  claim: TurnClaim | undefined,
-  write: (tx: Sql) => Promise<T>,
-) {
+async function settleAccountTurn<T>(sql: Sql, entry: AdmittedEntry, claim: TurnClaim, write: (tx: Sql) => Promise<T>) {
   if (!sql.transaction) throw new VaultError("unavailable", "Transactional turn settlement unavailable.");
   try {
     return await sql.transaction(async (tx) => {
       await lockTurnReceiptWrites(tx);
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
       await tx.query("select id from public.sandboxes where id=$1 for update", [entry.sandbox_id]);
-      if (claim && !(await claim.canDispatch(tx))) return;
+      if (!(await claim.canDispatch(tx))) return;
       const receipt = await tx.query(
         `select request_id from public.account_turn_queue
          where sandbox_id=$1 and request_id=$2 and state='dispatching'
@@ -430,7 +414,7 @@ async function settleAccountTurn<T>(
       );
       if (!receipt.rows.length) return;
       const result = await write(tx);
-      if (claim && !(await claim.canDispatch(tx))) throw new TurnSettlementLeaseLost();
+      if (!(await claim.canDispatch(tx))) throw new TurnSettlementLeaseLost();
       const {
         rows: [deadline],
       } = await tx.query<{ live: boolean }>("select $1::timestamptz > clock_timestamp() as live", [
@@ -451,20 +435,11 @@ export async function dispatchAccountTurn(
   entry: AdmittedEntry,
   caller: Caller,
   dispatch: DispatchTurn,
-  claim?: TurnClaim & RuntimeTurnClaim,
+  claim: TurnClaim & RuntimeTurnClaim,
 ) {
-  if (claim) {
-    const { kind, sandbox_id, payload } = claim.job;
-    if (
-      kind !== "turn_dispatch" ||
-      sandbox_id !== entry.sandbox_id ||
-      !payload ||
-      typeof payload !== "object" ||
-      !("requestId" in payload) ||
-      payload.requestId !== entry.request_id
-    )
-      throw new Error("Turn job does not own the dispatch receipt.");
-  }
+  const { sandboxId, requestId } = turnJobRequest(claim.job);
+  if (sandboxId !== entry.sandbox_id || requestId !== entry.request_id)
+    throw new Error("Turn job does not own the dispatch receipt.");
   let correlationId: string | undefined;
   let phase = "decrypt";
   try {
@@ -481,12 +456,10 @@ export async function dispatchAccountTurn(
       launchAuthority?: LaunchAuthority;
     };
     correlationId = savedCorrelationId;
-    if (claim) {
-      phase = "dispatch_fence";
-      if (id.toLowerCase() !== entry.sandbox_id || request_id !== entry.request_id)
-        throw new Error("Encrypted turn input does not match its receipt.");
-      if (!(await claim.canDispatch())) return;
-    }
+    phase = "dispatch_fence";
+    if (id.toLowerCase() !== entry.sandbox_id || request_id !== entry.request_id)
+      throw new Error("Encrypted turn input does not match its receipt.");
+    if (!(await claim.canDispatch())) return;
     phase = "send";
     const assertLaunchAuthority = async (tx: Sql) => {
       if (!launchAuthority || (await launchAuthorityCurrent(tx, id, launchAuthority))) return;
@@ -503,16 +476,15 @@ export async function dispatchAccountTurn(
       if (!sql.transaction) throw new VaultError("unavailable", "Transactional launch authority unavailable.");
       return sql.transaction(assertLaunchAuthority);
     };
-    const guarded =
-      claim && launchAuthority
-        ? {
-            ...claim,
-            async canDispatch(tx?: Sql) {
-              await checkLaunchAuthority(tx);
-              return claim.canDispatch(tx);
-            },
-          }
-        : claim;
+    const guarded = launchAuthority
+      ? {
+          ...claim,
+          async canDispatch(tx?: Sql) {
+            await checkLaunchAuthority(tx);
+            return claim.canDispatch(tx);
+          },
+        }
+      : claim;
     await checkLaunchAuthority();
     const result = await continueRequest(correlationId, () =>
       dispatch(caller, { id, request_id, prompt, model, reasoning_effort }, guarded),
@@ -524,7 +496,7 @@ export async function dispatchAccountTurn(
     );
     runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
   } catch (error) {
-    if (claim && (phase === "publish_receipt" || phase === "dispatch_fence")) throw error;
+    if (phase === "publish_receipt" || phase === "dispatch_fence") throw error;
     const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
     if (origin instanceof ResumeTurnDeferred) return;
     const refusalCode =

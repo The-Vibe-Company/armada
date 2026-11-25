@@ -25,6 +25,7 @@ export interface DockerHostPollRequest {
 }
 
 export interface DockerHostPollResponse extends DockerHostVersionOffer {
+  updatePolicy?: import("./contract/docker-host.ts").DockerHostUpdatePolicy;
   job: DockerHostJob | null;
   containerInventory?: 1;
   containerInventoryDeploymentId?: string;

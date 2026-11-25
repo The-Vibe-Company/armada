@@ -1,4 +1,8 @@
-import type { DockerHostVersionStatus } from "./contract/docker-host.ts";
+import type {
+  DockerHostUpdatePolicy,
+  DockerHostUpdateResult,
+  DockerHostVersionStatus,
+} from "./contract/docker-host.ts";
 import type { Harness } from "./contract.ts";
 import type { CredentialKind } from "./database.types.ts";
 import { DOCKER_DISK_FLOOR_MESSAGE } from "./docker-disk-policy.ts";
@@ -34,6 +38,10 @@ export interface DockerHostSummary {
   /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
   version?: string | null;
   versionStatus?: DockerHostVersionStatus;
+  updatePolicy?: DockerHostUpdatePolicy;
+  pinnedVersion?: string | null;
+  updateRequested?: boolean;
+  lastUpdateResult?: DockerHostUpdateResult | null;
   /** Last accepted daemon protocol, or null before its first protocol-aware poll. */
   protocol: number | null;
   upgradeRequired: boolean;

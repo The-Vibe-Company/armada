@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  DOCKER_HOST_UPDATE_HEALTH_HEADER,
+  DOCKER_HOST_UPDATE_RESULT_HEADER,
+} from "../../core/src/contract/docker-host.ts";
 import { DOCKER_HOST_PROTOCOL, DOCKER_HOST_PROTOCOL_HEADER } from "../../core/src/docker-host-protocol.ts";
 import {
   DOCKER_HOST_MACHINE_BOOTSTRAP_HEADER,
@@ -335,7 +339,8 @@ export function httpApi(
           },
           {
             ...(options?.preferStartup ? { [DOCKER_HOST_PREFER_STARTUP_HEADER]: "1" } : {}),
-            ...(options?.updateResult ? { "x-armada-docker-host-update-result": options.updateResult } : {}),
+            ...(options?.updateHealth ? { [DOCKER_HOST_UPDATE_HEALTH_HEADER]: "1" } : {}),
+            ...(options?.updateResult ? { [DOCKER_HOST_UPDATE_RESULT_HEADER]: options.updateResult } : {}),
           },
         )) as DockerHostPollResponse;
         if (

@@ -102,6 +102,7 @@ export interface Api {
       running?: string[];
       preferStartup?: boolean;
       updateResult?: string;
+      updateHealth?: true;
     },
   ): Promise<DockerHostPollResponse & { retainedStopProof?: true | undefined }>;
   result(state: State, receipt: Receipt, expired?: true, retained?: true): Promise<void>;

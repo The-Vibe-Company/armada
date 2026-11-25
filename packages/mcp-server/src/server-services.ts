@@ -25,7 +25,7 @@ import { createAntigravityLogin } from "./antigravity-login.ts";
 import { startAntigravityLoginProcess } from "./antigravity-login-process.ts";
 import { createBoatRuntimePolicy } from "./boat-runtime-launch.ts";
 import { boatDeploymentId } from "./config.ts";
-import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
+import type { ConfiguredControlOptions } from "./control.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData, type SandboxView } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
@@ -680,9 +680,6 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeCheckpoint,
     templates,
     data,
-    configureAccountDispatch: () => {
-      accountTurns.setDispatch(createQueuedSandboxDispatch(control));
-    },
   };
 }
 

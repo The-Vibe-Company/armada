@@ -26,7 +26,18 @@ export {
   antigravityLoginPath,
   isAntigravityLoginPath,
 } from "./accounts.ts";
-export { type DockerHostVersionStatus, isDockerHostVersionStatus } from "./docker-host.ts";
+export {
+  DOCKER_HOST_UPDATE_HEALTH_HEADER,
+  DOCKER_HOST_UPDATE_RESULT_HEADER,
+  type DockerHostUpdatePolicy,
+  type DockerHostUpdateResult,
+  type DockerHostVersionStatus,
+  dockerHostReleasePattern,
+  isDockerHostUpdatePolicy,
+  isDockerHostUpdateResult,
+  isDockerHostVersionStatus,
+  parseDockerHostUpdateReport,
+} from "./docker-host.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
   type DockerLaunchInput,

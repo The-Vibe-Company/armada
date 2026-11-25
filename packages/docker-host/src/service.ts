@@ -3,6 +3,10 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  type DockerHostUpdateResult,
+  dockerHostReleasePattern as releasePattern,
+} from "../../core/src/contract/docker-host.ts";
 import { VERSION } from "../../core/src/version.ts";
 import { machineLabelFilters } from "./container-inventory.ts";
 import { type State, type Store, serverOrigin } from "./daemon.ts";
@@ -108,6 +112,7 @@ type ManagedInstallation = {
     version: string;
     at: number;
     status: "failed" | "updated" | "pending" | "starting";
+    detail?: NonNullable<DockerHostUpdateResult["detail"]>;
   };
 };
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -195,7 +200,6 @@ export async function validateInstallation(state: State, home = homedir(), insta
   return marker;
 }
 
-const releasePattern = /^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/;
 function validUpdate(value: NonNullable<ManagedInstallation["update"]>, pending?: string) {
   return (
     value &&
@@ -214,8 +218,11 @@ function validUpdate(value: NonNullable<ManagedInstallation["update"]>, pending?
 export interface UpgradeServiceIo extends ServiceIo {
   fetch(input: string, init: RequestInit): Promise<Response>;
 }
-async function fetchUpgradeFile(io: UpgradeServiceIo, url: string) {
+class UpdateReleaseUnavailable extends Error {}
+
+async function fetchUpgradeFile(io: UpgradeServiceIo, url: string, offeredArtifact = false) {
   const response = await io.fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+  if (offeredArtifact && response.status === 404) throw new UpdateReleaseUnavailable();
   if (!response.ok) throw new Error(`Upgrade download returned HTTP ${response.status}.`);
   return response;
 }
@@ -225,7 +232,7 @@ async function pinnedUpgrade(
   origin: string,
   installed: ManagedInstallation,
   retry: string,
-  target?: string,
+  offer?: { version: string; beforeVerify(): Promise<void> },
 ) {
   try {
     const arch = process.arch;
@@ -233,16 +240,21 @@ async function pinnedUpgrade(
     const manifest = (await (await fetchUpgradeFile(io, `${origin}/api/docker-host/install.json`)).json()) as Partial<
       Record<"version" | "x64" | "arm64", unknown>
     > | null;
-    if (target !== undefined && manifest?.version !== target)
-      throw new Error("Installer manifest does not match the offered release.");
+    if (offer && manifest?.version !== offer.version) {
+      if (typeof manifest?.version === "string" && releasePattern.test(manifest.version))
+        throw new UpdateReleaseUnavailable();
+      throw new Error("Invalid installer manifest release.");
+    }
     const digest = manifest?.[arch];
     if (typeof digest !== "string" || !digestPattern.test(digest)) throw new Error("Invalid host artifact pin.");
     if (installed.binarySha256 === digest && installed.pendingBinarySha256 === undefined) return { digest };
-    const artifact = await fetchUpgradeFile(io, `${origin}/api/runtime/artifacts/${digest}`);
+    const artifact = await fetchUpgradeFile(io, `${origin}/api/runtime/artifacts/${digest}`, !!offer);
+    await offer?.beforeVerify();
     const bytes = new Uint8Array(await artifact.arrayBuffer());
     if (sha256(bytes) !== digest) throw new Error("Host artifact SHA-256 mismatch.");
     return { digest, bytes };
   } catch (error) {
+    if (error instanceof UpdateReleaseUnavailable) throw error;
     const reason =
       error instanceof Error && error.constructor === Error
         ? error.message
@@ -327,8 +339,10 @@ export function createManagedUpdater(
   let staged: { bytes: Uint8Array; digest: string; marker: ManagedInstallation } | undefined;
   return {
     result() {
-      if (lastAttempt?.status === "updated" || lastAttempt?.status === "failed")
-        return `${lastAttempt.version};${lastAttempt.status}`;
+      if (lastAttempt?.status === "updated" || lastAttempt?.status === "failed") {
+        const { version, status, at, detail } = lastAttempt;
+        return `${version};${status};${at}${detail ? `;${detail}` : ""}`;
+      }
     },
     async checkStartup(state: State, healthy: () => Promise<void>) {
       const marker = await readMarker(state).catch(() => undefined);
@@ -386,11 +400,21 @@ export function createManagedUpdater(
         status: "failed" as const,
       };
       const marker = { ...loaded, update };
-      await save(marker);
-      lastAttempt = update;
-      const { bytes, digest } = await pinnedUpgrade(io, state.server, marker, "inspect the installer release", target);
-      if (!bytes) return false;
-      staged = { bytes, digest, marker };
+      const artifact = await pinnedUpgrade(io, state.server, marker, "inspect the installer release", {
+        version: target,
+        async beforeVerify() {
+          await save(marker);
+          lastAttempt = update;
+        },
+      }).catch(async (error: unknown) => {
+        if (error instanceof UpdateReleaseUnavailable) return undefined;
+        const failed = { ...update, detail: "download_failed" as const };
+        await save({ ...marker, update: failed });
+        lastAttempt = failed;
+        throw error;
+      });
+      if (!artifact?.bytes) return false;
+      staged = { bytes: artifact.bytes, digest: artifact.digest, marker };
       return true;
     },
     async swap() {
@@ -430,7 +454,7 @@ export function createManagedUpdater(
           throw new Error("Previous Docker host binary failed verification.");
         await files.atomicReplace(p.binary, previous, 0o700);
       }
-      await save({ ...stable, update: { ...update, status: "failed", at: io.now() } });
+      await save({ ...stable, update: { ...update, status: "failed", at: io.now(), detail: "startup_failed" } });
     },
   };
 }

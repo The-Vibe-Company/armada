@@ -722,8 +722,8 @@ real-host run.
 ## Daemon update design (#2647)
 
 The daemon reports its installed version on each poll. The server reports
-the target release and the minimum supported daemon version on that same
-connection. Target follows the server release. The minimum changes when
+the minimum supported daemon version and any permitted update offer on that
+same connection. The server sends release versions and policy. The minimum changes when
 server functionality requires a newer daemon. Old daemons can still poll
 and run existing workloads. New snapshot builds require a daemon that
 verifies and reports the developer baseline.
@@ -741,9 +741,30 @@ and journal, checks Docker, and completes an authenticated poll. If it exits or
 misses the two-minute readiness deadline, the hook restores the previous
 executable on the next start. The daemon reports the result on its normal poll.
 Each version gets one attempt, with an hour before trying a different target.
-Unmanaged hosts and unsupported service managers skip updates. Per-host controls
-and owner-facing results are Part C. Detached signing and staged rollout are
-follow-ups. The updater runs release code as the installation owner.
+During a rolling server deploy, a manifest for another release or a missing
+artifact defers the attempt until a subsequent offer. In manual mode, request the offer
+again after the server finishes rolling out.
+Unmanaged hosts and unsupported service managers skip updates. Daemons installed
+before self-update support need one manual upgrade. The updater runs official
+Armada release code as the installation owner.
+
+In **Providers → Cloud**, open the Docker host's **Daemon updates** section.
+Organization admins can save one of these policies:
+
+- **Automatic** (default) offers the deployed release when available.
+- **Manual** disables automatic offers. **Update now** allows one offer on the
+  next eligible authenticated poll. It uses the same verification and cooldown.
+- **Pinned** offers the specified release only when it matches the deployed
+  installer manifest. Pin the installed version to hold it across server
+  upgrades. Historical downloads and downgrades require operator intervention.
+  Update now respects the pin.
+
+The host page shows the installed and target versions and the last reported
+update result. The owner API lists the same data at `POST /api/v1/docker/hosts/list`.
+Admins set policy at `POST /api/v1/docker/hosts/update-policy` with `org`, `hostId`,
+`policy`, and `pinnedVersion` for pinned policy. Send `org` and `hostId` to
+`POST /api/v1/docker/hosts/update-now` to queue the one-shot request. If the poll
+response is lost after the request is consumed, an admin can request it again.
 
 The managed manual upgrade runs from the verified downloaded executable with
 the saved registration. It stops the user service before taking the exclusive
@@ -762,11 +783,12 @@ or renaming an operation or field, changing a field's type or meaning, making
 an optional field required, or changing authentication. Optional fields and
 operations an older daemon never receives leave the protocol unchanged. The host list exposes the protocol
 from its last accepted poll and whether an upgrade is required. The list also
-compares the reported daemon release against `targetVersion`, the release pinned
-by `install.json`. The `versionStatus` field is `current`, `outdated`, `ahead`, or
+compares the reported daemon release against its pin or the deployed release. The `versionStatus` field is `current`, `outdated`, `ahead`, or
 `unknown` for an absent or unrecognized release. The CLI and dashboard show a
 release mismatch even while the host protocol is supported. The poll response
-and host list both advertise `targetVersion` and `minimumVersion`. The minimum
+and host list both advertise `minimumVersion`. The poll includes `targetVersion`
+when policy permits an offer. The list includes the server's release as
+`targetVersion` and the host's override as `pinnedVersion`. The minimum
 identifies the first release in the supported protocol window. Release strings
 are informational. The protocol header still determines whether a daemon can
 take work, including building snapshots.
@@ -1334,7 +1356,7 @@ resume when compacted receipts cannot establish stop/resume order.
 
 ### Diagnosing older daemons (#2540)
 
-A server deployment does not upgrade installed host executables. Upgrade on the
+A daemon installed before self-update support needs a one-time upgrade. Upgrade on the
 Docker machine using the current CLI: run `armada host add` from a signed-in
 client for the same server, then run its generated installer command on that
 same Docker machine. The installer verifies the published binary, preserves the registration and
