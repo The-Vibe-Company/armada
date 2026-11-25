@@ -55,6 +55,7 @@ export const validateOrgProvider: ProviderValidator = async (provider, value) =>
 export async function orgProviderStatus(store: VaultStore, caller: Caller, ref: string | undefined) {
   const org = await authorizedOrg(store, caller, ref);
   const rows = await store.listCredentials("org", org.id);
+  // The Boat key lives on the organization itself under credentials_org_boat_chk.
   const providers = await Promise.all(
     orgProvider.options.map(async (provider) => ({
       provider,

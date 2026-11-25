@@ -1,5 +1,5 @@
-import { type Harness, isSandboxPlacementProvider, type ModelConnectionTestResult } from "@armada/core";
-import { capabilities } from "@armada/core/machine-capabilities";
+import type { Harness, ModelConnectionTestResult } from "@armada/core";
+import { modelConnectionTestSupport } from "@armada/core/machine-capabilities";
 import type { ActionResult } from "./action";
 
 /** Only the viewer's recent running Modal/Boat-runtime sandboxes; no physical IDs or private config. */
@@ -30,9 +30,7 @@ export function matchesConnectionTestSandbox(
 ): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  const testSupport = isSandboxPlacementProvider(row.provider)
-    ? capabilities(row.provider).modelConnectionTest
-    : undefined;
+  const testSupport = modelConnectionTestSupport(row.provider);
   return (
     row.id === expected.id &&
     row.owner_id === expected.ownerId &&

@@ -34,7 +34,8 @@ export function reconcilesTemplateByExternalRef(provider: unknown) {
   return isSandboxPlacementProvider(provider) && smokeWirePolicy[provider].reconcileTemplateByExternalRef;
 }
 
-export function smokeRequestId(provider: SandboxPlacementProviderId, probe?: "mcp") {
+export function smokeRequestId(provider: unknown, probe?: "mcp") {
+  if (!isSandboxPlacementProvider(provider)) return {};
   const policy = smokeWirePolicy[provider].requestIds;
   return policy === "all" || (probe === "mcp" && policy === "mcp") ? { request_id: crypto.randomUUID() } : {};
 }
