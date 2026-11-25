@@ -1,5 +1,12 @@
 # Changelog
 
+## [14.2.2](https://github.com/The-Vibe-Company/armada/compare/v14.2.1...v14.2.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **runtime:** bound ACP and journal tool.name/id to 256 chars so long commands never jam /api/runtime/events with HTTP 400 ([#4293](https://github.com/The-Vibe-Company/armada/issues/4293)) ([25cfc43](https://github.com/The-Vibe-Company/armada/commit/25cfc43f6bda63c9c586556109f59a9bbb7e0077))
+
 ## [14.2.1](https://github.com/The-Vibe-Company/armada/compare/v14.2.0...v14.2.1) (2026-11-25)
 
 
