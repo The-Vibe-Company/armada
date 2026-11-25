@@ -217,7 +217,7 @@ test("remaps stream IDs, enforces mode/port scope, tears down on disconnect/stop
         )
       )?.status,
     ).toBe(200);
-    await f.db.query("update sandboxes set task_prompt_id=$2 where id=$1", [f.id, promptId]);
+    await f.db.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [f.id, promptId]);
 
     const c1 = await f.openClient({ authorization: `Bearer ${await f.mint({ mode: "pty" })}` });
     const c2 = await f.openClient({ authorization: `Bearer ${await f.mint({ mode: "tcp", port: 3000 })}` });
@@ -271,6 +271,7 @@ test("remaps stream IDs, enforces mode/port scope, tears down on disconnect/stop
     });
     await idle.reconcileOne(new AbortController().signal);
     expect(checkpoint).not.toHaveBeenCalled();
+    expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "ready" }]);
     f.hub.websocket.message(
       c1.ws,
       Buffer.from(encodeRelayMessage({ type: RELAY_OPCODE.CLOSE, streamId: 1, code: 1000, reason: "eof" })),
@@ -281,8 +282,16 @@ test("remaps stream IDs, enforces mode/port scope, tears down on disconnect/stop
     await idle.reconcileOne(new AbortController().signal);
     expect(checkpoint).toHaveBeenCalledTimes(1);
 
-    f.hub.websocket.close?.(rt.ws, 1006, "");
-    expect([c1.code(), c2.code(), f.hub.isConnected(f.id, rt.active.epoch)]).toEqual([1012, 1012, false]);
+    f.hub.websocket.message(
+      rt.ws,
+      Buffer.from(encodeRelayMessage({ type: RELAY_OPCODE.CLOSE, streamId: 0, code: 1001, reason: "eof" })),
+    );
+    expect([rt.code(), c1.code(), c2.code(), f.hub.isConnected(f.id, rt.active.epoch)]).toEqual([
+      1001,
+      1012,
+      1012,
+      false,
+    ]);
     const rt2 = await f.connectRuntime(rt.active, true);
     const adminClient = await f.openClient({
       authorization: `Bearer ${await f.mint({ mode: "pty" }, f.admin)}`,
@@ -293,9 +302,16 @@ test("remaps stream IDs, enforces mode/port scope, tears down on disconnect/stop
     await f.timer.advance(30_000);
     expect(await adminClient.closed).toBe(4401);
     expect(ownerClient.code()).toBeUndefined();
+    const pingFrame = Buffer.from(encodeRelayMessage({ type: RELAY_OPCODE.PING }));
+    const ping1 = f.hub.websocket.message(rt2.ws, pingFrame);
+    f.hub.websocket.message(rt2.ws, pingFrame);
+    await ping1;
+    expect([rt2.code(), ownerClient.code()]).toEqual([1008, 1012]);
+    const rt3 = await f.connectRuntime(rt.active, true);
+    const ownerClient2 = await f.openClient({ authorization: `Bearer ${await f.mint({ mode: "pty" })}` });
     await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.id]);
     await f.timer.advance(20_000);
-    expect([await rt2.closed, await ownerClient.closed]).toEqual([4403, 4403]);
+    expect([await rt3.closed, await ownerClient2.closed]).toEqual([4403, 4403]);
   } finally {
     await f.hub.stop();
   }

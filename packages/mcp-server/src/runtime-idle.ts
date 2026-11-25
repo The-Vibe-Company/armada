@@ -123,7 +123,6 @@ export function createRuntimeIdle(
         for (const row of rows) {
           signal.throwIfAborted();
           cursor = row.id;
-          if (options.hasActiveRelay?.(row.id)) continue;
           if (usesHostLaunch(row.provider) && !supportsDockerHostProtocol(row.daemon_protocol)) continue;
           try {
             // Avoid creating an intent unless idle; the authoritative check repeats

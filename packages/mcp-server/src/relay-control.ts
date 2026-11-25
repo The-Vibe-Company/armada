@@ -6,6 +6,7 @@ import { readBody } from "./control-body.ts";
 import { authenticatedControlCaller, selectedCaller, Unauthorized } from "./control-caller.ts";
 import type { ControlOptions } from "./control-options.ts";
 import { fail } from "./control-response.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 import { defineRoutes } from "./routes.ts";
 
 const op = sandboxRelayOperations.mintTicket;
@@ -41,7 +42,11 @@ async function handleMintRelayTicket(request: Request, options: ControlOptions) 
       if (error.code === "not_found") return relayFail(404, "not_found", error.message);
       return relayFail(400, "invalid_request", error.message);
     }
-    if (error instanceof AuthUnavailable) return relayFail(503, "relay_unavailable", "Authentication is unavailable.");
+    if (error instanceof AuthUnavailable) {
+      recordOperatorFailure("relay.mint_ticket", error);
+      return relayFail(503, "relay_unavailable", "Authentication is unavailable.");
+    }
+    recordOperatorFailure("relay.mint_ticket", error);
     return relayFail(503, "relay_unavailable", "Sandbox relay is temporarily unavailable.");
   }
 }

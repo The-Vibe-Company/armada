@@ -40,26 +40,36 @@ export async function startServer(env: Record<string, string | undefined>, optio
       maxRequestBodySize: BUN_REQUEST_BODY_BACKSTOP,
       fetch: (request, instance) => {
         const pathname = new URL(request.url).pathname;
-        const wsUpgrade =
-          pathname === "/api/runtime/channel"
-            ? (id: string) =>
-                runtimeSockets.upgrade(request, (data) =>
-                  instance.upgrade(request, {
-                    data: { kind: "channel", ...data },
-                    headers: { [REQUEST_ID_HEADER]: id },
-                  }),
-                )
-            : pathname === "/api/runtime/relay" || pathname === "/api/v1/relay/ws"
-              ? (id: string) =>
-                  (pathname === "/api/runtime/relay" ? relayHub.upgradeRuntime : relayHub.upgradeClient)(
-                    request,
-                    (data) => instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: id } }),
-                  )
-              : undefined;
-        // Read the request ID before entering a database session callback.
-        return wsUpgrade
-          ? observeRequest(() => wsUpgrade(currentRequestId()!), options.logError, request)
-          : fetch(request);
+        if (pathname === "/api/runtime/channel") {
+          return observeRequest(
+            () => {
+              // Read the ID here: the upgrade callback runs inside a database session callback.
+              const id = currentRequestId()!;
+              return runtimeSockets.upgrade(request, (data) =>
+                instance.upgrade(request, {
+                  data: { kind: "channel", ...data },
+                  headers: { [REQUEST_ID_HEADER]: id },
+                }),
+              );
+            },
+            options.logError,
+            request,
+          );
+        }
+        if (pathname === "/api/runtime/relay" || pathname === "/api/v1/relay/ws") {
+          return observeRequest(
+            () => {
+              const id = currentRequestId()!;
+              const upgrade = pathname === "/api/runtime/relay" ? relayHub.upgradeRuntime : relayHub.upgradeClient;
+              return upgrade(request, (data) =>
+                instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: id } }),
+              );
+            },
+            options.logError,
+            request,
+          );
+        }
+        return fetch(request);
       },
       error: (error) =>
         observeRequest(() => {

@@ -64,6 +64,8 @@ type AccessRow = {
 class RelayTaintedError extends Error {}
 class RuntimeConn {
   closed = false;
+  revalidating = false;
+  pingBusy = false;
   lastTcpAt?: number;
   nextId = 1;
   streams = new Map<number, Stream>();
@@ -154,8 +156,11 @@ export function createRelayHub(options: RelayHubOptions) {
     void p.finally(() => pending.delete(p)).catch(() => {});
     return p;
   };
-  const rtErrCode = (e: unknown) =>
-    e instanceof RelayTaintedError ? 4403 : e instanceof RuntimeEnrolmentDenied ? 4401 : 1012;
+  function rtErrCode(e: unknown) {
+    if (e instanceof RelayTaintedError) return 4403;
+    if (e instanceof RuntimeEnrolmentDenied) return 4401;
+    return 1012;
+  }
   async function queryAccess(orgIds: readonly string[], userId: string, sandboxId: string) {
     if (!orgIds.length) return deny(404, "not_found", "Sandbox not found.");
     const row = (
@@ -278,12 +283,15 @@ export function createRelayHub(options: RelayHubOptions) {
     tryOr(() => rt.socket.close(code), undefined);
   }
   async function revalidateRuntime(rt: RuntimeConn) {
-    if (rt.closed || stopping) return;
+    if (rt.closed || stopping || rt.revalidating) return;
     if (time.now() - rt.lastSeen >= MS.idle) return closeRuntime(rt, 1001);
+    rt.revalidating = true;
     try {
       await verifyRuntime(rt.token, rt.epoch);
     } catch (e) {
       return closeRuntime(rt, rtErrCode(e));
+    } finally {
+      rt.revalidating = false;
     }
     if (!rt.closed && !stopping && !send(rt.socket, encodeRelayMessage({ type: PING }))) closeRuntime(rt, 1012);
   }
@@ -323,23 +331,33 @@ export function createRelayHub(options: RelayHubOptions) {
     c.cancel = time.every(MS.recheck, () => void track(revalidateClient(c)));
     return true;
   }
-  async function onRuntimeMessage(rt: RuntimeConn, raw: string | Buffer) {
-    const msg = rt.closed || stopping ? undefined : decodeBin(raw);
-    if (!msg) return !rt.closed && !stopping ? closeRuntime(rt, 1002) : undefined;
+  function onRuntimeMessage(rt: RuntimeConn, raw: string | Buffer) {
+    if (rt.closed || stopping) return;
+    const msg = decodeBin(raw);
+    if (!msg) return closeRuntime(rt, 1002);
     rt.lastSeen = time.now();
     if (msg.type === PING || msg.type === PONG) {
       if (msg.type === PING) {
-        try {
-          await verifyRuntime(rt.token, rt.epoch);
-        } catch (e) {
-          return closeRuntime(rt, rtErrCode(e));
-        }
-        const pong = encodeRelayMessage({ type: PONG, ...(msg.nonce ? { nonce: msg.nonce } : {}) });
-        if (!rt.closed && !stopping && !send(rt.socket, pong)) closeRuntime(rt, 1012);
+        if (rt.pingBusy) return closeRuntime(rt, 1008);
+        rt.pingBusy = true;
+        return track(
+          (async () => {
+            try {
+              await verifyRuntime(rt.token, rt.epoch);
+            } catch (e) {
+              return closeRuntime(rt, rtErrCode(e));
+            } finally {
+              rt.pingBusy = false;
+            }
+            const pong = encodeRelayMessage({ type: PONG, ...(msg.nonce ? { nonce: msg.nonce } : {}) });
+            if (!rt.closed && !stopping && !send(rt.socket, pong)) closeRuntime(rt, 1012);
+          })(),
+        );
       }
       return;
     }
     if (msg.type === OPEN_PTY || msg.type === OPEN_TCP || msg.type === RESIZE) return closeRuntime(rt, 1002);
+    if (msg.type === CLOSE && msg.streamId === 0) return closeRuntime(rt, 1001);
     const s = rt.streams.get(msg.streamId);
     if (!s || s.client.closed) return;
     if (s.kind === "tcp" && msg.type === DATA) rt.lastTcpAt = time.now();
@@ -465,14 +483,15 @@ export function createRelayHub(options: RelayHubOptions) {
     message(socket, raw) {
       if (socket.data.kind === "runtime-relay") {
         const rt = runtimeByWs.get(socket);
-        return rt ? track(onRuntimeMessage(rt, raw)) : undefined;
+        return rt ? onRuntimeMessage(rt, raw) : undefined;
       }
       const c = clientByWs.get(socket);
-      return c && !c.closed && !stopping
-        ? c.authed
-          ? onClientBinary(c, raw)
-          : track(onClientAuth(c, raw))
-        : undefined;
+      if (!c || c.closed || stopping) return;
+      if (c.authed) {
+        onClientBinary(c, raw);
+        return;
+      }
+      return track(onClientAuth(c, raw));
     },
     close(socket) {
       if (socket.data.kind === "runtime-relay") {
@@ -495,7 +514,9 @@ export function createRelayHub(options: RelayHubOptions) {
     if (new URL(r.url).search) return emptyRes(400);
     const result = await track(resolve());
     if (result instanceof Response) return result;
-    return stopping ? emptyRes(503) : r.signal.aborted ? emptyRes(499) : accept(result) ? undefined : emptyRes(400);
+    if (stopping) return emptyRes(503);
+    if (r.signal.aborted) return emptyRes(499);
+    return accept(result) ? undefined : emptyRes(400);
   }
   const upgradeRuntime = (r: Request, accept: (data: RelaySocketData) => boolean) =>
     runUpgrade(r, accept, async () => {
@@ -505,7 +526,10 @@ export function createRelayHub(options: RelayHubOptions) {
         const s = await verifyRuntime(token, epoch);
         return { kind: "runtime-relay", token, epoch: s.epoch, sandboxId: s.sandboxId };
       } catch (e) {
-        return emptyRes(e instanceof RelayTaintedError ? 403 : e instanceof RuntimeEnrolmentDenied ? 401 : 503);
+        const code = rtErrCode(e);
+        if (code === 4403) return emptyRes(403);
+        if (code === 4401) return emptyRes(401);
+        return emptyRes(503);
       }
     });
   const upgradeClient = (r: Request, accept: (data: RelaySocketData) => boolean) =>
@@ -513,15 +537,17 @@ export function createRelayHub(options: RelayHubOptions) {
       const origin = r.headers.get("origin"),
         bearer = bearerOf(r);
       if (origin !== null && origin !== expectedOrigin) return emptyRes(403);
-      if (!bearer) return origin === null ? emptyRes(401) : { kind: "client-relay" };
+      if (!bearer) {
+        if (origin === null) return emptyRes(401);
+        return { kind: "client-relay" };
+      }
       try {
         const claims = await redeemTicket(bearer);
         if (!claims) return emptyRes(401);
         const access = await queryAccess(claims.orgIds, claims.userId, claims.sandboxId);
         if (!access.ok) return emptyRes(access.status);
-        return access.epoch !== claims.epoch || !isConnected(claims.sandboxId, claims.epoch)
-          ? emptyRes(503)
-          : { kind: "client-relay", claims };
+        if (access.epoch !== claims.epoch || !isConnected(claims.sandboxId, claims.epoch)) return emptyRes(503);
+        return { kind: "client-relay", claims };
       } catch {
         return emptyRes(503);
       }
