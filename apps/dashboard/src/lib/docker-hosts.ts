@@ -4,7 +4,12 @@ import {
   parseDockerMemory,
   validDockerHostResources,
 } from "@armada/core";
-import { isDockerHostVersionStatus } from "@armada/core/contract";
+import {
+  dockerHostReleasePattern,
+  isDockerHostUpdatePolicy,
+  isDockerHostUpdateResult,
+  isDockerHostVersionStatus,
+} from "@armada/core/contract";
 import { relativeAge } from "./relative-time.ts";
 import type { ResourceState } from "./resource-list.ts";
 
@@ -23,6 +28,8 @@ export const DOCKER_HOST_ROUTES = {
   revoke: "docker/hosts/revoke",
   limits: "docker/hosts/limits",
   retention: "docker/hosts/retention",
+  updatePolicy: "docker/hosts/update-policy",
+  updateNow: "docker/hosts/update-now",
 } as const;
 
 export const HOSTS_PATH = "/providers/cloud";
@@ -85,8 +92,22 @@ function parseHost(value: unknown): DockerHost | null {
     (value.resources !== undefined && value.resources !== null && !validDockerHostResources(value.resources))
   )
     return null;
+  const { updatePolicy, pinnedVersion, updateRequested, lastUpdateResult } = value;
+  if (
+    (updatePolicy !== undefined && !isDockerHostUpdatePolicy(updatePolicy)) ||
+    (updatePolicy === "pinned"
+      ? typeof pinnedVersion !== "string" || !dockerHostReleasePattern.test(pinnedVersion)
+      : pinnedVersion != null) ||
+    (updateRequested !== undefined && typeof updateRequested !== "boolean") ||
+    (lastUpdateResult != null && !isDockerHostUpdateResult(lastUpdateResult))
+  )
+    return null;
   return {
     id,
+    ...(updatePolicy === undefined ? {} : { updatePolicy }),
+    ...(typeof pinnedVersion === "string" ? { pinnedVersion } : {}),
+    ...(updateRequested === undefined ? {} : { updateRequested }),
+    ...(lastUpdateResult === undefined ? {} : { lastUpdateResult }),
     name: name === null ? null : name.trim(),
     state: state as DockerHostState,
     createdAt,

@@ -5,7 +5,14 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
-import { AddHostDialog, HostLimitsDialog, HostMark, HostRetention, RevokeHost } from "@/components/docker-hosts";
+import {
+  AddHostDialog,
+  HostLimitsDialog,
+  HostMark,
+  HostRetention,
+  HostUpdateSettings,
+  RevokeHost,
+} from "@/components/docker-hosts";
 import { DockerLaunchDialog } from "@/components/docker-launch";
 import { LaunchTimes } from "@/components/launch-times";
 import { MachinesSection } from "@/components/machines-catalog";
@@ -319,6 +326,7 @@ function row(
   targetVersion?: string,
   minimumVersion?: string,
 ): ResourceRow & { bucket: Bucket; actionLabel: string } {
+  targetVersion = host.pinnedVersion ?? targetVersion;
   const resources = dockerHostResourceDisplay(host);
   const name = host.name ?? "Unnamed machine";
   const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
@@ -384,6 +392,9 @@ function row(
               initialHarness={launch.harnesses.initial ?? "codex"}
             />
           )}
+        </PanelSection>
+        <PanelSection title="Daemon updates">
+          <HostUpdateSettings key={host.id} orgId={orgId} host={host} isAdmin={isAdmin} />
         </PanelSection>
         <PanelSection title="Cleanup retention">
           <HostRetention orgId={orgId} host={host} />

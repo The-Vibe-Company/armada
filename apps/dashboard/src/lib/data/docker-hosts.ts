@@ -1,4 +1,5 @@
 import { validDockerHostResources } from "@armada/core";
+import type { DockerHostUpdatePolicy } from "@armada/core/contract";
 import { cache } from "react";
 import { ControlError, controlPost } from "@/lib/control";
 import {
@@ -56,6 +57,17 @@ export async function viewerDockerHosts() {
     },
     async retention(org: string, hostId: string, retentionSeconds: number): Promise<void> {
       await post(DOCKER_HOST_ROUTES.retention, { org, hostId, retentionSeconds });
+    },
+    async configureUpdate(
+      org: string,
+      hostId: string,
+      command: { policy: DockerHostUpdatePolicy; pinnedVersion?: string } | "now",
+    ) {
+      const answer =
+        command === "now"
+          ? await post(DOCKER_HOST_ROUTES.updateNow, { org, hostId })
+          : await post(DOCKER_HOST_ROUTES.updatePolicy, { org, hostId, ...command });
+      if (answer.ok !== true) throw new ControlError("The Armada server did not confirm the update settings.");
     },
     async revoke(org: string, hostId: string): Promise<void> {
       const answer = await post(DOCKER_HOST_ROUTES.revoke, { org, hostId });
