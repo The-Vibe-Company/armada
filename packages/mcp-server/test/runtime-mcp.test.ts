@@ -265,7 +265,17 @@ async function resumeWithModalJob(
     key: ENCRYPTION_KEY,
     commands: f.bridge,
     async provider() {
-      const machine: Pick<ModalProvider, "runtimeResumeMachine"> = {
+      const machine: Pick<ModalProvider, "get" | "runtimeResumeMachine"> = {
+        async get(id) {
+          return {
+            id,
+            name: "replacement",
+            state: "ready",
+            providerState: "ready",
+            labels: {},
+            expiresAt: new Date(Date.now() + 86_400_000),
+          };
+        },
         async runtimeResumeMachine({ sandboxId, generation, checkpoint, ticket }) {
           return {
             predecessor: { sandboxId, generation: generation - 1, kind: "image", ref: "retained" },
@@ -284,12 +294,7 @@ async function resumeWithModalJob(
           };
         },
       };
-      return {
-        ...machine,
-        async get() {
-          return { state: "ready", expiresAt: new Date(Date.now() + 86_400_000) };
-        },
-      } as ModalProvider;
+      return machine as ModalProvider;
     },
     async prepare() {
       return {
