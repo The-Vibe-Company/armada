@@ -288,7 +288,7 @@ async function main(args: string[]) {
     await updater?.checkStartup(state, async () => {
       if ((await dockerCli.run(["info"])).exitCode !== 0 || !Object.hasOwn(await api.poll(state), "job"))
         throw new Error("Updated Docker host did not pass startup health checks.");
-      await notifyServiceReady();
+      await notifyServiceReady(true);
       notified = true;
     });
     if (updater && !notified) await notifyServiceReady();

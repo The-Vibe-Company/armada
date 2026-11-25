@@ -60,6 +60,16 @@ test("managed service persists registration and refuses cleanup of unknown files
     await expect(validateInstallation(state, home)).rejects.toThrow("Unknown files");
     expect(await readFile(unrelated, "utf8")).toBe("keep");
     await rm(unrelated);
+    const orphan = join(directory, `.state-${crypto.randomUUID()}`);
+    await writeFile(orphan, "{", { mode: 0o600 });
+    const recovery = createManagedUpdater(directory, true, `${binary}.previous`, {
+      ...io,
+      fetch,
+      version: "",
+      now: Date.now,
+    });
+    await recovery?.beforeStart(state);
+    await rm(orphan);
 
     for (const cache of ["runtime-cache", "artifact-cache", "artifact-cache-private"]) {
       await mkdir(join(directory, cache), { mode: cache === "artifact-cache" ? 0o755 : 0o700 });
@@ -365,8 +375,8 @@ function selfUpdateFixture() {
     [marker, Buffer.from(JSON.stringify({ installationId: state.installationId, binarySha256: hash(old), unit }))],
   ]);
   const requests: string[] = [];
-  const target = "999999999.0.0";
-  const config = { now: 0, version: target, bytes: candidate, interruptedSwap: false, managed: true };
+  const target = "2.0.0";
+  const config = { now: 0, version: target, bytes: candidate, interruptedSwap: false, managed: true, systemd: 252 };
   const ownedFile = async (path: string) => {
     const bytes = files.get(path);
     if (!bytes) throw new Error("File missing");
@@ -374,8 +384,10 @@ function selfUpdateFixture() {
   };
   const io = {
     home,
+    version: "1.0.0",
     now: () => config.now,
     service: async (args: string[]) => {
+      if (args[0] === "systemd-notify") return `systemd ${config.systemd} (${config.systemd}.1)`;
       if (args.includes("--value")) return files.has(hook) ? hook : "";
       if (args.includes("show"))
         return [
@@ -383,7 +395,7 @@ function selfUpdateFixture() {
           `FragmentPath=${unit}`,
           `DropInPaths=${files.has(hook) ? hook : ""}`,
           "NeedDaemonReload=no",
-          `Restart=${files.has(hook) ? "always" : "on-failure"}`,
+          "Restart=on-failure",
         ].join("\n");
     },
     fetch: async (url: string) => {
@@ -394,7 +406,7 @@ function selfUpdateFixture() {
     },
     files: {
       ownedFile,
-      async validateInstallation() {
+      async readManagedInstallation() {
         return JSON.parse((await ownedFile(marker)).toString());
       },
       async atomicReplace(path: string, bytes: Uint8Array) {
@@ -406,7 +418,7 @@ function selfUpdateFixture() {
       safeAncestors: async () => {},
     },
   };
-  const daemon = () => createManagedUpdater(directory, false, binary, io)!;
+  const daemon = (version = io.version) => createManagedUpdater(directory, false, binary, { ...io, version })!;
   const recovery = () => createManagedUpdater(directory, true, previous, io)!;
   return { binary, previous, files, old, candidate, state, config, target, requests, hash, daemon, recovery };
 }
@@ -425,12 +437,8 @@ test.skipIf(process.platform !== "linux")(
     expect(await daemon.swap()).toBe(true);
     expect(f.files.get(f.previous)).toEqual(f.old);
     await f.recovery().beforeStart(f.state);
-    const candidate = f.daemon();
-    let checked = false;
-    await candidate.checkStartup(f.state, async () => {
-      checked = true;
-    });
-    expect(checked).toBe(true);
+    const candidate = f.daemon(f.target);
+    await candidate.checkStartup(f.state, async () => expect(candidate.result()).toBeUndefined());
     expect(candidate.result()).toBe(`${f.target};updated`);
     await f.recovery().beforeStart(f.state);
     expect(f.files.get(f.binary)).toEqual(f.candidate);
@@ -452,7 +460,7 @@ test.skipIf(process.platform !== "linux").each(["swap", "start", "health"])(
       await f.recovery().beforeStart(f.state);
       if (phase === "health") {
         await expect(
-          f.daemon().checkStartup(f.state, async () => {
+          f.daemon(f.target).checkStartup(f.state, async () => {
             throw new Error("Offline");
           }),
         ).rejects.toThrow("Offline");
@@ -465,7 +473,7 @@ test.skipIf(process.platform !== "linux").each(["swap", "start", "health"])(
       throw new Error("Unexpected candidate health check");
     });
     expect(restored.result()).toBe(`${f.target};failed`);
-    const next = "999999999.0.1";
+    const next = "2.0.1";
     expect(await restored.stage(f.state, next)).toBe(false);
     f.config.now = 60 * 60_000;
     expect(await restored.stage(f.state, f.target)).toBe(false);
@@ -475,7 +483,7 @@ test.skipIf(process.platform !== "linux").each(["swap", "start", "health"])(
   },
 );
 
-test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged"])(
+test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged", "older systemd"])(
   "self-update leaves the active binary alone on %s refusal",
   async (refusal) => {
     const f = selfUpdateFixture();
@@ -488,7 +496,8 @@ test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged"
       f.config.bytes = Buffer.from("wrong artifact");
       await expect(daemon.stage(f.state, f.target)).rejects.toThrow("SHA-256 mismatch");
     } else {
-      f.config.managed = false;
+      f.config.managed = refusal !== "unmanaged";
+      if (refusal === "older systemd") f.config.systemd = 245;
       expect(await daemon.stage(f.state, f.target)).toBe(false);
       expect(f.requests).toEqual([]);
     }

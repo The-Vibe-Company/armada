@@ -728,29 +728,22 @@ server functionality requires a newer daemon. Old daemons can still poll
 and run existing workloads. New snapshot builds require a daemon that
 verifies and reports the developer baseline.
 
-On a managed Linux systemd user service, self-update is automatic. The daemon
-accepts a newer release number from its authenticated poll and requires the
-same version in `/api/docker-host/install.json` on its registered HTTPS origin.
-The manifest supplies the current Linux architecture's SHA-256 pin. The daemon
-verifies the bytes from `/api/runtime/artifacts/<sha256>` before staging. The
-updater runs release code with the installation owner's existing Docker access.
+Automatic updates use the registered HTTPS origin's `/api/docker-host/install.json`.
+Its version must match the newer release offered on the authenticated poll. The
+daemon verifies the platform's SHA-256 pin against `/api/runtime/artifacts/<sha256>`.
+It drains active launches and builds without stopping containers or taking new
+jobs. It records the pending attempt in `managed.json`, saves the verified
+executable as `.previous` beside the active binary, swaps atomically and unlocks.
 
-Once verification succeeds, the daemon stops taking new jobs and waits for active
-launches and builds to finish and report their results. Running containers and
-volumes stay in Docker. The daemon saves the previous verified executable beside
-the active binary with a `.previous` suffix, records the pending attempt in
-`managed.json`, atomically swaps executables, and releases the instance lock.
-The systemd user unit restarts it.
-
-A systemd pre-start hook in the previous executable records the candidate's first
-start. The candidate opens the same registration and journal, checks Docker and
-completes an authenticated poll before resuming work. If it exits or fails to
-reach readiness within two minutes, the hook restores the previous verified
-executable on the next start. The daemon reports the outcome on its normal poll.
-Each target version gets one attempt, with a one-hour cooldown before trying a
-different target. Unmanaged daemons and unsupported service managers continue
-polling without self-updating. Per-host policy and the owner-facing result are
-Part C. Detached signing and staged rollout are follow-ups.
+On systemd 246 or newer, the user service restarts the daemon. A pre-start hook
+records the candidate's first start. The candidate uses the existing registration
+and journal, checks Docker, and completes an authenticated poll. If it exits or
+misses the two-minute readiness deadline, the hook restores the previous
+executable on the next start. The daemon reports the result on its normal poll.
+Each version gets one attempt, with an hour before trying a different target.
+Unmanaged hosts and unsupported service managers skip updates. Per-host controls
+and owner-facing results are Part C. Detached signing and staged rollout are
+follow-ups. The updater runs release code as the installation owner.
 
 The managed manual upgrade runs from the verified downloaded executable with
 the saved registration. It stops the user service before taking the exclusive

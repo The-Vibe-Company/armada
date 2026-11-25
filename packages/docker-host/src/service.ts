@@ -144,7 +144,7 @@ async function ownedFile(path: string, home: string, executable = false): Promis
     await file.close();
   }
 }
-export async function validateInstallation(
+async function readManagedInstallation(
   state: State,
   home = homedir(),
   instance?: string,
@@ -171,6 +171,12 @@ export async function validateInstallation(
     marker.unit !== (await ownedFile(p.unit, home)).toString("utf8")
   )
     throw new Error("Installation files changed; inspect them before uninstalling or upgrading.");
+  return marker;
+}
+
+export async function validateInstallation(state: State, home = homedir(), instance?: string) {
+  const marker = await readManagedInstallation(state, home, instance);
+  const directory = stateDirectory(home, instance);
   for (const entry of await readdir(directory)) {
     if (
       !["state.json", "daemon.lock", "managed.json", ...CACHE_DIRECTORIES].includes(entry) &&
@@ -293,59 +299,60 @@ function updatePaths(home: string, instance?: string) {
   };
 }
 
-const managedFiles = { ownedFile, atomicReplace, mkdir, syncDirectory, validateInstallation, safeAncestors };
-function updateIo() {
-  return { ...localService(), fetch: globalThis.fetch, now: Date.now, files: managedFiles };
-}
+const managedFiles = { ownedFile, atomicReplace, mkdir, syncDirectory, readManagedInstallation, safeAncestors };
+type UpdateIo = UpgradeServiceIo & { now(): number; version: string; files?: typeof managedFiles };
 
 export function createManagedUpdater(
   directory: string,
   recovering = false,
   executable = process.execPath,
-  io = updateIo(),
+  io: UpdateIo = { ...localService(), fetch: globalThis.fetch, now: Date.now, version: VERSION },
 ) {
+  const files = io.files ?? managedFiles;
   const leaf = directory.split("/").at(-1) ?? "";
   const instance = /^armada-docker-host@([a-f0-9]{64})$/.exec(leaf)?.[1];
   const p = updatePaths(io.home, instance);
   if (process.platform !== "linux" || directory !== p.directory || executable !== (recovering ? p.previous : p.binary))
     return;
-  const expectedHook = `[Service]\nType=notify\nNotifyAccess=all\nRestart=always\nTimeoutStartSec=120\nExecStartPre=${quoted(p.previous)} recover-update --state-dir ${quoted(directory)}\n`;
-  const readBinary = (path: string) => io.files.ownedFile(path, io.home, true);
-  const readMarker = (state: State) => io.files.validateInstallation(state, io.home, instance);
+  const expectedHook = `[Service]\nType=notify\nNotifyAccess=all\nTimeoutStartSec=120\nExecStartPre=${quoted(p.previous)} recover-update --state-dir ${quoted(directory)}\n`;
+  const readBinary = (path: string) => files.ownedFile(path, io.home, true);
+  const readMarker = (state: State) => files.readManagedInstallation(state, io.home, instance);
   const save = (marker: ManagedInstallation) =>
-    io.files.atomicReplace(p.marker, Buffer.from(JSON.stringify(marker)), 0o600, dirname(directory));
+    files.atomicReplace(p.marker, Buffer.from(JSON.stringify(marker)), 0o600, dirname(directory));
   const systemd = (...args: string[]) => io.service(["systemctl", "--user", ...args]);
-  let lastResult: string | undefined;
   let lastAttempt: ManagedInstallation["update"];
-  function report(update: ManagedInstallation["update"]) {
-    lastAttempt = update;
-    if (update?.status === "updated" || update?.status === "failed") lastResult = `${update.version};${update.status}`;
-  }
   const unit = serviceName(instance);
   const deferred = (target: string) =>
     lastAttempt && (lastAttempt.attempts.includes(target) || io.now() - lastAttempt.at < autoUpdateCooldown);
   let staged: { bytes: Uint8Array; digest: string; marker: ManagedInstallation } | undefined;
   return {
-    result: () => lastResult,
+    result() {
+      if (lastAttempt?.status === "updated" || lastAttempt?.status === "failed")
+        return `${lastAttempt.version};${lastAttempt.status}`;
+    },
     async checkStartup(state: State, healthy: () => Promise<void>) {
       const marker = await readMarker(state).catch(() => undefined);
       if (!marker) return;
-      report(marker.update);
+      lastAttempt = marker.update;
       if (marker.update?.status === "pending") throw new Error("Docker host update requires systemd recovery.");
       if (marker.update?.status !== "starting") return;
-      if (!marker.pendingBinarySha256 || sha256(await readBinary(p.binary)) !== marker.pendingBinarySha256)
+      if (
+        marker.update.version !== io.version ||
+        !marker.pendingBinarySha256 ||
+        sha256(await readBinary(p.binary)) !== marker.pendingBinarySha256
+      )
         throw new Error("Pending Docker host update does not match the active binary.");
       await healthy();
       const updated = { ...marker.update, status: "updated" as const, at: io.now() };
       const { pendingBinarySha256, ...stable } = marker;
       await save({ ...stable, binarySha256: pendingBinarySha256, update: updated });
-      report(updated);
+      lastAttempt = updated;
     },
     async stage(state: State, target: string | undefined) {
-      if (!target || !isNewerRelease(target, VERSION) || deferred(target)) return false;
+      if (!target || !isNewerRelease(target, io.version) || deferred(target)) return false;
       const loaded = await readMarker(state).catch(() => undefined);
       if (!loaded || loaded.pendingBinarySha256) return false;
-      report(loaded.update);
+      lastAttempt = loaded.update;
       if (deferred(target)) return false;
       const show = await systemd(
         "show",
@@ -366,10 +373,12 @@ export function createManagedUpdater(
         properties.get("MainPID") !== String(process.pid) ||
         properties.get("FragmentPath") !== p.unit ||
         properties.get("NeedDaemonReload") !== "no" ||
-        properties.get("Restart") !== (dropIns === p.hook ? "always" : "on-failure") ||
+        properties.get("Restart") !== "on-failure" ||
         (dropIns !== "" && dropIns !== p.hook)
       )
         return false;
+      const notifier = await io.service(["systemd-notify", "--version"]).catch(() => undefined);
+      if (typeof notifier !== "string" || Number(/^systemd (\d+) /.exec(notifier)?.[1] ?? 0) < 246) return false;
       const update = {
         attempts: [...(loaded.update?.attempts ?? []), target],
         version: target,
@@ -378,7 +387,7 @@ export function createManagedUpdater(
       };
       const marker = { ...loaded, update };
       await save(marker);
-      report(update);
+      lastAttempt = update;
       const { bytes, digest } = await pinnedUpgrade(io, state.server, marker, "inspect the installer release", target);
       if (!bytes) return false;
       staged = { bytes, digest, marker };
@@ -388,14 +397,13 @@ export function createManagedUpdater(
       if (!staged) return false;
       const { bytes, digest, marker } = staged;
       if (!marker.update) throw new Error("Missing Docker host update attempt.");
-      await io.service(["systemd-notify", "--version"]);
       const previous = await readBinary(p.binary);
       if (sha256(previous) !== marker.binarySha256) throw new Error("Active Docker host binary changed.");
-      await io.files.atomicReplace(p.previous, previous, 0o700);
-      await io.files.mkdir(dirname(p.hook), { mode: 0o700, recursive: true });
-      await io.files.safeAncestors(p.hook, io.home);
-      await io.files.atomicReplace(p.hook, Buffer.from(expectedHook), 0o600);
-      await io.files.syncDirectory(dirname(p.unit));
+      await files.atomicReplace(p.previous, previous, 0o700);
+      await files.mkdir(dirname(p.hook), { mode: 0o700, recursive: true });
+      await files.safeAncestors(p.hook, io.home);
+      await files.atomicReplace(p.hook, Buffer.from(expectedHook), 0o600);
+      await files.syncDirectory(dirname(p.unit));
       await systemd("daemon-reload");
       if ((await systemd("show", unit, "--property=DropInPaths", "--value")) !== p.hook)
         throw new Error("Systemd did not load the Docker host update hook.");
@@ -404,7 +412,7 @@ export function createManagedUpdater(
         pendingBinarySha256: digest,
         update: { ...marker.update, status: "pending" },
       });
-      await io.files.atomicReplace(p.binary, bytes, 0o700);
+      await files.atomicReplace(p.binary, bytes, 0o700);
       return true;
     },
     async beforeStart(state: State) {
@@ -420,15 +428,16 @@ export function createManagedUpdater(
         const previous = await readBinary(p.previous);
         if (sha256(previous) !== stable.binarySha256)
           throw new Error("Previous Docker host binary failed verification.");
-        await io.files.atomicReplace(p.binary, previous, 0o700);
+        await files.atomicReplace(p.binary, previous, 0o700);
       }
       await save({ ...stable, update: { ...update, status: "failed", at: io.now() } });
     },
   };
 }
 
-export async function notifyServiceReady() {
+export async function notifyServiceReady(required = false) {
   if (process.env.NOTIFY_SOCKET) await command(["systemd-notify", "--ready"]);
+  else if (required) throw new Error("Updated Docker host must start within its systemd user service.");
 }
 
 export async function upgradeService(
@@ -471,14 +480,16 @@ export async function upgradeService(
       const marker = await validateInstallation(state, io.home, instance);
       if (marker.update?.status === "pending" || marker.update?.status === "starting")
         throw new Error("Docker host self-update is pending; let its service reconcile first.");
-      const { hook } = updatePaths(io.home, instance);
-      try {
-        await ownedFile(hook, io.home);
-        await unlink(hook);
-        await syncDirectory(dirname(hook));
+      if (marker.update) {
+        const { hook } = updatePaths(io.home, instance);
+        try {
+          await ownedFile(hook, io.home);
+          await unlink(hook);
+          await syncDirectory(dirname(hook));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
         await io.service(["systemctl", "--user", "daemon-reload"]);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
       const directory = stateDirectory(io.home, instance);
       const markerFile = join(directory, "managed.json");
@@ -519,7 +530,7 @@ export async function stopService(instance?: string) {
 export async function removeInstallation(instance?: string, io = localService()) {
   const p = paths(io.home, instance);
   const directory = stateDirectory(io.home, instance);
-  const saved = await Promise.all(
+  const saved: { path: string; bytes: Uint8Array }[] = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({
       path,
       bytes: await readFile(path),
