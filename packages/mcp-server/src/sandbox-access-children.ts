@@ -338,6 +338,14 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         const diagnostic = failureDiagnostic(error);
         const denied = error instanceof DelegatedAuthorityDenied;
         const code = "child_dispatch_not_admitted";
+        let refusalCode = "dispatch_admission_error";
+        if (denied) {
+          refusalCode = "authority_denied";
+        } else if (error instanceof ModalLaunchSetupConflict) {
+          refusalCode = error.reason;
+        } else if (error instanceof ToolError) {
+          refusalCode = error.code;
+        }
         recordOperatorDiagnostic(
           `scoped.child_${input.action}.dispatch_admission`,
           denied ? { ...diagnostic, errorClass: "DelegatedAuthorityDenied" } : diagnostic,
@@ -345,13 +353,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             sandboxId: receipt.sandboxId,
             operationId: receipt.id,
             code,
-            refusalCode: denied
-              ? "authority_denied"
-              : error instanceof ModalLaunchSetupConflict
-                ? error.reason
-                : error instanceof ToolError
-                  ? error.code
-                  : "dispatch_admission_error",
+            refusalCode,
           },
         );
         // No executor was invoked. Failed fresh admission is confirmed non-allocation,
