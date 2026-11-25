@@ -128,6 +128,7 @@ for await (const line of lines) {
               "AGY_ACP_UNKNOWN",
               "SSH_CONNECTION",
             ].some((name) => process.env[name] !== undefined),
+            gitHubTools: { firstPath: process.env.PATH?.split(":")[0], bashEnv: process.env.BASH_ENV },
             privateEnvironment:
               !!process.env.TMPDIR &&
               process.env.AGY_CLI_DISABLE_AUTO_UPDATE === "1" &&

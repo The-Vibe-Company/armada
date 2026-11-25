@@ -470,6 +470,7 @@ async function main(dialout = false) {
             antigravity: new AntigravityDriver({
               ...antigravity,
               readableVariables,
+              githubToolsRoot: githubRoot,
               root: config.root,
               cwd: config.cwd,
               journal,
