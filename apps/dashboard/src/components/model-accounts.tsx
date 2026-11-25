@@ -429,6 +429,7 @@ type RowDialog = "limits" | "rename" | "replace" | "remove" | "test" | null;
 
 const STATE_ICON = { ok: CircleCheckIcon, warn: CircleHelpIcon, error: CircleAlertIcon } as const;
 
+/** The card opens account details, where management controls remain available. */
 export function AccountRow({
   account,
   previousDefault,
