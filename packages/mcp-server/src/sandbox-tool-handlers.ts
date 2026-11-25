@@ -241,6 +241,7 @@ export function configureTools(
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
       if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${found.id}' is deleted.`);
+      const provider = found.provider === "boat" ? undefined : (await live(found.id, true, found)).provider;
       signal?.throwIfAborted();
       const needsCheckpoint =
         found.ownerId === caller.userId &&
@@ -266,94 +267,102 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      const status = found.status === "failed" ? "failed" : "stopping";
-      const admission = {
-        ...stopAdmission,
-        ...retainedGuard,
-        status,
-        stoppedAt: null,
-        stopRequested: true,
-        ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
-      } satisfies ServerSandboxPatch;
-      if (found.provider === "boat") {
+      if (!provider) {
+        const status = found.status === "failed" ? "failed" : "stopping";
         await data.sandboxes.update(found.id, {
-          ...admission,
+          ...stopAdmission,
+          ...retainedGuard,
+          status,
+          stoppedAt: null,
+          stopRequested: true,
           advanceGeneration: true,
           activityToken: crypto.randomUUID(),
+          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
           ...(found.lifecycleGeneration !== undefined && { expectedGeneration: found.lifecycleGeneration }),
         });
         return { id: found.id, status };
       }
-      const { provider } = await live(found.id, true, found);
-      return sandboxActivity(data.sandboxes, found, admission, async (signal, token) => {
-        signal.throwIfAborted();
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        {
+          ...stopAdmission,
+          ...retainedGuard,
+          status: found.status === "failed" ? "failed" : "stopping",
+          stoppedAt: null,
+          stopRequested: true,
+          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
+        },
+        async (signal, token) => {
+          signal.throwIfAborted();
 
-        const preservation = await data.sandboxes
-          .preserveWork?.(found.id, provider, found.providerSandboxId, {
-            kind: "activity",
-            token,
-            generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
-            signal,
-          })
-          .catch(() => "pending" as const);
-        signal.throwIfAborted();
-        if (preservation === "pending")
+          const preservation = await data.sandboxes
+            .preserveWork?.(found.id, provider, found.providerSandboxId, {
+              kind: "activity",
+              token,
+              generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
+              signal,
+            })
+            .catch(() => "pending" as const);
+          signal.throwIfAborted();
+          if (preservation === "pending")
+            return {
+              result: {
+                id: found.id,
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+              },
+              patch: {
+                ownerStop: true as const,
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+                stopRequested: true,
+              },
+            };
+          let terminal = false;
+          let stoppedAt: Date | undefined;
+          let preservationNote =
+            checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
+          try {
+            signal.throwIfAborted();
+            const observed = await stopAndObserve(
+              provider,
+              found.id,
+              found.providerSandboxId,
+              "user_stop",
+              signal,
+              Boolean(checkpoint),
+            );
+            terminal =
+              observed.state === "stopped" &&
+              (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || found.status === "failed");
+            stoppedAt = observed.stoppedAt;
+            preservationNote = observed.stopNote ?? preservationNote;
+          } catch (error) {
+            if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
+            terminal = !requiresMissingMachineObservation(provider.id);
+          }
+          signal.throwIfAborted();
+          const status: SandboxStatus =
+            found.status === "failed" || preservationNote === "checkpoint_failed_disk_not_retained"
+              ? "failed"
+              : terminal
+                ? "stopped"
+                : "stopping";
           return {
-            result: {
-              id: found.id,
-              status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
-            },
+            result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
             patch: {
               ownerStop: true as const,
-              status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
-              stopRequested: true,
+              status,
+              stopRequested: !terminal,
+              ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
+              ...(terminal
+                ? {
+                    stoppedAt: (stoppedAt ?? context.now()).toISOString(),
+                  }
+                : {}),
             },
           };
-        let terminal = false;
-        let stoppedAt: Date | undefined;
-        let preservationNote =
-          checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
-        try {
-          signal.throwIfAborted();
-          const observed = await stopAndObserve(
-            provider,
-            found.id,
-            found.providerSandboxId,
-            "user_stop",
-            signal,
-            Boolean(checkpoint),
-          );
-          terminal =
-            observed.state === "stopped" &&
-            (!retainsDiskOnStop(provider.id) || observed.retainedSnapshot === "usable" || found.status === "failed");
-          stoppedAt = observed.stoppedAt;
-          preservationNote = observed.stopNote ?? preservationNote;
-        } catch (error) {
-          if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
-          terminal = !requiresMissingMachineObservation(provider.id);
-        }
-        signal.throwIfAborted();
-        const status: SandboxStatus =
-          found.status === "failed" || preservationNote === "checkpoint_failed_disk_not_retained"
-            ? "failed"
-            : terminal
-              ? "stopped"
-              : "stopping";
-        return {
-          result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
-          patch: {
-            ownerStop: true as const,
-            status,
-            stopRequested: !terminal,
-            ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
-            ...(terminal
-              ? {
-                  stoppedAt: (stoppedAt ?? context.now()).toISOString(),
-                }
-              : {}),
-          },
-        };
-      });
+        },
+      );
     }
 
     return tool(
