@@ -47,11 +47,12 @@ const prepared = scopedRuntimeFixture(async () => {
   }
 });
 
-async function checkpointFixture(provider: "boat" | "modal" = "boat", idle = false) {
+async function checkpointFixture(provider: "boat" | "modal" = "boat", idle = false, lifecycleGeneration?: number) {
   const shared = await prepared();
   return runtimeFixture(shared, provider, "codex", idle, undefined, {
     goldenId: provider === "modal" ? shared.modalGoldenId : shared.sharedGoldenId,
     providerSandboxId: crypto.randomUUID(),
+    ...(lifecycleGeneration === undefined ? {} : { lifecycleGeneration }),
   });
 }
 
@@ -427,7 +428,7 @@ test("an unreadable runtime checkpoint acknowledgement never allows compute clea
 test.each(["resume", "reconciliation", "late generation change", "scoped parent cleanup"] as const)(
   "owner stop waits for %s and preserves the runtime",
   async (path) => {
-    const f = await checkpointFixture("modal", true);
+    const f = await checkpointFixture("modal", true, path === "late generation change" ? 2 : undefined);
     const cancel = new AbortController();
     try {
       const id = f.row.id;

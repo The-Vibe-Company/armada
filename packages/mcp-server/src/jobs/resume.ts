@@ -13,6 +13,7 @@ import { createRuntimeEnrolments } from "../runtime-enrolment.ts";
 import type { RuntimeGitHub } from "../runtime-github.ts";
 import type { RuntimeMcp } from "../runtime-mcp.ts";
 import type { RuntimeResumeInput, RuntimeResumeReceipt, RuntimeTurnClaim } from "../runtime-resume.ts";
+import { requireGenerationHeadroom } from "../sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "../sandbox-armada-access.ts";
 import {
   pendingModalStopOutput,
@@ -87,7 +88,8 @@ export function createResumeJob(options: {
       );
       if (!row || String(found.lifecycleGeneration) !== row.generation)
         throw conflict("Resume requires the admitted retained stop.");
-      if (await pendingModalStopOutput(tx, id, Number(row.generation)))
+      const generation = requireGenerationHeadroom(row.generation, 1);
+      if (await pendingModalStopOutput(tx, id, generation))
         throw conflict("Final stop outputs are awaiting publication.");
       const {
         rows: [checkpoint],

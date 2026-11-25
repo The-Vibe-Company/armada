@@ -420,6 +420,24 @@ describe("retained Boat extension supersession", () => {
 describe("runtime resume admission rollback", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
+  test("runtime resume refuses insufficient headroom before writing the intent", async () => {
+    const f = await fixture();
+    await f.db.query("update public.sandboxes set lifecycle_generation=$2::bigint where id=$1", [
+      f.row.id,
+      String(Number.MAX_SAFE_INTEGER - 1),
+    ]);
+    let prepared = false;
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+      prepared = true;
+      throw Error("Unexpected placement preparation");
+    });
+    await expect(resume(f.caller, input(f.row.id))).rejects.toThrow(
+      "Sandbox lifecycle generation cannot be advanced safely.",
+    );
+    expect(prepared).toBe(false);
+    expect((await f.db.query("select 1 from runtime_resumes where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+  });
+
   const faults = [
     "generation conflict",
     "elapsed expiry",
@@ -1969,8 +1987,15 @@ describe.each([
 
 describe("Modal resume job", () => {
   const fixture = scopedRuntimeFixture(() => stopped("codex", "modal"), { perTest: true });
-  test.each([false, true])("reconciles a lost allocation response (deadline ended=%s)", async (expired) => {
+  test.each(["recovered", "expired", "exhausted"])("admission and recovery (%s)", async (scenario) => {
     const f = await fixture();
+    const expired = scenario === "expired";
+    if (scenario === "exhausted") {
+      await f.sql.query("update public.sandboxes set lifecycle_generation=$2::bigint where id=$1", [
+        f.row.id,
+        String(Number.MAX_SAFE_INTEGER),
+      ]);
+    }
     const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
     const firstGeneration = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
     let allocated = false;
@@ -2064,6 +2089,18 @@ describe("Modal resume job", () => {
     try {
       expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
       expect(await turns.reconcileOne(new AbortController().signal)).toBe(true);
+      if (scenario === "exhausted") {
+        await turns.drain();
+        expect(await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id)).toMatchObject({
+          status: "stopped",
+          lifecycleGeneration: Number.MAX_SAFE_INTEGER,
+        });
+        expect(
+          (await f.sql.query("select id from jobs where sandbox_id=$1 and kind='resume'", [f.row.id])).rows,
+        ).toEqual([]);
+        expect(allocations).toBe(0);
+        return;
+      }
       await wake.promise;
       const receipt = explicit(f.caller, request).then(
         (value) => ({ value }),
