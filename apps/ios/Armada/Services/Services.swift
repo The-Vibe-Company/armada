@@ -1,9 +1,12 @@
+import ArmadaKit
 import Foundation
 
 /// Presentation services over the authenticated ArmadaKit client.
 protocol SandboxService: Sendable {
     /// `POST /api/v1/sandbox/list`: allowlisted metadata for every current member.
     func list(orgID: String, page: Int) async throws(ServiceFailure) -> SandboxPage
+    /// `POST /api/v1/sandbox/list-turns`: recorded turn activity for sandboxes the caller can open.
+    func listTurns(orgID: String) async throws(ServiceFailure) -> [String: RecordedTurnState]
     /// `POST /api/v1/sandbox/status`: interior state for the owner or a current admin. The server
     /// reauthorizes every call and may refuse (`.noAccess`).
     func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState
@@ -13,6 +16,10 @@ protocol SandboxService: Sendable {
     /// `POST /api/v1/sandbox/send`: sent exactly once. `.uncertain` means it may have been
     /// delivered; it is never resent automatically because native providers ignore its request_id.
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance
+    /// `POST /api/v1/sandbox/steer`: redirects the running turn without starting a queued turn.
+    func steerSandbox(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxSteerAcceptance
+    /// `POST /api/v1/sandbox/interrupt`: interrupts the running turn while keeping the machine up.
+    func interruptSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxInterruptOutcome
     /// `POST /api/v1/sandbox/stop`: reports whether work retention needs attention.
     func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome
 }
@@ -72,6 +79,8 @@ struct UnavailableServices: SandboxService {
         throw .unavailable(reason)
     }
 
+    func listTurns(orgID: String) async throws(ServiceFailure) -> [String: RecordedTurnState] { throw .unavailable(reason) }
+
     func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState {
         throw .unavailable(reason)
     }
@@ -83,6 +92,9 @@ struct UnavailableServices: SandboxService {
     func sendPrompt(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxPromptAcceptance {
         throw .unavailable(reason)
     }
+
+    func steerSandbox(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxSteerAcceptance { throw .unavailable(reason) }
+    func interruptSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxInterruptOutcome { throw .unavailable(reason) }
 
     func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome {
         throw .unavailable(reason)

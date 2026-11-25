@@ -13,7 +13,7 @@ private func sandboxes(_ rows: [OrderingRow]) -> [String] {
 }
 
 @Test(arguments: [
-    ("ready", ListStatusGroup.active), ("running", .active), ("starting", .transition), ("stopping", .transition),
+    ("ready", ListStatusGroup.active), ("running", .working), ("starting", .transition), ("stopping", .transition),
     ("stopped", .stopped), ("failed", .other), ("deleted", .other), ("brand_new", .other),
 ])
 func sandboxStatusesMapToGroups(status: String, group: ListStatusGroup) {
@@ -21,8 +21,8 @@ func sandboxStatusesMapToGroups(status: String, group: ListStatusGroup) {
 }
 
 let orderingCases: [([OrderingRow], [String])] = [
-    // Group first, whatever the creation date.
-    ([OrderingRow(id: "s", state: "stopped", created: 9), OrderingRow(id: "r", state: "ready", created: 1), OrderingRow(id: "b", state: "running", created: 0)], ["r", "b", "s"]),
+    // Group first, whatever the creation date: working before active before stopped.
+    ([OrderingRow(id: "s", state: "stopped", created: 9), OrderingRow(id: "r", state: "ready", created: 1), OrderingRow(id: "b", state: "running", created: 0)], ["b", "r", "s"]),
     // Transition sits between active and stopped; unknown and failed come last.
     ([OrderingRow(id: "x", state: "failed", created: 9), OrderingRow(id: "c", state: "starting", created: 1), OrderingRow(id: "t", state: "stopped", created: 5), OrderingRow(id: "a", state: "ready", created: 0)], ["a", "c", "t", "x"]),
     // Newest first inside a group.
@@ -52,4 +52,26 @@ func ordersByGroupThenNewest(rows: [OrderingRow], expected: [String]) {
     #expect(ListOrdering.collapsedByDefault(.stopped, groups: [.active, .stopped]))
     #expect(!ListOrdering.collapsedByDefault(.stopped, groups: [.stopped]))
     #expect(!ListOrdering.collapsedByDefault(.active, groups: [.active, .stopped]))
+    #expect(ListOrdering.collapsedByDefault(.stopped, groups: [.working, .stopped]))
+    #expect(!ListOrdering.collapsedByDefault(.working, groups: [.working, .stopped]))
+}
+
+@Test func recordedTurnsPromoteActiveRuntimeSandboxesToWorkingGroup() {
+    let now = Date(timeIntervalSince1970: 1_762_646_400), future = now.addingTimeInterval(600), past = now.addingTimeInterval(-60)
+    #expect(ListStatusGroup.working.title == "Working")
+    let cases: [(String, RecordedTurnState?, Date?, ListStatusGroup)] = [
+        ("ready", .running, nil, .working), ("ready", .queued, nil, .working),
+        ("ready", .finished, nil, .active), ("ready", .other("paused"), nil, .active),
+        ("starting", .queued, nil, .working), ("stopped", .queued, future, .working),
+        ("stopped", .queued, past, .stopped), ("stopped", .running, future, .stopped),
+        ("failed", .running, nil, .other), ("deleted", .queued, nil, .other),
+    ]
+    for (status, turn, expiry, expected) in cases {
+        #expect(ListStatusGroup.sandbox(status, turn: turn, expiresAt: expiry, now: now) == expected)
+    }
+    let turns: [String: RecordedTurnState] = ["ready-working": .running, "ready-idle": .finished]
+    let rows = [OrderingRow(id: "ready-idle", state: "ready", created: 10), OrderingRow(id: "ready-working", state: "ready", created: 1), OrderingRow(id: "stopped-row", state: "stopped", created: 20)]
+    let sections = ListOrdering.sections(rows, group: { .sandbox($0.state, turn: turns[$0.id], now: now) }, createdAt: { Date(timeIntervalSince1970: TimeInterval($0.created)) }, id: \.id)
+    #expect(sections.map(\.group) == [.working, .active, .stopped])
+    #expect(sections.map { $0.items.map(\.id) } == [["ready-working"], ["ready-idle"], ["stopped-row"]])
 }

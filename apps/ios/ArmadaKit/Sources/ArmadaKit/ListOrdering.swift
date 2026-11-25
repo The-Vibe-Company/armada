@@ -4,6 +4,8 @@ import Foundation
 public enum ListStatusGroup: Int, CaseIterable, Comparable, Sendable {
     /// Blocked: someone has to act.
     case attention
+    /// Actively running a turn or has a queued/running turn.
+    case working
     /// Has compute and can take work now.
     case active
     /// Starting, resuming or stopping on its own.
@@ -17,6 +19,7 @@ public enum ListStatusGroup: Int, CaseIterable, Comparable, Sendable {
     public var title: String {
         switch self {
         case .attention: "Needs Attention"
+        case .working: "Working"
         case .active: "Active"
         case .transition: "In Transition"
         case .stopped: "Stopped"
@@ -24,10 +27,18 @@ public enum ListStatusGroup: Int, CaseIterable, Comparable, Sendable {
         }
     }
 
-    /// Group of a sandbox wire status. A sandbox has no blocked state; failed sorts with the rest.
-    public static func sandbox(_ status: String) -> Self {
-        switch status {
-        case "ready", "running": .active
+    /// Group of a sandbox wire status and optional recorded turn activity (`sandbox/list-turns`).
+    public static func sandbox(
+        _ status: String,
+        turn: RecordedTurnState? = nil,
+        expiresAt: Date? = nil,
+        now: Date = .now
+    ) -> Self {
+        if RecordedTurnState.isWorking(status: status, turn: turn, expiresAt: expiresAt, now: now) {
+            return .working
+        }
+        return switch status {
+        case "ready": .active
         case "starting", "stopping": .transition
         case "stopped": .stopped
         default: .other

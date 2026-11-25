@@ -1,34 +1,34 @@
 import SwiftUI
+import UIKit
 
-/// Sandbox metadata every member may see, and its conversation for the owner or a current admin.
-/// `canOpen` only decides whether the conversation is offered; the server reauthorizes the read
-/// and its refusal is shown as such.
+/// Sandbox metadata every member may see, and shared inspector body for `SandboxInspectorSheet`.
 struct SandboxDetailView: View {
     let sandbox: SandboxSummary
+    var state: SandboxState?
+    var isWorking: Bool?
+    var title: String?
 
     @Environment(AppModel.self) private var app
+
+    private var working: Bool { isWorking ?? (sandbox.status == .running) }
+    private var expiresAt: Date? { state?.expiresAt ?? sandbox.expiresAt }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if sandbox.canOpen {
-                        NavigationLink {
-                            SandboxConversationView(sandbox: sandbox)
-                        } label: {
-                            SheetCard {
-                                SheetValueRow(title: "Conversation", symbol: "bubble.left.and.text.bubble.right", showsChevron: true)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("sandbox.open-conversation")
-                    } else {
+                    if !sandbox.canOpen {
                         InlineBanner(text: "Members see a sandbox's details. Only its owner or a current organization admin can open its conversation.", style: .info)
                             .accessibilityIdentifier("sandbox.metadata-only")
                     }
                     SheetSection("Sandbox") {
                         SheetCard {
-                            SheetValueRow(title: "Status", value: sandbox.status.label)
+                            if working {
+                                HStack { Text("Status").font(.body).foregroundStyle(ArmadaTheme.textPrimary); Spacer(minLength: 8); WorkingBadge() }
+                                    .padding(.horizontal, 16).frame(minHeight: 52).accessibilityElement(children: .combine)
+                            } else {
+                                SheetValueRow(title: "Status", value: (state?.status ?? sandbox.status).label)
+                            }
                             SheetSeparator()
                             SheetValueRow(title: "Owner", value: SandboxOwner.label(sandbox.ownerID, currentUserID: app.currentUserID))
                             SheetSeparator()
@@ -36,7 +36,7 @@ struct SandboxDetailView: View {
                             if let stoppedAt = sandbox.stoppedAt {
                                 SheetSeparator()
                                 SheetValueRow(title: "Stopped", value: RelativeTime.age(of: stoppedAt, now: context.date))
-                            } else if let expiresAt = sandbox.expiresAt {
+                            } else if let expiresAt {
                                 SheetSeparator()
                                 SheetValueRow(title: "Stops", value: RelativeTime.until(expiresAt, now: context.date))
                             }
@@ -53,6 +53,17 @@ struct SandboxDetailView: View {
                                 SheetSeparator()
                                 SheetValueRow(title: "Requested default", value: [model, sandbox.reasoningEffort].compactMap { $0 }.joined(separator: " · "))
                             }
+                            if let turn = state?.turn {
+                                SheetSeparator()
+                                SheetValueRow(title: "Requested model", value: turn.requestedModel ?? "Unknown")
+                                SheetSeparator()
+                                SheetValueRow(title: "Observed model", value: turn.observedModel ?? "Unknown")
+                                if let reason = turn.modelSelectionReason {
+                                    SheetSeparator()
+                                    SheetValueRow(title: reason == "model_selection_mismatch" ? "Model selection changed" : "Model not verified",
+                                                  value: turn.modelSelectionMessage ?? "Model evidence is unavailable.")
+                                }
+                            }
                         }
                     }
                     SheetSection("Provider", footer: "The provider's id identifies the machine. It is not a credential and grants no access.") {
@@ -67,10 +78,10 @@ struct SandboxDetailView: View {
                             .frame(minHeight: 52)
                             if let providerID = sandbox.providerSandboxID {
                                 SheetSeparator()
-                                SheetValueRow(title: "Provider id", value: providerID, monospacedValue: true)
+                                CopyableIDRow(title: "Provider id", value: providerID)
                             }
                             SheetSeparator()
-                            SheetValueRow(title: "Armada id", value: sandbox.id, monospacedValue: true)
+                            CopyableIDRow(title: "Armada id", value: sandbox.id)
                         }
                     }
                 }
@@ -78,8 +89,48 @@ struct SandboxDetailView: View {
             }
         }
         .background(ArmadaTheme.canvas)
-        .navigationTitle(sandbox.displayLabel)
+        .navigationTitle(title ?? sandbox.displayLabel)
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Inspector sheet presented from `SandboxConversationView` with live status, model evidence,
+/// expiry, machine size, owner and copyable IDs.
+struct SandboxInspectorSheet: View {
+    let sandbox: SandboxSummary; let state: SandboxState?; let isWorking: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            SandboxDetailView(sandbox: sandbox, state: state, isWorking: isWorking, title: "Details")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
+    }
+}
+
+private struct CopyableIDRow: View {
+    let title: String; let value: String
+    @State private var copied = false
+    @State private var copyTrigger = 0
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title).font(.body).foregroundStyle(ArmadaTheme.textPrimary)
+            Spacer(minLength: 8)
+            Text(value).font(.callout.monospaced()).foregroundStyle(ArmadaTheme.textSecondary)
+                .multilineTextAlignment(.trailing).textSelection(.enabled)
+            Button {
+                UIPasteboard.general.string = value; copied = true; copyTrigger &+= 1
+                MessageInteractionFeedback.announce("\(title) copied")
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.footnote.weight(.semibold))
+                    .foregroundStyle(copied ? ArmadaTheme.successText : ArmadaTheme.textSecondary)
+                    .frame(minWidth: 36, minHeight: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityLabel("Copy \(title)").sensoryFeedback(.success, trigger: copyTrigger)
+        }
+        .padding(.leading, 16).padding(.trailing, 8).padding(.vertical, 6).frame(minHeight: 52)
     }
 }
 
@@ -88,10 +139,12 @@ struct SandboxDetailView: View {
 /// confirmation. The server authorizes every read and action; a refusal is explained, not guessed.
 struct SandboxConversationView: View {
     let sandbox: SandboxSummary
+    var initiallyWorking = false
 
     @Environment(AppModel.self) private var app
     @State private var model: SandboxConversationModel?
     @State private var confirmingStop = false
+    @State private var showingDetails = false
 
     var body: some View {
         Group {
@@ -112,6 +165,7 @@ struct SandboxConversationView: View {
                     sandboxID: sandbox.id,
                     orgID: sandbox.orgID,
                     listedStatus: sandbox.status,
+                    listedWorking: initiallyWorking,
                     memory: app.conversations
                 ) {
                     app.sessionEnded()
@@ -165,21 +219,33 @@ struct SandboxConversationView: View {
                 draft: $model.draft,
                 placeholder: "Message \(sandbox.agentLabel)",
                 unavailableReason: model.composerUnavailableReason,
-                // The server's turn state decides; this composer only ever sends a new turn.
-                isAgentWorking: model.state?.isWorking == true,
+                isAgentWorking: model.isWorking,
                 agentName: sandbox.agentLabel,
                 steerRestartsTurn: sandbox.harness?.steerRestartsTurn ?? false,
                 sending: model.pending.contains { $0.status == .sending },
-                onSend: { text, _ in model.send(text) }
+                interrupting: model.interrupting,
+                onInterrupt: model.canInterrupt ? { model.interrupt() } : nil,
+                onSend: { text, intent in model.send(text, intent: intent) }
             )
         }
         .toolbar {
             ToolbarItem(placement: .principal) {
-                SandboxHeader(title: sandbox.displayLabel, state: model.state, listedStatus: model.shownStatus)
+                Button { showingDetails = true } label: {
+                    SandboxHeader(title: sandbox.displayLabel, isWorking: model.isWorking, status: model.shownStatus)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Shows sandbox details")
             }
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button("Details", systemImage: "info.circle") { showingDetails = true }
+                    .accessibilityIdentifier("sandbox.details")
                 Menu {
+                    Button("Details", systemImage: "info.circle") { showingDetails = true }
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                    if model.canInterrupt {
+                        Button("Interrupt", systemImage: "hand.raised") { model.interrupt() }
+                            .accessibilityIdentifier("sandbox.interrupt")
+                    }
                     if model.canStop {
                         Button("Stop", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
                             .accessibilityIdentifier("sandbox.stop")
@@ -189,6 +255,9 @@ struct SandboxConversationView: View {
                 }
                 .accessibilityIdentifier("sandbox.actions")
             }
+        }
+        .sheet(isPresented: $showingDetails) {
+            SandboxInspectorSheet(sandbox: sandbox, state: model.state, isWorking: model.isWorking)
         }
         .confirmationDialog("Stop \(sandbox.displayLabel)?", isPresented: $confirmingStop, titleVisibility: .visible) {
             Button("Stop", role: .destructive) { model.stop() }
@@ -211,7 +280,6 @@ struct SandboxConversationView: View {
                     InlineBanner(text: rateLimit.summary, style: rateLimit.waiting ? .warning : .info)
                         .accessibilityIdentifier("sandbox.modelRateLimit")
                 }
-                InlineBanner(text: "Requested: \(turn.requestedModel ?? "unknown") · Observed: \(turn.observedModel ?? "unknown")", style: .info)
                 if let reason = turn.modelSelectionReason {
                     let mismatch = reason == "model_selection_mismatch"
                     InlineBanner(text: "\(mismatch ? "Model selection changed" : "Model not verified"): \(turn.modelSelectionMessage ?? "Model evidence is unavailable.")", style: mismatch ? .warning : .info)
@@ -244,10 +312,7 @@ struct SandboxConversationView: View {
 
 /// The sandbox name with its live state: working while a turn runs, otherwise the machine status.
 private struct SandboxHeader: View {
-    let title: String
-    let state: SandboxState?
-    /// The list row's status, shown until the interior state is read.
-    let listedStatus: SandboxStatus?
+    let title: String; let isWorking: Bool; let status: SandboxStatus?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -256,20 +321,11 @@ private struct SandboxHeader: View {
                 .foregroundStyle(ArmadaTheme.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if let state {
-                StatusDot(tone: state.isWorking ? .live : state.status.tone)
-            } else if let listedStatus {
-                StatusDot(tone: listedStatus.tone)
-            }
+            if isWorking { WorkingBadge() } else if let status { StatusDot(tone: status.tone) }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel([title, label].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityLabel([title, isWorking ? "Working" : status?.label].compactMap { $0 }.joined(separator: ", "))
         .accessibilityIdentifier("sandbox.conversation-header")
-    }
-
-    private var label: String? {
-        guard let state else { return listedStatus?.label }
-        return state.isWorking ? "Working" : state.status.label
     }
 }
 

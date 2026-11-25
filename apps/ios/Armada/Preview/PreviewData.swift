@@ -67,6 +67,8 @@ enum PreviewData {
             SandboxPage(items: empty ? [] : PreviewData.sandboxes, total: empty ? 0 : PreviewData.sandboxes.count, nextPage: nil)
         }
 
+        func listTurns(orgID: String) async throws(ServiceFailure) -> [String: RecordedTurnState] { empty ? [:] : ["sbx-1a2b3c4d": .running] }
+
         func sandboxState(id: String, orgID: String) async throws(ServiceFailure) -> SandboxState {
             guard let summary = PreviewData.sandboxes.first(where: { $0.id == id }), summary.canOpen else { throw .noAccess }
             let working = summary.status == .running
@@ -93,6 +95,9 @@ enum PreviewData {
             // Shows the unconfirmed path in previews: an outcome is never invented as success.
             throw .uncertain
         }
+
+        func steerSandbox(sandboxID: String, orgID: String, text: String) async throws(ServiceFailure) -> SandboxSteerAcceptance { SandboxSteerAcceptance(promptID: "pr_preview", delivery: "in-place", mode: nil) }
+        func interruptSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxInterruptOutcome { SandboxInterruptOutcome(interrupted: true) }
 
         func stopSandbox(id: String, orgID: String) async throws(ServiceFailure) -> SandboxStopOutcome {
             SandboxStopOutcome(status: .stopping)

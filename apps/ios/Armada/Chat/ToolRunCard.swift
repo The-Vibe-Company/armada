@@ -189,7 +189,7 @@ extension ToolActivity {
         var color: Color {
             switch self {
             case .running: ArmadaTheme.actionBlue
-            case .done: ArmadaTheme.live
+            case .done: ArmadaTheme.successText
             case .failed: ArmadaTheme.danger
             }
         }

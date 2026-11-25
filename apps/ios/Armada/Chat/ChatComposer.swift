@@ -22,6 +22,8 @@ struct ChatComposer: View {
     let agentName: String
     let steerRestartsTurn: Bool
     let sending: Bool
+    var interrupting = false
+    var onInterrupt: (() -> Void)?
     let onSend: (String, ComposerIntent) -> Void
 
     @State private var intent: ComposerIntent = .steer
@@ -32,7 +34,7 @@ struct ChatComposer: View {
     var body: some View {
         VStack(spacing: 8) {
             if isAgentWorking {
-                AgentWorkingStatus(agentName: agentName)
+                AgentWorkingStatus(agentName: agentName, interrupting: interrupting, onInterrupt: onInterrupt)
                     .transition(reduceMotion ? .identity : .move(edge: .bottom).combined(with: .opacity))
             }
             if let unavailableReason {

@@ -14,11 +14,13 @@ final class SandboxListModel {
 
     private(set) var phase: Phase = .loading
     private(set) var items: [SandboxSummary] = []
+    private(set) var turns: [String: RecordedTurnState] = [:]
     private(set) var total = 0
     private(set) var refreshError: String?
     private(set) var loadingMore = false
 
     @ObservationIgnored private var nextPage: Int?
+    @ObservationIgnored private var loadedPages = 1
     @ObservationIgnored let service: any SandboxService
     @ObservationIgnored let orgID: String
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
@@ -30,18 +32,48 @@ final class SandboxListModel {
     }
 
     var hasMore: Bool { nextPage != nil }
+    var hasLiveActivity: Bool { items.contains { isWorking($0) || $0.status == .starting || $0.status == .stopping } }
 
-    func load() async {
-        if items.isEmpty { phase = .loading }
-        do throws(ServiceFailure) {
-            let page = try await service.list(orgID: orgID, page: 1)
-            items = page.items
-            total = page.total
-            nextPage = page.nextPage
-            refreshError = nil
-            phase = .loaded
-        } catch {
-            handle(error)
+    func isWorking(_ sandbox: SandboxSummary, now: Date = .now) -> Bool {
+        RecordedTurnState.isWorking(status: sandbox.status.rawValue, turn: turns[sandbox.id], expiresAt: sandbox.expiresAt, now: now)
+    }
+
+    func group(for sandbox: SandboxSummary, now: Date = .now) -> ListStatusGroup {
+        .sandbox(sandbox.status.rawValue, turn: turns[sandbox.id], expiresAt: sandbox.expiresAt, now: now)
+    }
+
+    func load(silent: Bool = false) async {
+        if !silent && items.isEmpty { phase = .loading }
+        async let pageResult = Self.fetchPage(service: service, orgID: orgID)
+        async let turnsResult = Self.fetchTurns(service: service, orgID: orgID)
+        let (pageOutcome, turnsOutcome) = await (pageResult, turnsResult)
+        if case .success(let latest) = turnsOutcome { turns = latest }
+        else if case .failure(let error) = turnsOutcome, error.category == .signedOut {
+            if !Task.isCancelled { onSignedOut() }
+            return
+        }
+        switch pageOutcome {
+        case .success(let page):
+            if !silent || loadedPages <= 1 {
+                items = page.items; nextPage = page.nextPage; loadedPages = 1
+            } else {
+                let fresh = Dictionary(uniqueKeysWithValues: page.items.map { ($0.id, $0) })
+                let existing = Set(items.map(\.id))
+                items = page.items.filter { !existing.contains($0.id) } + items.map { fresh[$0.id] ?? $0 }
+            }
+            total = page.total; refreshError = nil; phase = .loaded
+        case .failure(let error):
+            if silent { if error.category == .signedOut, !Task.isCancelled { onSignedOut() } }
+            else { handle(error) }
+        }
+    }
+
+    /// Light polling while the list is on screen: faster when turns or transitions are active.
+    func pollWhileVisible() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: hasLiveActivity ? .seconds(8) : .seconds(20))
+            guard !Task.isCancelled else { return }
+            if phase == .loaded { await load(silent: true) }
         }
     }
 
@@ -55,9 +87,18 @@ final class SandboxListModel {
             items.append(contentsOf: page.items.filter { !known.contains($0.id) })
             total = page.total
             self.nextPage = page.nextPage
+            loadedPages += 1
         } catch {
             handle(error)
         }
+    }
+
+    private nonisolated static func fetchPage(service: any SandboxService, orgID: String) async -> Result<SandboxPage, ServiceFailure> {
+        do throws(ServiceFailure) { return .success(try await service.list(orgID: orgID, page: 1)) } catch { return .failure(error) }
+    }
+
+    private nonisolated static func fetchTurns(service: any SandboxService, orgID: String) async -> Result<[String: RecordedTurnState], ServiceFailure> {
+        do throws(ServiceFailure) { return .success(try await service.listTurns(orgID: orgID)) } catch { return .failure(error) }
     }
 
     private func handle(_ error: ServiceFailure) {
@@ -78,18 +119,22 @@ final class SandboxListModel {
 /// only the owner or a current admin can open the interior, and the server decides each time.
 struct SandboxListView: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: SandboxListModel?
     @State private var showingAccount = false
     @State private var newSandbox: NewSandboxModel?
     @State private var showingNewSandbox = false
     @State private var launched: SandboxSummary?
     @State private var disclosure = StatusSectionDisclosure()
+    @State private var isListVisible = false
 
     var body: some View {
         NavigationStack {
             ArmadaBackdrop {
                 content
             }
+            .onAppear { isListVisible = true }
+            .onDisappear { isListVisible = false }
             .navigationTitle("Sandboxes")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -102,7 +147,11 @@ struct SandboxListView: View {
                 }
             }
             .navigationDestination(for: SandboxSummary.self) { sandbox in
-                SandboxDetailView(sandbox: sandbox)
+                if sandbox.canOpen {
+                    SandboxConversationView(sandbox: sandbox, initiallyWorking: model?.isWorking(sandbox) ?? false)
+                } else {
+                    SandboxDetailView(sandbox: sandbox)
+                }
             }
             // With sandbox metadata, open its conversation and follow the first turn.
             .navigationDestination(item: $launched) { sandbox in
@@ -141,6 +190,17 @@ struct SandboxListView: View {
             }
             await model?.load()
         }
+        .task(id: pollTaskID) {
+            guard isListVisible, scenePhase == .active, let model else { return }
+            if model.phase == .loaded {
+                await model.load(silent: true)
+            }
+            await model.pollWhileVisible()
+        }
+    }
+
+    private var pollTaskID: String {
+        "\(app.organization?.id ?? ""):\(isListVisible):\(scenePhase == .active)"
     }
 
     /// Reuses the open form of this organization so a dismissed or refused launch keeps its fields.
@@ -186,7 +246,7 @@ struct SandboxListView: View {
                 .listRowBackground(Color.clear)
             } else {
                 let sections = ListOrdering.sections(
-                    model.items, group: { .sandbox($0.status.rawValue) }, createdAt: \.createdAt, id: \.id
+                    model.items, group: { model.group(for: $0) }, createdAt: \.createdAt, id: \.id
                 )
                 let groups = sections.map(\.group)
                 ForEach(sections, id: \.group) { section in
@@ -195,7 +255,7 @@ struct SandboxListView: View {
                         if !collapsed {
                             ForEach(section.items) { sandbox in
                                 NavigationLink(value: sandbox) {
-                                    SandboxRow(sandbox: sandbox, currentUserID: app.currentUserID)
+                                    SandboxRow(sandbox: sandbox, currentUserID: app.currentUserID, isWorking: model.isWorking(sandbox))
                                 }
                                 .accessibilityIdentifier("sandboxes.row.\(sandbox.id)")
                             }
@@ -236,6 +296,7 @@ struct SandboxListView: View {
 struct SandboxRow: View {
     let sandbox: SandboxSummary
     let currentUserID: String?
+    var isWorking = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
@@ -261,7 +322,11 @@ struct SandboxRow: View {
                         Text(RelativeTime.age(of: sandbox.createdAt, now: context.date))
                             .font(.footnote.monospacedDigit())
                             .foregroundStyle(ArmadaTheme.textSecondary)
-                        StatusDot(tone: sandbox.status.tone)
+                        if isWorking {
+                            WorkingBadge()
+                        } else {
+                            StatusDot(tone: sandbox.status.tone)
+                        }
                     }
                 }
                 HStack(spacing: 6) {
@@ -295,15 +360,16 @@ struct SandboxRow: View {
     }
 
     private var owner: String { SandboxOwner.label(sandbox.ownerID, currentUserID: currentUserID) }
+    private var statusText: String { isWorking ? "Working" : sandbox.status.label }
 
     private var secondLine: String {
-        var parts = [sandbox.status.label, owner, sandbox.agentLabel]
+        var parts = [statusText, owner, sandbox.agentLabel]
         if let model = sandbox.model { parts.append(model) }
         return parts.joined(separator: " · ")
     }
 
     private func accessibilityText(now: Date) -> String {
-        var parts = [sandbox.displayLabel, sandbox.status.label, sandbox.provider.label, sandbox.agentLabel, owner]
+        var parts = [sandbox.displayLabel, statusText, sandbox.provider.label, sandbox.agentLabel, owner]
         if let model = sandbox.model, !model.isEmpty { parts.append("Model \(model)") }
         parts.append("Created \(RelativeTime.age(of: sandbox.createdAt, now: now))")
         if !sandbox.canOpen { parts.append("Owner or admin only") }

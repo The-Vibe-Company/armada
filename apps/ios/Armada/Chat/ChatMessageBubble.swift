@@ -118,23 +118,35 @@ struct ChatBubbleRowLayout: Layout {
 /// A capsule above the composer while the agent works, Companion's `CompanionThinkingStatus`.
 struct AgentWorkingStatus: View {
     let agentName: String
+    var interrupting = false
+    var onInterrupt: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 6) {
-            ProgressView()
-                .controlSize(.mini)
-                .accessibilityHidden(true)
-            Text("\(agentName) is working")
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini).accessibilityHidden(true)
+                Text(interrupting ? "Interrupting…" : "\(agentName) is working").fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(interrupting ? "Interrupting" : "\(agentName) is working")
+            Spacer(minLength: 4)
+            if let onInterrupt {
+                Button(action: onInterrupt) {
+                    Label("Interrupt", systemImage: "stop.circle.fill")
+                        .font(.footnote.weight(.semibold)).foregroundStyle(ArmadaTheme.dangerText)
+                        .padding(.horizontal, 8).frame(minHeight: 32).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(interrupting)
+                .accessibilityLabel("Interrupt the running turn").accessibilityIdentifier("chat.interrupt")
+            }
         }
         .font(.footnote.weight(.medium))
         .foregroundStyle(ArmadaTheme.textSecondary)
         .padding(.horizontal, 10)
-        .frame(minHeight: 32)
+        .frame(minHeight: 36)
         .background(ArmadaTheme.chip, in: RoundedRectangle(cornerRadius: 16))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(agentName) is working")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.working-status")
     }
 }

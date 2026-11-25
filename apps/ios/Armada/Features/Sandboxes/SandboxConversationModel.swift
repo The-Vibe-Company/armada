@@ -27,7 +27,8 @@ final class SandboxConversationModel {
     private(set) var state: SandboxState?
     private(set) var pending: [PendingBubble] = []
     private(set) var stopping = false
-    /// The outcome of the person's last send or stop, kept until their next action.
+    private(set) var interrupting = false
+    /// The outcome of the person's last send, steer, interrupt or stop, kept until their next action.
     private(set) var notice: (text: String, isError: Bool)?
     /// A background read that failed after the conversation was shown; cleared by the next success.
     private(set) var readIssue: String?
@@ -37,13 +38,17 @@ final class SandboxConversationModel {
     var draft = ""
     let feed: ConversationFeed
 
+    private struct AcceptedSteer { let promptID: String; let delivery: String; let text: String; let priorMatches: Int }
+
     /// The turn each accepted bubble opened, to retire it once the transcript shows that turn.
     @ObservationIgnored private var acceptedPrompts: [String: String] = [:]
+    @ObservationIgnored private var acceptedSteers: [String: AcceptedSteer] = [:]
     @ObservationIgnored private let service: any SandboxService
     @ObservationIgnored let sandboxID: String
     @ObservationIgnored private let orgID: String
-    /// The list row's status, shown until the interior state is read.
+    /// The list row's status and working state, shown until the interior state or stream is read.
     @ObservationIgnored private let listedStatus: SandboxStatus?
+    @ObservationIgnored private let listedWorking: Bool
     @ObservationIgnored private let onSignedOut: @MainActor () -> Void
 
     init(
@@ -51,6 +56,7 @@ final class SandboxConversationModel {
         sandboxID: String,
         orgID: String,
         listedStatus: SandboxStatus? = nil,
+        listedWorking: Bool = false,
         memory: ConversationMemory? = nil,
         onSignedOut: @escaping @MainActor () -> Void
     ) {
@@ -58,6 +64,7 @@ final class SandboxConversationModel {
         self.sandboxID = sandboxID
         self.orgID = orgID
         self.listedStatus = listedStatus
+        self.listedWorking = listedWorking
         self.onSignedOut = onSignedOut
         feed = ConversationFeed(key: "sandbox:\(orgID):\(sandboxID.lowercased())", memory: memory)
     }
@@ -66,6 +73,7 @@ final class SandboxConversationModel {
     var composerUnavailableReason: String? {
         guard !recoveringPrompt, let state else { return "Loading…" }
         if pending.contains(where: { $0.status == .sending }) { return "Sending…" }
+        if interrupting { return "Interrupting…" }
         if pending.contains(where: { $0.status == .unconfirmed }) {
             return "Check whether your last prompt arrived, then dismiss it to write again."
         }
@@ -74,7 +82,8 @@ final class SandboxConversationModel {
         }
         switch state.admission {
         case .open: return nil
-        case .turnRunning: return "The agent is working. You can write when this turn ends, or stop the sandbox."
+        case .turnRunning:
+            return state.status == .stopped ? "Resuming with a queued prompt. You can write once it starts." : nil
         case .starting: return "Starting. You can write once it is ready."
         case .stopping: return "Stopping…"
         case .failed: return state.failureExplanation ?? "This sandbox failed. Launch a new sandbox to continue."
@@ -87,7 +96,15 @@ final class SandboxConversationModel {
 
     var canStop: Bool { state?.canStop == true && !stopping }
 
-    var isWorking: Bool { state?.isWorking == true || feed.conversation.running }
+    var canInterrupt: Bool {
+        isWorking && !interrupting && !stopping && (state?.status == .ready || state?.status == .running)
+    }
+
+    var isWorking: Bool {
+        if let state { return state.isWorking || feed.conversation.running }
+        if feed.hasLoaded { return feed.conversation.running }
+        return listedWorking || listedStatus == .running
+    }
 
     /// A deleted sandbox has no machine left to read events from. The list row decides until the
     /// interior state is read.
@@ -196,16 +213,22 @@ final class SandboxConversationModel {
 
     // MARK: Acting
 
-    func send(_ text: String) {
+    func send(_ text: String, intent: ComposerIntent = .message) {
         guard composerUnavailableReason == nil, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let bubbleID = UUID().uuidString
-        pending.append(PendingBubble(id: bubbleID, text: text, intent: .message, sentAt: .now, status: .sending))
+        let priorSteers = intent == .steer ? steerMatchCount(text: text, promptID: state?.turn?.promptID) : 0
+        pending.append(PendingBubble(id: bubbleID, text: text, intent: intent, sentAt: .now, status: .sending))
         draft = ""
         notice = nil
         Task {
             do throws(ServiceFailure) {
-                let accepted = try await service.sendPrompt(sandboxID: sandboxID, orgID: orgID, text: text)
-                acceptedPrompts[bubbleID] = accepted.promptID
+                if intent == .steer {
+                    let accepted = try await service.steerSandbox(sandboxID: sandboxID, orgID: orgID, text: text)
+                    acceptedSteers[bubbleID] = AcceptedSteer(promptID: accepted.promptID, delivery: accepted.delivery, text: text, priorMatches: priorSteers)
+                } else {
+                    let accepted = try await service.sendPrompt(sandboxID: sandboxID, orgID: orgID, text: text)
+                    acceptedPrompts[bubbleID] = accepted.promptID
+                }
                 setStatus(.accepted, for: bubbleID)
                 reconcilePending()
             } catch {
@@ -227,9 +250,23 @@ final class SandboxConversationModel {
         }
     }
 
+    /// Interrupts the running turn while keeping the sandbox up for the next prompt.
+    func interrupt() {
+        guard canInterrupt else { return }
+        interrupting = true
+        notice = nil
+        Task {
+            defer { interrupting = false }
+            do throws(ServiceFailure) { _ = try await service.interruptSandbox(id: sandboxID, orgID: orgID) }
+            catch { handleControlError(error, uncertainNote: "Check whether the turn stopped before trying again.") }
+            _ = await loadState()
+        }
+    }
+
     /// Hides an unconfirmed prompt locally. It still appears in the transcript if Armada received it.
     func dismiss(_ bubble: PendingBubble) {
         guard bubble.status == .unconfirmed else { return }
+        if bubble.intent == .steer { removeBubble(bubble.id, restoreDraft: false); return }
         Task {
             do throws(ServiceFailure) {
                 if let recovery = service as? any SandboxPromptRecovery,
@@ -251,17 +288,17 @@ final class SandboxConversationModel {
             do throws(ServiceFailure) {
                 let receipt = try await service.stopSandbox(id: sandboxID, orgID: orgID)
                 if let warning = receipt.preservationWarning { notice = (warning, true) }
-            } catch {
-                switch error.category {
-                case .signedOut: onSignedOut()
-                case .noAccess: refuseAccess(message: error.message)
-                case .uncertain, .offline:
-                    notice = (error.message + " The stop is unconfirmed. Check its latest state before stopping again.", true)
-                case .rejected, .unavailable:
-                    notice = (error.message, true)
-                }
-            }
+            } catch { handleControlError(error, uncertainNote: "The stop is unconfirmed. Check its latest state before stopping again.") }
             _ = await loadState()
+        }
+    }
+
+    private func handleControlError(_ error: ServiceFailure, uncertainNote: String) {
+        switch error.category {
+        case .signedOut: onSignedOut()
+        case .noAccess: refuseAccess(message: error.message)
+        case .uncertain, .offline: notice = (error.message + " " + uncertainNote, true)
+        case .rejected, .unavailable: notice = (error.message, true)
         }
     }
 
@@ -276,6 +313,7 @@ final class SandboxConversationModel {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         let bubble = pending.remove(at: index)
         acceptedPrompts[id] = nil
+        acceptedSteers[id] = nil
         if restoreDraft {
             draft = draft.isEmpty ? bubble.text : bubble.text + "\n" + draft
         }
@@ -287,10 +325,29 @@ final class SandboxConversationModel {
             return item.promptID
         })
         pending.removeAll { bubble in
-            guard bubble.status == .accepted, let promptID = acceptedPrompts[bubble.id], shown.contains(promptID) else { return false }
-            acceptedPrompts[bubble.id] = nil
-            return true
+            guard bubble.status == .accepted else { return false }
+            if let promptID = acceptedPrompts[bubble.id], shown.contains(promptID) {
+                acceptedPrompts[bubble.id] = nil
+                return true
+            }
+            if let steer = acceptedSteers[bubble.id] {
+                let restarted = steer.delivery == "restart" && shown.contains(steer.promptID)
+                let echoed = steerMatchCount(text: steer.text, promptID: steer.promptID) > steer.priorMatches
+                if restarted || echoed {
+                    acceptedSteers[bubble.id] = nil
+                    return true
+                }
+            }
+            return false
         }
+    }
+
+    private func steerMatchCount(text: String, promptID: String?) -> Int {
+        feed.conversation.items.filter { item in
+            guard case .steer(let steerText, _) = item.kind, steerText == text else { return false }
+            guard let promptID, let itemPromptID = item.promptID else { return true }
+            return itemPromptID == promptID
+        }.count
     }
 
     /// The server refused this conversation: it is no longer shown, nor kept in memory.
