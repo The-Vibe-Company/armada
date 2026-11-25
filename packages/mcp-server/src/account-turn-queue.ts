@@ -33,6 +33,7 @@ import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import type { LaunchAuthority } from "./jobs/template-launch-authority.ts";
+import { unresolvedResume } from "./modal-launch-handoff.ts";
 import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
@@ -495,6 +496,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
              and q.dispatch_until<=clock_timestamp()
              and (${FAILED_DOCKER_WAKE} or (
                ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+               and not ${unresolvedResume("s")}
                and s.activity_lease_id is distinct from q.request_id
                and exists(select 1 from public.runtime_resumes r
                  where r.sandbox_id=q.sandbox_id and r.request_id=q.request_id and r.receipt is null)

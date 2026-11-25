@@ -715,6 +715,25 @@ export async function enqueueModalStop(
   return true;
 }
 
+export async function stopUnfinishedResume(tx: Sql, sandboxId: string, generation: number) {
+  await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting"],
+    toState: "stopping",
+    actor: "expiry",
+    code: "resume_dispatch_ended",
+    effects: [
+      {
+        kind: "stop",
+        idem_key: "modal-stop",
+        max_attempts: 8,
+        deadline_at: new Date(Date.now() + 120_000).toISOString(),
+      },
+    ],
+  });
+}
+
 export async function settleModalStop(
   tx: Sql,
   sandboxId: string,

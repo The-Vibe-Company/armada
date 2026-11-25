@@ -326,6 +326,7 @@ export function createModalProvider(options: ModalProviderOptions) {
       bound,
       assertMachineSource,
       physical,
+      namedOwned,
       resourceReceipt,
       create,
     }),

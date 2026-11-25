@@ -1340,14 +1340,23 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
   expect((await f.store.get(worker.id)).physicalId).toBeUndefined();
   expect(f.creates).toBe(2);
   const beforeCleanup = f.log.length;
-  await f.provider.stop({ sandboxId: worker.id });
+  const job = await f.provider.runtimeStopMachine({
+    recordId: worker.id,
+    sandboxId: worker.id,
+    generation: 2,
+    checkpoint: { epoch: "1", watermark: 2 },
+    write: (work) => work(fixtureSql),
+  });
+  expect(await job.machine.stop({ ...job.physical, sandboxId: worker.id, generation: 2, retain: true })).toMatchObject({
+    kind: "image",
+  });
   expect(f.log.slice(beforeCleanup)).toEqual(["terminate"]);
   expect(f.creates).toBe(2);
   const stopped = await f.store.get(worker.id);
   expect(stopped.phase).toBe("stopped");
   expect(stopped.physicalId).toBeDefined();
-  expect(stopped.runtimeCheckpoint).toBeUndefined();
-  expect(stopped.recoveryImageId).toBeUndefined();
+  expect(stopped.runtimeCheckpoint).toMatchObject({ epoch: "1", watermark: 2, generation: 2 });
+  expect(stopped.recoveryImageId).toBeDefined();
   expect(await f.provider.get(worker.id)).toMatchObject({ state: "stopped" });
 });
 

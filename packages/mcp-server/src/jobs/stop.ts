@@ -140,6 +140,7 @@ export function createStopJob(
         physical: prior?.modal_physical,
         checkpoint,
         write,
+        signal,
         reconcileOnly,
         deadlineAt: reconcileOnly ? undefined : deadline,
       });

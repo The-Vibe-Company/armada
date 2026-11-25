@@ -122,9 +122,26 @@ export async function mergeStopOutcome(tx: Sql, jobId: string, outcome: Record<s
   ]);
 }
 
+export async function recordResumeAuthority(
+  tx: Sql,
+  id: string,
+  generation: number,
+  requestId: string,
+  expiresAt: string,
+) {
+  const { rows } = await tx.query(
+    `update public.jobs j set outcome=jsonb_build_object('requestId',$3::text,'expiresAt',$4::text,
+       'accountId',s.credential_id,'accountVersion',s.credential_version,'actorEpoch',e.epoch::text)
+     from public.sandboxes s join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=s.owner_id
+     where s.id=$1 and j.sandbox_id=s.id and j.kind='resume' and j.generation=$2 returning j.id`,
+    [id, generation, requestId, expiresAt],
+  );
+  return rows.length === 1;
+}
+
 export function recordResumeBootstrapTicket(tx: Sql, jobId: string, ciphertext: string) {
   return tx.query(
-    "update public.jobs set outcome=jsonb_build_object('bootstrap_ticket_enc',$2::text) where id=$1 and kind='resume'",
+    "update public.jobs set outcome=outcome||jsonb_build_object('bootstrap_ticket_enc',$2::text) where id=$1 and kind='resume'",
     [jobId, ciphertext],
   );
 }

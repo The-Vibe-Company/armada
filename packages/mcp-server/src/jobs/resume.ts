@@ -1,6 +1,7 @@
 import { sha256Hex } from "@armada/auth";
 import { decryptSecret, encryptSecret, type Sql, toBytea, VaultError } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
+import { failTurnReceipt, publishAccountTurnReceipt } from "../account-turn-dispatch.ts";
 import type { Caller } from "../caller.ts";
 import { createSqlData, type SandboxView } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
@@ -15,20 +16,15 @@ import type { RestoreScopedRuntimeAccess } from "../sandbox-armada-access.ts";
 import {
   pendingModalStopOutput,
   publishRuntimeWake,
-  restoreModalResumeSchedule,
+  stopUnfinishedResume,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE, waitForTimeout } from "../wake-bus.ts";
+import { resumeDispatchAuthority } from "./resume-authority.ts";
 import type { JobKind, JobResult } from "./runner.ts";
-import { JOBS_WAKE, recordResumeBootstrapTicket, withJobLease } from "./store.ts";
+import { JOBS_WAKE, recordResumeAuthority, recordResumeBootstrapTicket, withJobLease } from "./store.ts";
 
-type Payload = RuntimeResumeInput & {
-  ownerId: string;
-  orgId: string;
-  accountId: string;
-  accountVersion: number;
-  expiresAt: string;
-};
+type Payload = RuntimeResumeInput & { ownerId: string; orgId: string };
 type Operation = {
   source: string;
   target: string;
@@ -131,15 +127,13 @@ export function createResumeJob(options: {
         ],
       );
       if (!found.credentialId || !found.credentialVersion) throw conflict("Pinned resume account is unavailable.");
+      const expiresAt = new Date(row.expires_at).toISOString();
       const payload = toBytea(
         await encryptSecret(
           JSON.stringify({
             ...input,
             ownerId: caller.userId,
             orgId: found.orgId,
-            accountId: found.credentialId,
-            accountVersion: found.credentialVersion,
-            expiresAt: new Date(row.expires_at).toISOString(),
           } satisfies Payload),
           key,
         ),
@@ -155,13 +149,15 @@ export function createResumeJob(options: {
           {
             kind: "resume",
             idem_key: requestId,
-            max_attempts: 32,
+            max_attempts: 240,
             payload_enc: payload,
             deadline_at: new Date(Math.min(new Date(row.expires_at).getTime(), Date.now() + 240_000)).toISOString(),
           },
         ],
       });
       if (moved.kind !== "applied") throw conflict("Resume admission lost its stopped generation.");
+      if (!(await recordResumeAuthority(tx, id, moved.generation, requestId, expiresAt)))
+        throw conflict("Resume owner authority changed.");
       return undefined;
     };
     const prior = await operation(sql, id, requestId);
@@ -212,30 +208,19 @@ export function createResumeJob(options: {
       const caller: Caller = { userId: input.ownerId, orgs: [{ orgId: input.orgId, role: "member" }], via: "service" };
       const requestId = input.request_id;
       const op = await operation(sql, id, requestId);
-      if (!op || op.phase === "failed") return { status: "fail", reason: "resume_intent_changed" };
+      if (!op || !["dispatched", "complete"].includes(op.phase))
+        return { status: "fail", reason: "resume_intent_changed" };
       if (op.receipt) return { status: "done", outcome: {} };
       const retry = { status: "retry", after: new Date(Date.now() + 1_000) } satisfies JobResult;
       const target = async (db: Sql) =>
         (
-          await db.query<{ deadline_at: Date; ttl: number; cancelled: boolean }>(
-            `select j.deadline_at,
-             least(86400,greatest(1,ceil(extract(epoch from ($5::timestamptz-j.created_at)))::integer+120)) as ttl,
-             (s.status<>'starting' or s.stop_requested_at is not null or s.deleted_at is not null or
-               s.application_secret_tainted or s.expires_at<=clock_timestamp() or
-               date_trunc('milliseconds',s.expires_at)<>$5::timestamptz or s.credential_id is distinct from $6::uuid
-               or s.credential_version is distinct from $7::integer
-               or not exists(select 1 from public.members where org_id=s.org_id and user_id=s.owner_id)
-               or not exists(select 1 from public.credentials c where c.id=$6 and c.version=$7 and c.status='active'
-                 and (c.expires_at is null or c.expires_at>clock_timestamp())
-                 and ((c.scope='org' and c.owner_id=s.org_id) or (c.scope='user' and c.owner_id=s.owner_id)))
-               or exists(select 1 from public.account_turn_queue q left join public.mcp_actor_epochs e
-                 on e.org_id=q.org_id and e.user_id=q.owner_id and e.epoch=q.actor_epoch
-                 where q.sandbox_id=s.id and q.request_id=$8 and (q.state<>'dispatching' or e.epoch is null))
-             ) as cancelled
-           from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
-           where s.id=$1 and j.id=$2 and s.owner_id=$3 and s.org_id=$4 and s.runtime_transport='dialout'
-`,
-            [id, job.id, input.ownerId, input.orgId, input.expiresAt, input.accountId, input.accountVersion, requestId],
+          await db.query<{ deadline_at: Date; expires_at: Date; ttl: number; cancelled: boolean }>(
+            `select j.deadline_at, (j.outcome->>'expiresAt')::timestamptz as expires_at,
+               least(86400,greatest(1,ceil(extract(epoch from ((j.outcome->>'expiresAt')::timestamptz-j.created_at)))::integer+120)) as ttl,
+               not coalesce(${resumeDispatchAuthority("j", "s")},false) as cancelled
+             from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+             where s.id=$1 and j.id=$2 and s.owner_id=$3 and s.org_id=$4 and s.runtime_transport='dialout'`,
+            [id, job.id, input.ownerId, input.orgId],
           )
         ).rows[0];
       const current = await withJobLease(sql, job, target);
@@ -247,10 +232,11 @@ export function createResumeJob(options: {
           outcome: {},
           async commit(tx) {
             await tx.query(
-              "update public.runtime_resumes set phase='failed' where sandbox_id=$1 and request_id=$2 and receipt is null",
+              "update public.runtime_resumes set phase='abandoned' where sandbox_id=$1 and request_id=$2 and receipt is null",
               [id, requestId],
             );
-            await restoreModalResumeSchedule(tx, id);
+            await stopUnfinishedResume(tx, id, generation);
+            await failTurnReceipt(tx, id, requestId, true);
           },
         };
       }
@@ -322,7 +308,7 @@ export function createResumeJob(options: {
               coverage.state !== "ready" ||
               physicalDeadline === undefined ||
               !Number.isFinite(physicalDeadline) ||
-              physicalDeadline < new Date(input.expiresAt).getTime()
+              physicalDeadline < new Date(current.expires_at).getTime()
             )
               throw conflict("Restored Modal compute does not cover the sandbox lifetime.");
             const result = await authority.issue({
@@ -434,6 +420,7 @@ export function createResumeJob(options: {
               op.empty ? [op.conversation] : sandbox.conversationIds,
               job.id,
             );
+            await publishAccountTurnReceipt(tx, id, requestId, await encryptSecret(JSON.stringify(receipt), key));
             await tx.query(
               "update public.runtime_resumes set phase='complete',verified_at=coalesce(verified_at,now()),receipt=$3::jsonb where sandbox_id=$1 and request_id=$2",
               [id, requestId, JSON.stringify(receipt)],

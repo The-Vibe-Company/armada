@@ -447,6 +447,15 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
   } satisfies JobKind;
 }
 
+export function publishAccountTurnReceipt(tx: Sql, sandboxId: string, requestId: string, result: Uint8Array) {
+  return tx.query(
+    `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
+        where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
+      delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
+    [sandboxId, requestId, result],
+  );
+}
+
 class TurnSettlementLeaseLost extends Error {}
 
 type AdmittedEntry = DispatchEntry & { dispatch_until: string };
@@ -561,12 +570,7 @@ export async function dispatchAccountTurn(
     phase = "publish_receipt";
     const resultEnc = await encryptSecret(JSON.stringify(result), key);
     await settleAccountTurn(sql, entry, claim, (tx) =>
-      tx.query(
-        `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
-             where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
-           delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
-        [entry.sandbox_id, entry.request_id, resultEnc],
-      ),
+      publishAccountTurnReceipt(tx, entry.sandbox_id, entry.request_id, resultEnc),
     );
   } catch (error) {
     if (claim && (phase === "publish_receipt" || phase === "dispatch_fence")) throw error;

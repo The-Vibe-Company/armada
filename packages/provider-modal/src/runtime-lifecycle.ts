@@ -34,6 +34,7 @@ export type ModalRuntimeStop = (binding: {
   checkpoint: { epoch: string; watermark: number } | null;
   write(work: (tx: Sql) => Promise<void>): Promise<void>;
   reconcileOnly?: boolean;
+  signal?: AbortSignal;
   deadlineAt?: number | undefined;
 }) => Promise<{
   physical: PhysicalTarget;
@@ -47,6 +48,7 @@ interface RuntimeLifecycleDependencies {
   bound(): Promise<unknown>;
   assertMachineSource(row: Machine): void;
   physical(row: Machine, signal?: AbortSignal): Promise<Sandbox>;
+  namedOwned(row: Machine): Promise<Sandbox>;
   resourceReceipt(row: Machine): Promise<ModalResourceReceipt>;
   create(
     row: Machine,
@@ -62,6 +64,7 @@ export function createRuntimeLifecycle({
   bound,
   assertMachineSource,
   physical,
+  namedOwned,
   resourceReceipt,
   create,
 }: RuntimeLifecycleDependencies) {
@@ -105,8 +108,27 @@ export function createRuntimeLifecycle({
       write,
       reconcileOnly,
       deadlineAt,
+      signal: leaseSignal,
     }: Parameters<ModalRuntimeStop>[0]) {
       const pinned = await store.get(recordId);
+      const source = pinned.runtimeCheckpoint;
+      const image = pinned.recoveryImageId;
+      if (source && image && pinned.runtimeResumeGeneration === generation && !pinned.physicalId) {
+        if (pinned.phase === "reserved") {
+          pinned.generation = source.generation;
+          pinned.physicalId = source.physicalId;
+          pinned.phase = "stopped";
+          pinned.info.state = "stopped";
+          pinned.info.providerState = "stopped";
+          pinned.info.stoppedAt = new Date();
+        } else if (pinned.phase === "creating") {
+          const observed = await withModalStopSignal(leaseSignal, undefined, () => namedOwned(pinned));
+          pinned.physicalId = observed.sandboxId;
+          pinned.phase = "booting";
+        }
+        leaseSignal?.throwIfAborted();
+        if (pinned.physicalId) await write((tx) => store.saveResume(tx, pinned, source.generation, image));
+      }
       if (!pinned.physicalId) throw refusal("conflict", "No current Modal physical incarnation.");
       const target = savedTarget ?? { machineId: pinned.physicalId, generation: pinned.generation };
       return {
@@ -180,6 +202,20 @@ export function createRuntimeLifecycle({
               try {
                 if (row.phase === "stopped") return retained();
                 const sb = await physical(row, signal);
+                const reuseRetained =
+                  expected &&
+                  prior &&
+                  row.recoveryImageId &&
+                  row.runtimeResumeGeneration === generation &&
+                  row.generation === prior.generation + 1 &&
+                  prior.epoch === expected.epoch &&
+                  prior.watermark === expected.watermark;
+                if (reuseRetained && !reconcileOnly) {
+                  row.runtimeCheckpoint = expected;
+                  row.phase = "terminate";
+                  row.quiesced = true;
+                  await save();
+                }
                 if ((await sb.poll()) !== null) return settle(row.phase === "terminate" ? retained() : null);
                 if (reconcileOnly)
                   throw refusal("unavailable", "The Modal machine still runs; observation will retry.");

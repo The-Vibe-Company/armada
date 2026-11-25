@@ -12,6 +12,7 @@ import {
 } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { admitClaimedAccountTurn, dispatchAccountTurn } from "../src/account-turn-dispatch.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -1911,7 +1912,7 @@ describe.each([
 
 describe("Modal resume job", () => {
   const fixture = scopedRuntimeFixture(() => stopped("codex", "modal"), { perTest: true });
-  test("explicit resume and send replay a single generation after a lost allocation response", async () => {
+  test.each([false, true])("reconciles a lost allocation response (deadline ended=%s)", async (expired) => {
     const f = await fixture();
     const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
     const firstGeneration = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
@@ -1981,13 +1982,19 @@ describe("Modal resume job", () => {
       service.resume,
     );
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, explicit);
+    const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    turns.setDispatch(send);
     const request = input(f.row.id);
     const wake = Promise.withResolvers<void>();
     const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, wake.resolve);
-    const receipt = explicit(f.caller, request);
     try {
+      expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
+      expect(await turns.reconcileOne(new AbortController().signal)).toBe(true);
       await wake.promise;
-      const sendReceipt = send(f.caller, request);
+      const receipt = explicit(f.caller, request).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
       const owner = crypto.randomUUID();
       const take = async () => {
         const job = (await jobs.claim("resume", owner, 30, 8))!;
@@ -2004,8 +2011,22 @@ describe("Modal resume job", () => {
       };
       expect(await take()).toBe("retry");
       await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
+      if (expired) {
+        await f.sql.query("update public.jobs set deadline_at=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
+        expect(await take()).toBe("fail");
+        expect(await receipt).toMatchObject({ error: { code: "conflict" } });
+        await turns.drain();
+        expect((await jobs.claim("stop", owner, 30, 8))?.generation).toBe(String(firstGeneration + 1));
+        expect(f.starts).toEqual([undefined]);
+        return;
+      }
       expect(await take()).toBe("done");
-      expect(await sendReceipt).toEqual(await receipt);
+      const accepted = await receipt;
+      if (!("value" in accepted)) throw accepted.error;
+      await turns.drain();
+      expect(await turns.status(f.caller, request.id, request.request_id)).toMatchObject({
+        nativePromptId: accepted.value.promptId,
+      });
       expect(allocations).toBe(1);
       expect(bootstraps).toBe(1);
       expect(f.starts).toEqual([undefined, "native-thread"]);

@@ -3,6 +3,7 @@ import { PROMPT_STATUSES, type Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { UUID } from "./control-input.ts";
 import type { Route } from "./http.ts";
+import { resumeDispatchBlocked } from "./jobs/resume-authority.ts";
 import {
   currentRequestId,
   noteAdmission,
@@ -278,6 +279,7 @@ export function createRuntimeCommands(
            and not (starts_with(request_id,'outputs_') and exists(select 1 from public.runtime_commands later
              where later.sandbox_id=c.sandbox_id and later.epoch=c.epoch and later.sequence>c.sequence
              and later.result_enc is not null))
+           and (not starts_with(request_id,'resume_') or not ${resumeDispatchBlocked("c.sandbox_id")})
            and ${dispatchableRuntimeCommand("c.sandbox_id", "c.epoch", "c.request_id")}
            order by sequence limit 2`,
           [scope.sandboxId, scope.epoch, String(time.now())],
