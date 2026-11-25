@@ -11,7 +11,13 @@ import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { assertModalLaunchSetup, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
-import { canRepeatPinnedRuntimeSettings, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import type { createResumeJob } from "./jobs/resume.ts";
+import { unresolvedResume } from "./modal-launch-handoff.ts";
+import {
+  canRepeatPinnedRuntimeSettings,
+  modalDialoutPlacement,
+  runtimeBridgeTarget,
+} from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -59,6 +65,7 @@ export function createRuntimeFollowup(
   prepareMcp?: RuntimeMcp["prepare"],
   resume?: RuntimeResume,
   restoreScopedAccess?: RestoreScopedRuntimeAccess,
+  wakeModal?: ReturnType<typeof createResumeJob>["wake"],
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
@@ -89,7 +96,8 @@ export function createRuntimeFollowup(
              and (q.request_id is distinct from $5::uuid or q.state<>'dispatching')
          ) as prompt_pending
          from public.sandboxes s left join public.jobs j on j.idem_key=${modalLaunchSetupKeySql()}
-         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
+         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4
+           and not ${unresolvedResume("s")}`,
         [found.id, caller.userId, found.orgId, found.lifecycleGeneration, fromQueue ? requestId : null],
       );
       if (!setup)
@@ -103,6 +111,7 @@ export function createRuntimeFollowup(
     // Route replays by durable operation identity, not today's machine state.
     // A completed wake may already be running (or paused again) on retry.
     const waking =
+      !modalDialoutPlacement(found) &&
       (
         await sql.query("select request_id from public.runtime_resumes where sandbox_id=$1 and request_id=$2::uuid", [
           found.id,
@@ -119,6 +128,10 @@ export function createRuntimeFollowup(
       if (previous)
         throw new VaultError("conflict", "This request_id belongs to an earlier follow-up; use a new ID for new work.");
       if (!waking) await assertDirectLaunchReady();
+      if (modalDialoutPlacement(found)) {
+        if (!wakeModal) throw new VaultError("unavailable", "Modal resume jobs are unavailable.");
+        return wakeModal(caller, found, requestId, claim);
+      }
       if (!resume) throw new VaultError("unavailable", "Runtime wake-on-send is unavailable.");
       return resume(caller, { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt }, claim);
     }

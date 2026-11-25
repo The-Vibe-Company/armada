@@ -12,11 +12,13 @@ import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
 import type { Job, JobKind } from "./jobs/runner.ts";
 import { type LaunchAuthority, launchAuthorityCurrent } from "./jobs/template-launch-authority.ts";
+import { unresolvedResume } from "./modal-launch-handoff.ts";
 import { continueRequest, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "./wake-bus.ts";
 
 function deferredDockerLaunch(sandbox: string, pending = false) {
   return `exists(select 1 from public.docker_launch_manifests launch
@@ -63,13 +65,16 @@ export function initialLaunchFailed(sandbox: string) {
 }
 
 function lifecycleBlocksTurn(sandbox: string, turn: string) {
-  return `(${idleStopPending(sandbox)} or ${initialLaunchFailed(sandbox)}
+  return `(${idleStopPending(sandbox)} or ${unresolvedResume(sandbox)} or ${initialLaunchFailed(sandbox)}
     or ${initialLaunchPending(sandbox, `${turn}.request_id`)})`;
 }
 
 export const TURN_LIFECYCLE_WAITING = lifecycleBlocksTurn("s", "q");
 
-export const TURN_FIFO_ELIGIBLE = `(s.provider is distinct from 'docker' or q.state<>'queued'
+export const TURN_FIFO_ELIGIBLE = `((s.provider is distinct from 'docker' and not exists(
+  select 1 from public.jobs wake where wake.sandbox_id=s.id and wake.kind='resume'
+    and wake.generation=s.lifecycle_generation and q.queued_generation=wake.generation-1
+)) or q.state<>'queued'
   or not exists(select 1 from public.account_turn_queue prior
     where prior.sandbox_id=q.sandbox_id and prior.state='queued' and prior.sequence<q.sequence))
   and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null)
@@ -91,7 +96,7 @@ const STOPPED_DOCKER_WAKE_IN_PROGRESS = `(s.provider='docker' and s.status='stop
 export const QUEUED_DISPATCH_EVIDENCE = `(q.native_prompt_id is not null
   or (s.task_prompt_id=q.request_id::text) is true or (${RUNTIME_REQUEST_EVIDENCE}) is true)`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
-export const COMPLETED_RUNTIME_WAKE = `(s.provider in ('boat','modal') and ${RUNTIME_LANE}
+export const COMPLETED_RUNTIME_WAKE = `(s.boat_runtime and s.provider='boat'
   and s.status in ('ready','running') and s.activity_lease_id is null
   and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
   and exists(
@@ -102,7 +107,7 @@ export const COMPLETED_RUNTIME_WAKE = `(s.provider in ('boat','modal') and ${RUN
       and e.lifecycle_generation=s.lifecycle_generation
   ))`;
 export const ENROLLED_PENDING_RUNTIME_WAKE = `(
-  ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+  s.provider='boat' and s.boat_runtime
   and s.status in ('starting','ready','running') and s.activity_lease_id=q.request_id
   and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
   and exists(
@@ -114,7 +119,7 @@ export const ENROLLED_PENDING_RUNTIME_WAKE = `(
   ))`;
 export const CONFIRMED_WAKE_WITHOUT_TICKET = `(
   q.state='dispatching'
-  and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+  and s.provider='boat' and s.boat_runtime
   and s.status='starting' and s.activity_lease_id=q.request_id and s.activity_until>clock_timestamp()
   and s.lifecycle_generation=q.dispatch_generation+1
   and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
@@ -159,7 +164,7 @@ export const FAILED_DOCKER_WAKE = dockerResumeJob(
 export const DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE = `(q.state='dispatching'
   and q.dispatch_until is null and s.status in ('ready','running')
   and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})`;
-export const TURN_RECOVERY_ELIGIBLE = `(q.dispatch_until<=now() and q.dispatch_generation is not null
+export const TURN_RECOVERY_ELIGIBLE = `(not ${unresolvedResume("s")} and q.dispatch_until<=now() and q.dispatch_generation is not null
   and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE})
     or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
       and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false))))`;
@@ -187,7 +192,7 @@ const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= n
 export const QUEUED_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED}
   or (not (${IDLE_STOP_PENDING} and s.lifecycle_generation=q.queued_generation)
     and (s.stop_requested_at is not null
-      or (s.status not in ('ready','running','stopped') and not (s.status='starting' and ${LAUNCH_PENDING}))))
+      or (s.status not in ('ready','running','stopped') and not (s.status='starting' and (${LAUNCH_PENDING} or ${unresolvedResume("s")})))))
   or ${initialLaunchFailed("s")})`;
 export const DISPATCHING_TURN_CANCELLED = `(${TURN_LIFECYCLE_CANCELLED}
   or s.stop_requested_at is not null or s.status in ('deleted','stopping','failed'))`;
@@ -280,6 +285,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
   const recovering = candidate.state === "dispatching";
   return sql
     .transaction(async (tx) => {
+      await lockTurnReceiptWrites(tx);
       const member = (
         await tx.query<{ role: "admin" | "member"; epoch: string }>(
           `select m.role,e.epoch::text from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
@@ -288,7 +294,13 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         )
       ).rows[0];
       await tx.query("select id from public.credentials where id=$1 for update", [candidate.account_id]);
-      await lockTurnReceiptWrites(tx, claim);
+      const {
+        rows: [live],
+      } = await tx.query<{ generation: string }>(
+        "select lifecycle_generation::text as generation from public.sandboxes where id=$1 for update",
+        [candidate.sandbox_id],
+      );
+      if (claim && (!live || live.generation !== claim.job.generation || !(await claim.canDispatch(tx)))) return null;
       const current = await tx.query(
         `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
       where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
@@ -309,16 +321,6 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
           await resetAbandonedTurn(tx, candidate.sandbox_id, candidate.request_id);
           return null;
         }
-      }
-      if (claim) {
-        // WARNING: Owner stop can hold the sandbox lock while waiting for the receipt.
-        const {
-          rows: [live],
-        } = await tx.query<{ generation: string }>(
-          "select lifecycle_generation::text as generation from public.sandboxes where id=$1 for update nowait",
-          [candidate.sandbox_id],
-        );
-        if (!live || live.generation !== claim.job.generation || !(await claim.canDispatch(tx))) return null;
       }
       const valid = await tx.query<{ id: string; runtime: boolean }>(
         `select s.id,${RUNTIME_LANE} as runtime from public.sandboxes s join public.credentials c on c.id=s.credential_id
@@ -405,8 +407,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
     })
     .catch((error: unknown) => {
       const lockError = error as { errno?: string; code?: string } | null;
-      if (claim && (error instanceof TurnAdmissionLeaseLost || (lockError?.errno ?? lockError?.code) === "55P03"))
-        return null;
+      if (error instanceof TurnAdmissionLeaseLost || (lockError?.errno ?? lockError?.code) === "55P03") return null;
       throw error;
     });
 }
@@ -457,13 +458,36 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
   } satisfies JobKind;
 }
 
+export function publishAccountTurnReceipt(tx: Sql, sandboxId: string, requestId: string, result: Uint8Array) {
+  return tx.query(
+    `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
+        where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
+      delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
+    [sandboxId, requestId, result],
+  );
+}
+
+export class ResumeTurnDeferred extends Error {}
+
+export async function resetResumeTurn(tx: Sql, id: string, requestId: string, generation: string) {
+  const { rows } = await tx.query(
+    `update public.account_turn_queue q set state='queued',dispatch_until=null,dispatch_generation=null
+       where q.sandbox_id=$1 and q.request_id=$2 and q.state='dispatching'
+         and q.queued_generation=$3::bigint-1 returning q.request_id`,
+    [id, requestId, generation],
+  );
+  if (!rows.length) throw new Error("The resume turn changed before handoff.");
+  await tx.query("delete from public.account_agent_reservations where sandbox_id=$1", [id]);
+}
+
 class TurnSettlementLeaseLost extends Error {}
 
 type AdmittedEntry = DispatchEntry & { dispatch_until: string };
 
-async function lockTurnReceiptWrites(tx: Sql, claim: TurnClaim | undefined) {
+async function lockTurnReceiptWrites(tx: Sql) {
   // WARNING: Startup model repair can block a lock upgrade while waiting for the receipt row.
-  await tx.query(`lock table public.account_turn_queue in row exclusive mode${claim ? " nowait" : ""}`);
+  await tx.query("set local lock_timeout = '750ms'");
+  await tx.query("lock table public.account_turn_queue in row exclusive mode");
 }
 
 async function settleAccountTurn<T>(
@@ -475,8 +499,8 @@ async function settleAccountTurn<T>(
   if (!sql.transaction) throw new VaultError("unavailable", "Transactional turn settlement unavailable.");
   try {
     return await sql.transaction(async (tx) => {
+      await lockTurnReceiptWrites(tx);
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
-      await lockTurnReceiptWrites(tx, claim);
       await tx.query("select id from public.sandboxes where id=$1 for update", [entry.sandbox_id]);
       if (claim && !(await claim.canDispatch(tx))) return;
       const receipt = await tx.query(
@@ -497,7 +521,8 @@ async function settleAccountTurn<T>(
       return result;
     });
   } catch (error) {
-    if (!(error instanceof TurnSettlementLeaseLost)) throw error;
+    const lock = error as { errno?: string; code?: string } | null;
+    if (!(error instanceof TurnSettlementLeaseLost) && (lock?.errno ?? lock?.code) !== "55P03") throw error;
   }
 }
 
@@ -576,16 +601,13 @@ export async function dispatchAccountTurn(
     phase = "publish_receipt";
     const resultEnc = await encryptSecret(JSON.stringify(result), key);
     await settleAccountTurn(sql, entry, claim, (tx) =>
-      tx.query(
-        `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
-             where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
-           delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
-        [entry.sandbox_id, entry.request_id, resultEnc],
-      ),
+      publishAccountTurnReceipt(tx, entry.sandbox_id, entry.request_id, resultEnc),
     );
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
   } catch (error) {
     if (claim && (phase === "publish_receipt" || phase === "dispatch_fence")) throw error;
     const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
+    if (origin instanceof ResumeTurnDeferred) return;
     const refusalCode =
       error instanceof ToolApiError || error instanceof VaultError || error instanceof ToolError
         ? error.code

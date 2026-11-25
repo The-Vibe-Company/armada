@@ -100,6 +100,7 @@ export interface ModalStore {
   get(id: string): Promise<Machine>;
   lease<T>(id: string, work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>): Promise<T>;
   saveStop(tx: Sql, row: Machine): Promise<void>;
+  saveResume(tx: Sql, row: Machine, sourceGeneration: number, image: string): Promise<void>;
   image(name: string): Promise<SavedImage>;
   saveImage(image: SavedImage): Promise<void>;
   removeImage(name: string): Promise<void>;

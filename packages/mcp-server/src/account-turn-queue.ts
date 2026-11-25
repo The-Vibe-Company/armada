@@ -33,10 +33,12 @@ import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import type { LaunchAuthority } from "./jobs/template-launch-authority.ts";
+import { unresolvedResume } from "./modal-launch-handoff.ts";
 import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
+import { historicalModalResumeReceipt } from "./runtime-resume-receipts.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { ToolError } from "./tool-error.ts";
 
@@ -60,6 +62,22 @@ type Entry = {
 };
 type DispatchJobEntry = Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">;
 const DISPATCH_JOB_BACKFILL_BATCH = 20;
+
+function normalizedTurnInput(input: RuntimeFollowupInput & { request_id: string }) {
+  return {
+    id: input.id,
+    request_id: input.request_id,
+    prompt: input.prompt,
+    model: input.model,
+    reasoning_effort: input.reasoning_effort,
+  };
+}
+
+export function accountTurnInputDigest(input: RuntimeFollowupInput & { request_id: string }) {
+  return createHash("sha256")
+    .update(JSON.stringify(normalizedTurnInput(input)))
+    .digest("hex");
+}
 
 /** Durable encrypted sends. Account locking serializes FIFO admission across server replicas.
  * Native dispatches are never retried: native providers have no idempotent prompt protocol.
@@ -148,17 +166,12 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       canDispatch: JobContext["canDispatch"];
       authority?: LaunchAuthority | undefined;
     },
+    resumeOnly = false,
+    readRetainedReceipt = false,
   ) {
     const requestId = input.request_id;
-    const normalized = {
-      id: input.id,
-      request_id: requestId,
-      prompt: input.prompt,
-      model: input.model,
-      reasoning_effort: input.reasoning_effort,
-    };
-    const serialized = JSON.stringify(normalized);
-    const hash = createHash("sha256").update(serialized).digest("hex");
+    const normalized = normalizedTurnInput(input);
+    const hash = accountTurnInputDigest(input);
     // The first insert owns correlation. Keep it outside the idempotency hash.
     const sealed = await encryptSecret(
       JSON.stringify({
@@ -200,6 +213,33 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       ).rows[0];
       if (!target || !caller.orgs.some((org) => org.orgId === target.org_id))
         throw new VaultError("not_found", "No owned sandbox.");
+      if (readRetainedReceipt && target.runtime_transport === "dialout") {
+        const historical = await historicalModalResumeReceipt(tx, caller, {
+          id: input.id,
+          requestId,
+          prompt: input.prompt,
+        });
+        if (historical) {
+          if (input.model !== undefined || input.reasoning_effort !== undefined)
+            throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
+          return { historical };
+        }
+        const {
+          rows: [accepted],
+        } = await tx.query<Entry>(
+          `select q.* from public.account_turn_queue q join public.mcp_actor_epochs e
+             on e.org_id=q.org_id and e.user_id=q.owner_id and e.epoch=q.actor_epoch
+           join public.jobs j on j.sandbox_id=q.sandbox_id and j.generation=q.queued_generation+1
+             and j.kind='resume' and j.state='done' and j.generation=q.dispatch_generation
+           where q.sandbox_id=$1 and q.request_id=$2 and q.owner_id=$3 and q.org_id=$4 and q.result_enc is not null`,
+          [input.id, requestId, caller.userId, target.org_id],
+        );
+        if (accepted) {
+          if (accepted.input_hash !== hash)
+            throw new VaultError("conflict", "Reuse the original request_id and identical input.");
+          return accepted;
+        }
+      }
       const refusal = sandboxControlRefusal(
         {
           ...target,
@@ -286,14 +326,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         throw new VaultError("conflict", "Reuse the original request_id and identical input.");
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
-          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
+          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids, ${unresolvedResume("s")} as resuming from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
            and deleted_at is null and expires_at>now()
            and (status='stopping' or (stop_requested_at is null
-             and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_PENDING})))) for update`,
+             and (status in ('ready','running','stopped') or (status='starting' and (${LAUNCH_PENDING} or ${unresolvedResume("s")}))))) for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
-        if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        if (!locked || (resumeOnly && locked.status !== "stopped" && !locked.resuming))
+          throw new VaultError("conflict", "Sandbox cannot accept a retained resume prompt.");
         if (locked.status === "stopping") {
           // WARNING: Reading the journal before taking the lock can miss a concurrent stop admission.
           const pending = await tx.query(
@@ -301,7 +342,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             [input.id],
           );
           if (!pending.rows.length) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
-        } else if (locked.status !== "stopped") {
+        } else if (locked.status !== "stopped" && !locked.resuming) {
           const checkpoint = (
             await tx.query<{ merge_stop: boolean }>(
               `select p.merge_stop from public.runtime_checkpoints p join public.runtime_enrolments r
@@ -334,7 +375,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         saved = (
           await tx.query<Entry>(
             `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,model,queued_generation)
-           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,(select lifecycle_generation from public.sandboxes where id=$1)) returning *`,
+           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,(select lifecycle_generation from public.sandboxes where id=$1)-$12) returning *`,
             [
               input.id,
               requestId,
@@ -347,6 +388,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               sealed,
               currentConversation ?? `first_${requestId}`,
               input.model ?? target.model,
+              locked.resuming ? 1 : 0,
             ],
           )
         ).rows[0]!;
@@ -357,10 +399,17 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       return saved;
     });
   }
-  async function accept(caller: Caller, input: RuntimeFollowupInput) {
+  async function accept(caller: Caller, input: RuntimeFollowupInput, { resumeOnly = false } = {}) {
     const requestId = input.request_id?.toLowerCase() ?? randomUUID();
-    const entry = await persist(caller, { ...input, request_id: requestId });
+    const entry = await persist(
+      caller,
+      { ...input, request_id: requestId },
+      undefined,
+      resumeOnly,
+      Boolean(input.request_id),
+    );
     if (!entry) return null;
+    if ("historical" in entry) return entry.historical;
     if (entry.result_enc) return JSON.parse(await decryptSecret(entry.result_enc, key));
     if (entry.state === "failed")
       throw new VaultError("conflict", "Queued prompt was cancelled; inspect sandbox status.");
@@ -494,7 +543,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
            from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
              and q.dispatch_until<=clock_timestamp()
              and (${FAILED_DOCKER_WAKE} or (
-               ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+               s.provider='boat' and s.boat_runtime
                and s.activity_lease_id is distinct from q.request_id
                and exists(select 1 from public.runtime_resumes r
                  where r.sandbox_id=q.sandbox_id and r.request_id=q.request_id and r.receipt is null)
