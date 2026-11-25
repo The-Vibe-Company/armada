@@ -101,9 +101,7 @@ export default async function RoutinesPage({
                   ? "Paused after 3 failed launches"
                   : routineReasonHelp(item.pauseReason)}
               </span>
-              <span className="block text-xs md:hidden">
-                Open its runs to see what failed, fix it, then turn it back on.
-              </span>
+              <span className="block text-xs">See runs to find the cause.</span>
             </>
           ) : (
             scheduleLabel(item)
