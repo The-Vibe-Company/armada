@@ -52,6 +52,19 @@ export const initialChatHistory = {
 
 export type ChatHistory = typeof initialChatHistory;
 
+const RUNTIME_CURSOR = /^(ar1_[0-9a-f-]+_)(0|[1-9][0-9]*)$/i;
+
+function newerRuntimeCursor(current: string | null, incoming: string | null) {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  const a = RUNTIME_CURSOR.exec(current);
+  const b = RUNTIME_CURSOR.exec(incoming);
+  if (a && b && a[1] === b[1]) {
+    return BigInt(b[2]!) >= BigInt(a[2]!) ? incoming : current;
+  }
+  return incoming;
+}
+
 function runtimeCursorSequence(cursor: string | null, sandboxId: string) {
   const prefix = `ar1_${sandboxId}_`;
   if (!cursor?.startsWith(prefix)) return null;
@@ -67,7 +80,7 @@ export function applyInlineEvent(history: ChatHistory, sandboxId: string, event:
   }
   const events = mergeEvents(history.events, [event]);
   const cursor =
-    historySeq !== null && seq !== null && seq > historySeq ? `ar1_${sandboxId}_${sequence}` : history.cursor;
+    historySeq !== null && seq !== null && seq === historySeq + 1n ? `ar1_${sandboxId}_${sequence}` : history.cursor;
   return { ...history, events, cursor } satisfies ChatHistory;
 }
 
@@ -87,7 +100,7 @@ export function applyChatPage(
   }
   return {
     events,
-    cursor: older ? history.cursor : page.cursor || history.cursor,
+    cursor: older ? history.cursor : newerRuntimeCursor(history.cursor, page.cursor),
     olderCursor: direction === "forward" ? history.olderCursor : page.hasMore ? (page.olderCursor ?? null) : null,
     loaded: true,
   } satisfies typeof initialChatHistory;

@@ -11,7 +11,7 @@ export type ChatStreamFrame =
 
 export type ChatStreamHandlers = {
   onFrame: (frame: ChatStreamFrame) => void;
-  onOpen?: () => void;
+  onOpen?: (info: { fromTail: boolean }) => void;
   onDisconnect?: () => void;
 };
 
@@ -70,6 +70,7 @@ export function chatEventStream(sandboxId: string, handlers: ChatStreamHandlers)
     },
     connect() {
       if (source || typeof EventSource === "undefined" || Date.now() < retryAt) return;
+      const fromTail = eventLogCursor === null;
       const query = new URLSearchParams({ sandbox: sandboxId, cursor: eventLogCursor ?? "tail" });
       const connection = new EventSource(`${streamSandboxEvents.route.path}?${query}`);
       source = connection;
@@ -85,7 +86,7 @@ export function chatEventStream(sandboxId: string, handlers: ChatStreamHandlers)
         deadline = undefined;
         if (!opened) {
           opened = true;
-          handlers.onOpen?.();
+          handlers.onOpen?.({ fromTail });
         }
       };
       deadline = setTimeout(unavailable, CONNECT_TIMEOUT_MS);

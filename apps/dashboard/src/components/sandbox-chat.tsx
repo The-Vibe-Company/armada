@@ -145,6 +145,7 @@ type PollSession = {
   active: boolean;
   reading: boolean;
   synced: boolean;
+  pendingCatchUp: boolean;
   bufferedFrames: ChatStreamFrame[];
   stream: ReturnType<typeof chatEventStream>;
   paused: boolean;
@@ -282,10 +283,9 @@ export function SandboxChat(props: Props) {
       if (frame.kind === "runtime_event") {
         if (!frame.event) return;
         const next = applyInlineEvent(currentHistory.current, sandboxId, frame.event, frame.sequence);
-        if (next !== currentHistory.current) {
-          currentHistory.current = next;
-          setHistory(next);
-        }
+        if (next === currentHistory.current) return;
+        currentHistory.current = next;
+        setHistory(next);
         if (frame.event.kind === "prompt") {
           const promptEvent = frame.event;
           const ended =
@@ -442,12 +442,19 @@ export function SandboxChat(props: Props) {
       if (!session || !isCurrent(session) || session.paused || document.hidden) return;
       if (session.reading) return;
       session.reading = true;
+      session.pendingCatchUp = false;
       clearTimeout(session.timer);
       session.timer = undefined;
       try {
         const result = await read(session);
         if (!isCurrent(session) || document.hidden) return;
-        if (result.kind === "aborted") return;
+        if (result.kind === "aborted") {
+          if (session.synced && session.bufferedFrames.length > 0) {
+            for (const frame of session.bufferedFrames.splice(0)) applyStreamFrame(session, frame);
+          }
+          if (session.pendingCatchUp) session.timer = setTimeout(() => void readUpdate(), 0);
+          return;
+        }
         if (result.kind === "success") {
           session.retries = 0;
           session.activeSandbox = result.active;
@@ -462,15 +469,18 @@ export function SandboxChat(props: Props) {
           const keepAlive = session.activeSandbox || session.working || hasActiveOutboxRef.current;
           if (!keepAlive) session.stream.close();
           else if (props.configured) session.stream.connect();
-          if (result.more) {
+          if (result.more || session.pendingCatchUp) {
             session.timer = setTimeout(() => void readUpdate(), 0);
-          } else if (!session.stream.connected && (keepAlive || pendingRuntimePrompt.current)) {
+          } else if (pendingRuntimePrompt.current || (!session.stream.connected && keepAlive)) {
             session.timer = setTimeout(
               () => void readUpdate(),
               session.working || hasActiveOutboxRef.current ? WORKING_POLL_MS : IDLE_POLL_MS,
             );
           }
           return;
+        }
+        if (session.synced && session.bufferedFrames.length > 0) {
+          for (const frame of session.bufferedFrames.splice(0)) applyStreamFrame(session, frame);
         }
         if (result.kind === "access-ended") {
           session.paused = true;
@@ -554,16 +564,23 @@ export function SandboxChat(props: Props) {
       active: true,
       reading: false,
       synced: false,
+      pendingCatchUp: false,
       bufferedFrames: [],
       stream: chatEventStream(sandboxId, {
-        onOpen: () => {
+        onOpen: ({ fromTail }) => {
           if (!isCurrent(session) || session.paused || document.hidden) return;
-          clearTimeout(session.timer);
-          session.timer = undefined;
+          if (!pendingRuntimePrompt.current) {
+            clearTimeout(session.timer);
+            session.timer = undefined;
+          }
+          if (fromTail && session.synced) {
+            if (session.reading) session.pendingCatchUp = true;
+            else void tick();
+          }
         },
         onFrame: (frame) => {
           if (!isCurrent(session) || session.paused || document.hidden) return;
-          if (!session.synced) {
+          if (!session.synced || session.reading) {
             session.bufferedFrames.push(frame);
             return;
           }
@@ -644,7 +661,7 @@ export function SandboxChat(props: Props) {
       : undefined;
     const previous = pendingRuntimePrompt.current;
     pendingRuntimePrompt.current = oldest;
-    if (oldest && oldest !== previous && !sessionRef.current?.stream.connected) void tick();
+    if (oldest && oldest !== previous) void tick();
   }, [props.pinnedModel, tick, unconfirmed]);
   useEffect(() => {
     if (unconfirmed.length === outbox.length) return;

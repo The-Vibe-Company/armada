@@ -30,12 +30,12 @@ test("connects at cursor=tail, parses inline runtime_event and transition frames
   globalThis.EventSource = BrowserStream as unknown as typeof EventSource;
   setSystemTime(new Date(0));
   const frames: ChatStreamFrame[] = [];
-  let opens = 0;
+  const opens: boolean[] = [];
   let disconnects = 0;
   const stream = chatEventStream(sandboxId, {
     onFrame: (frame) => frames.push(frame),
-    onOpen: () => {
-      opens += 1;
+    onOpen: ({ fromTail }) => {
+      opens.push(fromTail);
     },
     onDisconnect: () => {
       disconnects += 1;
@@ -49,7 +49,7 @@ test("connects at cursor=tail, parses inline runtime_event and transition frames
 
     first!.onopen!();
     expect(stream.connected).toBe(true);
-    expect(opens).toBe(1);
+    expect(opens).toEqual([true]);
 
     first!.onmessage!({
       lastEventId: "9007199254740993",
@@ -92,6 +92,7 @@ test("connects at cursor=tail, parses inline runtime_event and transition frames
     const second = connections[1]!;
     expect(second.url).toBe(`/api/v1/events?sandbox=${sandboxId}&cursor=9007199254740993`);
     second.onopen!();
+    expect(opens).toEqual([true, false]);
     first!.onmessage!({
       lastEventId: "9007199254740994",
       data: JSON.stringify({ id: "9007199254740994", sequence: null, kind: "transition", status: "stopped" }),

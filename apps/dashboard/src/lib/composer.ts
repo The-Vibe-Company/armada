@@ -42,8 +42,14 @@ export const UNCONFIRMED_ACTION = "This action could not be confirmed. Check the
 export const UNCERTAIN_SEND_MESSAGE =
   "The message has not been confirmed and may still run. Keep it unchanged and check the sandbox status before retrying.";
 
+const UNCERTAIN_COMPOSER_ERRORS = new Set([
+  UNCONFIRMED_ACTION,
+  UNCERTAIN_SEND_MESSAGE,
+  describeFailure("outcome_unknown")?.hint,
+]);
+
 export function isDefiniteComposerRefusal(outcome: { ok: boolean; error?: string }) {
-  return !outcome.ok && outcome.error !== UNCONFIRMED_ACTION && outcome.error !== UNCERTAIN_SEND_MESSAGE;
+  return !outcome.ok && !UNCERTAIN_COMPOSER_ERRORS.has(outcome.error);
 }
 
 /** Only curated guidance reaches the composer, never an arbitrary API/provider sentence. */

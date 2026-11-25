@@ -554,11 +554,81 @@ test("SandboxChat connects SSE cursor=tail in parallel with history, stitches bu
     expect(renderer.root.findByType("header").findAllByProps({ "data-pulse": true })).toHaveLength(0);
 
     await act(async () => {
+      streams[0]!.onmessage!({
+        lastEventId: "13",
+        data: JSON.stringify({
+          id: "13",
+          sandboxId,
+          sequence: "1",
+          kind: "runtime_event",
+          event: {
+            id: "ev-1",
+            at: 1,
+            kind: "prompt",
+            text: "hi",
+            status: "running",
+            promptId: "p1",
+            conversationId: "c1",
+          },
+        }),
+      });
+    });
+    expect(renderer.root.findByType("header").findAllByProps({ "data-pulse": true })).toHaveLength(0);
+
+    await act(async () => {
       streams[0]!.onerror!();
     });
     expect(scheduledPolls).toEqual([3_000]);
   } finally {
     globalThis.setTimeout = origSetTimeout;
+    await act(async () => renderer.unmount());
+  }
+});
+
+test("SandboxChat runs a catch-up read when a cursor=tail stream opens after history already synced", async () => {
+  const sandboxId = "44444444-4444-4444-8444-444444444444";
+  const streams: Array<{ onopen?: () => void }> = [];
+  class FakeEventSource {
+    onopen?: () => void;
+    onerror?: () => void;
+    onmessage?: (message: { lastEventId: string; data: string }) => void;
+    constructor(readonly url: string) {
+      streams.push(this);
+    }
+    close() {}
+  }
+  const fetchedUrls: string[] = [];
+  installDom(async (input) => {
+    fetchedUrls.push(String(input));
+    return Response.json({
+      status: "ready",
+      configured: true,
+      cursor: `ar1_${sandboxId}_${fetchedUrls.length}`,
+      hasMore: false,
+      backward: fetchedUrls.length === 1,
+      prompt: { state: "finished", conversationId: "c1" },
+      events:
+        fetchedUrls.length === 2
+          ? [{ id: "ev-gap", at: 2, kind: "message", text: "caught up", partial: false, tools: [] }]
+          : [],
+    });
+  });
+  /* oxlint-disable landmines-testing/no-test-doubles -- Supply deterministic EventSource for tail-open catch-up verification. */
+  globalThis.EventSource = FakeEventSource as unknown as typeof EventSource;
+  /* oxlint-enable landmines-testing/no-test-doubles */
+
+  let renderer!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      renderer = mountChat(sandboxId, "ready", router);
+    });
+    expect(fetchedUrls).toHaveLength(1);
+    await act(async () => {
+      streams[0]!.onopen!();
+    });
+    expect(fetchedUrls).toHaveLength(2);
+    expect(JSON.stringify(renderer.toJSON())).toContain("caught up");
+  } finally {
     await act(async () => renderer.unmount());
   }
 });

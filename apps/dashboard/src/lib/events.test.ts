@@ -118,6 +118,17 @@ describe("events", () => {
     expect(next.cursor).toBe(`ar1_${sandboxId}_3`);
     expect(next.events.map((event) => event.id)).toEqual(["m-2", "m-3"]);
 
+    const gapped = applyInlineEvent(next, sandboxId, message("m-5", "after-gap"), "5");
+    expect(gapped.cursor).toBe(`ar1_${sandboxId}_3`);
+    expect(gapped.events.map((event) => event.id)).toEqual(["m-2", "m-3", "m-5"]);
+
+    const olderPage = applyChatPage(
+      next,
+      { events: [message("m-2", "coalesced")], cursor: `ar1_${sandboxId}_2`, hasMore: false },
+      "forward",
+    )!;
+    expect(olderPage.cursor).toBe(`ar1_${sandboxId}_3`);
+
     const legacy = applyChatPage(
       initialChatHistory,
       { events: [message("a", "one")], cursor: "opaque-1", hasMore: false },
