@@ -167,7 +167,8 @@ export class RelayPtyManager {
         } catch {}
       };
       sig("SIGHUP");
-      void s.proc.exited.finally(this.after(2_000, () => !s.exited && sig("SIGKILL")));
+      const cancelKill = this.after(2_000, () => !s.exited && sig("SIGKILL"));
+      void s.proc.exited.then(cancelKill, cancelKill);
     }
     if (reason) this.send({ type: OP.CLOSE, streamId: id, code: 0, reason });
   }

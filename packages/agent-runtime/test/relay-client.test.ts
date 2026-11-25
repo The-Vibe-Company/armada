@@ -1,6 +1,29 @@
 import { expect, test } from "bun:test";
 import * as r from "@armada/core/relay";
 import { createRuntimeRelay, type RelaySocket, RuntimeRelayClient } from "../src/relay-client.ts";
+import type { PtyCallbacks, PtyProcess } from "../src/relay-pty.ts";
+import type { LoopbackAddress, TcpCallbacks, TcpSocket } from "../src/relay-tcp.ts";
+
+type FakePty = PtyProcess & {
+  cwd: string;
+  env: Record<string, string>;
+  cols: number;
+  rows: number;
+  cb: PtyCallbacks;
+  closed: boolean;
+  written: number[];
+  resizes: [number, number][];
+  limit: number;
+  finish(c: number): void;
+  kill(s: NodeJS.Signals): void;
+};
+type FakeTcp = TcpSocket & {
+  host: LoopbackAddress;
+  port: number;
+  cb: TcpCallbacks;
+  paused: boolean;
+  destroyed: boolean;
+};
 
 const OP = r.RELAY_OPCODE;
 const session = { sandboxId: "sbx-1", epoch: "7", runtimeToken: `armada_runtime_${"a".repeat(64)}` };
@@ -24,8 +47,8 @@ function harness(autoHup = true) {
   };
   const sockets: { url: string; headers: Record<string, string>; ws: Ws }[] = [];
   const sigs: [number, NodeJS.Signals][] = [];
-  const ptys: any[] = [];
-  const tcps: any[] = [];
+  const ptys: FakePty[] = [];
+  const tcps: FakeTcp[] = [];
   let pid = 1000;
   const client = new RuntimeRelayClient("https://armada.example", session, {
     cwd: "/tmp",
@@ -204,10 +227,17 @@ test("reconnect backoff 1s->10s, 20s heartbeat, 4401 teardown, builder opt-out",
   const ping = active.sent.pop();
   expect(ping?.type).toBe(OP.PING);
   if (ping?.type === OP.PING) active.rx({ type: OP.PONG, streamId: 0, ...(ping.nonce ? { nonce: ping.nonce } : {}) });
-  active.rx({ type: OP.OPEN_PTY, streamId: 1, cols: 80, rows: 24 });
-  active.rx({ type: OP.OPEN_TCP, streamId: 2, port: 5000 });
+  h.fire(20_000);
+  h.fire(20_000);
+  await tick();
+  h.fire(1_000);
+  await tick();
+  const next = h.sockets.at(-1)!.ws;
+  next.open();
+  next.rx({ type: OP.OPEN_PTY, streamId: 1, cols: 80, rows: 24 });
+  next.rx({ type: OP.OPEN_TCP, streamId: 2, port: 5000 });
   h.tcps[0]!.cb.connect();
-  active.close(4401);
+  next.close(4401);
   await run;
   expect([h.client.revoked, h.ptys[0]!.closed, h.tcps[0]!.destroyed, h.timers.size]).toEqual([true, true, true, 0]);
   expect(h.sigs).toEqual([[h.ptys[0]!.pid, "SIGHUP"]]);

@@ -98,14 +98,15 @@ export class RelayTcpManager {
   }
   private dial(s: Tcp, host: LoopbackAddress) {
     let cur: TcpSocket | undefined;
-    const live = () => this.streams.get(s.id) === s && s.sock === cur;
+    let active = true;
+    const live = () => active && this.streams.get(s.id) === s && (!s.sock || s.sock === cur);
     const eof = () => {
       if (!live()) return;
       s.state = 2;
       this.flushOut(s);
     };
     try {
-      cur = this.host.connect(host, s.port, {
+      const sock = this.host.connect(host, s.port, {
         connect: () => {
           if (!live()) return;
           s.state = 1;
@@ -122,15 +123,20 @@ export class RelayTcpManager {
         error: (err) => {
           if (!live()) return;
           if (!s.state && !s.v6 && err.code === "ECONNREFUSED") {
+            active = false;
             s.v6 = true;
             s.sock = undefined;
             cur?.destroy();
             return this.dial(s, "::1");
           }
-          this.close(s.id, !s.state ? (err.code === "ETIMEDOUT" ? "timeout" : "refused") : "eof");
+          let reason: r.RelayCloseReason = "eof";
+          if (!s.state) reason = err.code === "ETIMEDOUT" ? "timeout" : "refused";
+          this.close(s.id, reason);
         },
       });
-      s.sock = cur;
+      cur = sock;
+      if (active && this.streams.get(s.id) === s) s.sock = cur;
+      else cur.destroy();
     } catch {
       this.close(s.id, "refused");
     }
