@@ -369,10 +369,8 @@ test.each([
 
 function cancellationTransport() {
   return {
-    mkdtemp: async () => "/tmp/armada-fixture",
     chmod: async () => {},
     writeFile: async () => {},
-    rm: async () => {},
     readPublicKey: async () => "ssh-ed25519 PUBLIC",
     spawn: (() => {
       const child = new EventEmitter() as ChildProcess;
