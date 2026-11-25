@@ -12,6 +12,8 @@ import {
   shellQuote,
 } from "@armada/core";
 import {
+  ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleHelpIcon,
@@ -427,11 +429,6 @@ type RowDialog = "limits" | "rename" | "replace" | "remove" | "test" | null;
 
 const STATE_ICON = { ok: CircleCheckIcon, warn: CircleHelpIcon, error: CircleAlertIcon } as const;
 
-/**
- * One account as a dense row (#805, ready for the Build skeleton of #808): name with a one-line meta and its scope
- * as a tag, its state in plain words, and the one expected action on the row: Reconnect when it cannot run, Make
- * default when it could be the default. Rename, replace and remove are rarer and sit in the row's menu.
- */
 export function AccountRow({
   account,
   previousDefault,
@@ -468,6 +465,8 @@ export function AccountRow({
   const exhaustion = modelsPageExhaustion(account, now);
   const StateIcon = STATE_ICON[state.tone];
   const headingId = `account-${account.id}`;
+  const running = account.runningAgents ?? 0;
+  const limit = account.maxAgents;
   const expiry = account.expiresAt
     ? Date.parse(account.expiresAt) <= now
       ? `Expired ${day(account.expiresAt)}`
@@ -487,59 +486,64 @@ export function AccountRow({
 
   return (
     <section
-      className="min-w-0 overflow-hidden rounded-[10px] border bg-card transition-colors hover:border-foreground/25"
+      className="relative flex min-w-0 flex-col rounded-[10px] border bg-card hover:border-foreground/25"
       data-account={account.name}
       aria-labelledby={headingId}
     >
-      <button
-        ref={detailTrigger}
-        type="button"
-        aria-haspopup="dialog"
-        aria-expanded={expanded}
-        aria-controls={`${headingId}-detail`}
-        onClick={() => setExpanded(!expanded)}
-        className="flex min-h-[84px] w-full items-start gap-3 p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
-      >
+      <div className="flex items-start gap-3 px-4 pt-4">
         <ProviderMark kind={account.kind} />
-        <span className="min-w-0 flex-1">
-          <span id={headingId} className="block truncate text-sm font-medium">
+        <div className="min-w-0 flex-1">
+          <h3 id={headingId} className="truncate text-sm font-medium" title={account.name}>
             {account.name}
-          </span>
-          <span className="block text-xs text-muted-foreground">
-            {info.label} · {account.scope === "user" ? "Only you" : orgName}
-          </span>
-          {spendLabel && (
-            <span className="mt-1 block text-xs break-words text-muted-foreground tabular-nums">
-              {spokenSpendLabel === spendLabel ? (
-                spendLabel
-              ) : (
-                <>
-                  <span aria-hidden="true">{spendLabel}</span>
-                  <span className="sr-only">{spokenSpendLabel}</span>
-                </>
-              )}
-            </span>
-          )}
-          {exhaustion && <span className="block text-xs text-foreground">{exhaustion}</span>}
-        </span>
-        <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
-          {state.label === "Ready" ? "Connected" : state.label}
-        </span>
-      </button>
-      <button
-        type="button"
-        onClick={() => setExpanded(true)}
-        className="flex min-h-[46px] w-full flex-wrap items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2.5 text-left text-xs text-muted-foreground hover:bg-muted/40"
-        aria-label={`View ${account.name} details`}
-      >
-        <span>
-          {info.harnessLabel} · {account.scope === "user" ? "Personal" : orgName}
-        </span>
-        <span className="font-mono">
-          {account.runningAgents ?? 0}
-          {account.maxAgents == null ? " agents" : ` / ${account.maxAgents} agents`}
-        </span>
-      </button>
+          </h3>
+          <p className="text-xs text-muted-foreground">{info.label}</p>
+        </div>
+        <Badge variant="secondary" className="max-w-[40%] min-w-0">
+          <span className="truncate">{account.scope === "user" ? "Personal" : orgName}</span>
+        </Badge>
+      </div>
+      <div className="flex-1 space-y-1.5 px-4 py-3 text-xs">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+          <span className="text-muted-foreground">Agents running</span>
+          <span className="font-mono tabular-nums">{limit == null ? running : `${running} / ${limit}`}</span>
+        </div>
+        {limit != null && limit > 0 && (
+          <div aria-hidden className="h-1 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn("h-full rounded-full", running >= limit ? "bg-warning" : "bg-foreground/60")}
+              style={{ width: `${Math.min(100, (running / limit) * 100)}%` }}
+            />
+          </div>
+        )}
+        {spendLabel && (
+          <p className="break-words text-muted-foreground tabular-nums">
+            {spokenSpendLabel === spendLabel ? (
+              spendLabel
+            ) : (
+              <>
+                <span aria-hidden="true">{spendLabel}</span>
+                <span className="sr-only">{spokenSpendLabel}</span>
+              </>
+            )}
+          </p>
+        )}
+        {exhaustion && <p>{exhaustion}</p>}
+      </div>
+      <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 border-t px-4 py-2 text-xs">
+        <span className={STATE_TONE[state.tone]}>{state.label === "Ready" ? "Connected" : state.label}</span>
+        <button
+          ref={detailTrigger}
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={expanded}
+          aria-controls={expanded ? `${headingId}-detail` : undefined}
+          aria-label={`View ${account.name} details`}
+          onClick={() => setExpanded(true)}
+          className="inline-flex items-center gap-1 font-medium after:absolute after:inset-0 after:rounded-[10px] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-ring"
+        >
+          Details <ChevronRightIcon aria-hidden className="size-3.5" />
+        </button>
+      </div>
       <CatalogDrawer
         open={expanded}
         onOpenChange={setExpanded}
@@ -566,10 +570,7 @@ export function AccountRow({
               )}
             </div>
             <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-              <span>
-                {kindNote(account) ?? (info.billing === "subscription" ? "Subscription" : "API key")} ·{" "}
-                {account.scope === "user" ? "only you" : orgName}
-              </span>
+              <span>{kindNote(account) ?? (info.billing === "subscription" ? "Subscription" : "API key")}</span>
               {expiry && <span className={cn(expiry.startsWith("Expired") && "text-destructive")}>{expiry}</span>}
             </p>
           </div>
@@ -2274,28 +2275,28 @@ function PersonalDefaultSentence({
       setPending(false);
     }
   };
-  const word =
-    "rounded-sm border-b border-dotted text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring";
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b py-4 last:border-0">
       <div className="min-w-0">
         <p className="flex flex-col gap-0.5 text-[13px]">
           <span className="text-xs text-muted-foreground">{HARNESS_LABELS[harness]}</span>
           {account ? (
-            <>
-              <button
-                type="button"
-                className={cn(word, !catalogModel && "font-mono", "wrap-anywhere text-[13px]")}
-                onClick={(event) => {
-                  opener.current = event.currentTarget;
-                  setOpen(true);
-                }}
-                aria-label={`Change default model for ${HARNESS_LABELS[harness]}`}
-                aria-description={modelLabel}
-              >
-                {modelLabel}
-              </button>{" "}
-            </>
+            <button
+              type="button"
+              className={cn(
+                "inline-flex min-h-8 max-w-full items-center gap-1.5 self-start rounded-[6px] border bg-background px-2.5 py-1 text-left text-[13px] hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
+                !catalogModel && "font-mono",
+              )}
+              onClick={(event) => {
+                opener.current = event.currentTarget;
+                setOpen(true);
+              }}
+              aria-label={`Change default model for ${HARNESS_LABELS[harness]}`}
+              aria-description={modelLabel}
+            >
+              <span className="min-w-0 wrap-anywhere">{modelLabel}</span>
+              <ChevronDownIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+            </button>
           ) : resolved.state === "missing" ? (
             "has an unavailable default account"
           ) : resolved.state === "ambiguous" ? (

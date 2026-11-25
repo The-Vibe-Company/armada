@@ -354,17 +354,16 @@ function row(
       </div>
     ),
     fact: (
-      <div className="flex flex-wrap gap-1.5">
-        <span className="rounded border bg-background px-2 py-0.5">{resources.usage}</span>
-        <span className="rounded border bg-background px-2 py-0.5">Each {resources.limits}</span>
-        <span className="rounded border bg-background px-2 py-0.5">
-          Disk free: {host.diskFreeBytes == null ? "unknown" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB`}
-        </span>
-        <span className="rounded border bg-background px-2 py-0.5">
-          Stopped space:{" "}
-          {host.stoppedSandboxBytes == null ? "unknown" : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB`}
-        </span>
-      </div>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 [&_dd]:font-mono [&_dd]:wrap-anywhere [&_dd]:tabular-nums">
+        <dt>Running / capacity</dt>
+        <dd>{resources.usage}</dd>
+        <dt>Per sandbox</dt>
+        <dd>{resources.limits}</dd>
+        <dt>Disk free</dt>
+        <dd>{host.diskFreeBytes == null ? "unknown" : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB`}</dd>
+        <dt>Stopped space</dt>
+        <dd>{host.stoppedSandboxBytes == null ? "unknown" : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB`}</dd>
+      </dl>
     ),
     actionLabel: "Edit",
     detail: (

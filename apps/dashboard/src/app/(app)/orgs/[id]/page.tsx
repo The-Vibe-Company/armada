@@ -63,7 +63,7 @@ export default async function OrgPage({ params, searchParams }: Props) {
   const invitations = isAdmin ? await readInvitations(viewer, id, now) : null;
 
   return (
-    <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-7">
+    <div className="mx-auto flex w-full max-w-[920px] flex-col gap-7">
       <PageHeader title={membership.org.name}>
         {isAdmin && <InviteMemberDialog org={id} action={inviteMember} />}
       </PageHeader>
