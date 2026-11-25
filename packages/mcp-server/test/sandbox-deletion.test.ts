@@ -15,12 +15,13 @@ import { memorySessionStore } from "../../cli/src/session.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
-import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeCheckpoint, RuntimeCheckpointRejected } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime.fixture.ts";
+import { runClaimedStop } from "./stop-job.fixture.ts";
 import { call, ENCRYPTION_KEY, harness, PUBLIC_URL, SECRETS } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -610,8 +611,15 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
         },
         modalTokensFor: async () => ({ tokenId: "modal_id", tokenSecret: "modal_secret", scope: "user" }),
         modalProviderFor: async () => modalProvider(),
+        runtimeProviderFor: async (host) => {
+          if (typeof host === "string") throw Error("Unexpected Boat runtime");
+          return host;
+        },
       }),
       now: () => server.clock.now,
+      async runtimeStopCheckpoint() {
+        throw new RuntimeCheckpointRejected();
+      },
     };
     const launch = async (name: string, lostCreate = false) => {
       const machine: Machine = {
@@ -636,8 +644,8 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
       await createSqlModalStore(db, scope).reserve(`request-${name}`, machine);
       const id = crypto.randomUUID();
       await db.query(
-        `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-        select $1,id,$2,$3,'modal',$4,'claude',$5 from goldens where name='delete-modal'`,
+        `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,runtime_transport)
+        select $1,id,$2,$3,'modal',$4,'claude',$5,'dialout' from goldens where name='delete-modal'`,
         [id, p.org, p.owner, machine.info.id, lostCreate ? "failed" : "running"],
       );
       return { id, machine: machine.info.id };
@@ -663,10 +671,18 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
       ).rows[0];
     const phase = async (machine: string) => (await createSqlModalStore(db, scope).get(machine)).phase;
 
+    const stop = async (id: string) => {
+      const receipt = await control("sandbox/stop", "POST", { id });
+      expect(receipt.status).toBe(200);
+      expect(await receipt.json()).toMatchObject({ id, status: "stopping" });
+      const { job, result } = await runClaimedStop(db, async () =>
+        Object.assign(modalProvider().provider, { captureRuntimeWork: async () => ({ status: "clean" as const }) }),
+      );
+      expect(job.sandbox_id).toBe(id);
+      expect(result.status).toBe("done");
+    };
     const first = await launch("first");
-    const stopped = await control("sandbox/stop", "POST", { id: first.id });
-    expect(stopped.status).toBe(200);
-    expect(await stopped.json()).toMatchObject({ id: first.id, status: "stopped" });
+    await stop(first.id);
     expect(await row(first.id)).toEqual({ status: "stopped", leased: false });
     const deleted = await control(`sandboxes/${first.id}`, "DELETE");
     expect(deleted.status).toBe(200);
@@ -677,7 +693,7 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
     expect(sdk.filter((x) => x.startsWith("delete:")).toSorted()).toEqual(["delete:prior-first"]);
 
     const second = await launch("second");
-    expect((await control("sandbox/stop", "POST", { id: second.id })).status).toBe(200);
+    await stop(second.id);
     // A missing App is not proof the sandbox is gone: nothing is published or written.
     missingApps = 1;
     expect((await control(`sandboxes/${second.id}`, "DELETE")).status).toBeGreaterThanOrEqual(500);
@@ -698,7 +714,7 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
 
     // One transient image timeout no longer costs the caller a second DELETE.
     const third = await launch("third");
-    expect((await control("sandbox/stop", "POST", { id: third.id })).status).toBe(200);
+    await stop(third.id);
     imageTimeouts = 1;
     expect((await control(`sandboxes/${third.id}`, "DELETE")).status).toBe(200);
     expect(await row(third.id)).toEqual({ status: "deleted", leased: false });
@@ -733,7 +749,7 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
     await modalStore.removeImage("retired-elsewhere");
     expect(await modalStore.tombstoneSources()).toContain(retired.machine);
     const target = await launch("target");
-    expect((await control("sandbox/stop", "POST", { id: target.id })).status).toBe(200);
+    await stop(target.id);
     const entered = Promise.withResolvers<void>();
     const released = Promise.withResolvers<void>();
     heldImage = { imageId: "retired-elsewhere", entered: entered.resolve, released: released.promise };

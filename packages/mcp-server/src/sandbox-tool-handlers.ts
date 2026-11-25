@@ -15,6 +15,7 @@ import {
   RuntimeReconciliationConflict,
   SandboxStopTargetChanged,
 } from "./runtime-reconciliation-conflict.ts";
+import { requireGenerationHeadroom } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
 import { ToolError } from "./tool-error.ts";
@@ -239,6 +240,9 @@ export function configureTools(
         return { id: found.id, status: found.status };
       if (found.status === "deleted") throw new ToolError("conflict", `Sandbox '${found.id}' is deleted.`);
       signal?.throwIfAborted();
+      if (found.lifecycleGeneration === undefined)
+        throw new VaultError("conflict", "Sandbox generation is unavailable.");
+      const stopGeneration = requireGenerationHeadroom(found.lifecycleGeneration, 1);
       const needsCheckpoint =
         found.ownerId === caller.userId &&
         runtimeBridgeTarget(found) &&
@@ -263,8 +267,6 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      if (found.lifecycleGeneration === undefined)
-        throw new VaultError("conflict", "Sandbox generation is unavailable.");
       const status: SandboxStatus = found.status === "failed" ? "failed" : "stopping";
       await data.sandboxes.update(found.id, {
         ...stopAdmission,
@@ -275,7 +277,7 @@ export function configureTools(
         stopRequested: true,
         advanceGeneration: true,
         activityToken: crypto.randomUUID(),
-        expectedGeneration: found.lifecycleGeneration,
+        expectedGeneration: stopGeneration,
         ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
       });
       return {

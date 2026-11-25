@@ -23,6 +23,7 @@ import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { requiresMissingMachineObservation, usesDiskStopJob } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
+import { requireGenerationHeadroom } from "./sandbox-activity.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON, isFailedModalLaunch, MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
@@ -523,7 +524,7 @@ export async function enqueueBoatStop(tx: Sql, id: string, generation: string | 
   await createJobsStore(tx).enqueue(
     "stop",
     id,
-    Number(generation),
+    requireGenerationHeadroom(generation, 0),
     "boat",
     null,
     { orgId: target.org_id, deadline: new Date(target.deadline), maxAttempts: 60 },
@@ -613,7 +614,7 @@ export async function enqueueModalStop(
   const jobId = await createJobsStore(tx).enqueue(
     "stop",
     sandboxId,
-    Number(generation),
+    requireGenerationHeadroom(generation, 0),
     "modal-stop",
     null,
     {
