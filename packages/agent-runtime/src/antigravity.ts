@@ -12,16 +12,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { redactKnownTokens } from "@armada/core";
+import { type AntigravityCredential, antigravitySecrets } from "@armada/core/antigravity-credential";
 import { AcpDriver } from "./acp.ts";
 import { HarnessError } from "./errors.ts";
 import { githubRuntimeEnvironment } from "./github-tools.ts";
 import type { Journal } from "./journal.ts";
 import type { Driver, DriverContext, DriverEvent } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
-
-type AntigravityCredential =
-  | { method: "google"; token: Record<string, unknown> }
-  | { method: "gemini-api-key"; apiKey: string };
 
 const appDataDir = "antigravity-acp";
 const caBundles = [
@@ -31,12 +28,6 @@ const caBundles = [
   "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
   "/etc/ssl/cert.pem",
 ];
-
-const secretLeaves: (value: unknown) => string[] = (value) => {
-  if (typeof value === "string") return [value];
-  if (value && typeof value === "object") return Object.values(value).flatMap(secretLeaves);
-  return [];
-};
 
 function withDirectory(path: string, create: boolean, use: (anchoredPath: string) => void) {
   if (create) {
@@ -57,13 +48,13 @@ function withDirectory(path: string, create: boolean, use: (anchoredPath: string
   }
 }
 
-function writeToken(directory: string, token: Record<string, unknown>) {
+function writeToken(directory: string, token: Extract<AntigravityCredential, { method: "google" }>["token"]) {
   const target = join(directory, "antigravity-oauth-token");
   const existing = lstatSync(target, { throwIfNoEntry: false });
   if (existing && !existing.isFile()) throw new Error("unsafe_antigravity_token_file");
   const temporary = join(directory, `.token-${crypto.randomUUID()}`);
   try {
-    writeFileSync(temporary, JSON.stringify({ token }), { flag: "wx", mode: 0o600 });
+    writeFileSync(temporary, JSON.stringify({ token, auth_method: "consumer" }), { flag: "wx", mode: 0o600 });
     renameSync(temporary, target);
   } finally {
     rmSync(temporary, { force: true });
@@ -93,7 +84,7 @@ export class AntigravityDriver implements Driver {
     journal: Pick<Journal, "registerApplicationSecrets">;
   }) {
     const { credential, root } = options;
-    const secrets = credential.method === "google" ? secretLeaves(credential.token) : [credential.apiKey];
+    const secrets = antigravitySecrets(credential);
     options.journal.registerApplicationSecrets(secrets);
     this.redact = createRedactor(secrets);
     this.secretForms = secrets

@@ -96,6 +96,15 @@ test("binds a single claim to the initiating user, org and account version", asy
   await expect(login.complete(caller, start.loginId, "code")).rejects.toThrow("Start sign-in again");
 });
 
+test("completes Google sign-in with the native OAuth2 token metadata", async () => {
+  const token = { access_token: "access", refresh_token: "refresh", token_type: "Bearer", expires_in: 3599 };
+  const { login, exit } = fixture(authorization.href, token);
+  const { loginId } = await login.start(caller, target);
+  const complete = login.complete(caller, loginId, "example");
+  exit(0);
+  expect(await complete).toEqual({ target, credential: { method: "google", token } });
+});
+
 test("the deadline closes a pending exchange and refuses the result", async () => {
   const { login, submitted, closes, deadline } = fixture();
   const { loginId } = await login.start(caller, target);

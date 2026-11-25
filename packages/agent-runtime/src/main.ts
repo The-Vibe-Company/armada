@@ -8,6 +8,7 @@ import {
   parseCodexEndpoint,
   parseOpenCodeEndpoint,
 } from "@armada/core";
+import { antigravitySecrets } from "@armada/core/antigravity-credential";
 import { runtimeOperatorDiagnostic } from "../../core/src/runtime-operator-diagnostic.ts";
 import { runtimeStartupFailure } from "../../core/src/runtime-startup-failure.ts";
 import { AntigravityDriver } from "./antigravity.ts";
@@ -159,14 +160,10 @@ async function main(dialout = false) {
         ? Object.values(value).flatMap(authStrings)
         : [];
   const antigravityCredential = antigravity?.credential;
-  const antigravitySecrets = antigravityCredential
-    ? antigravityCredential.method === "google"
-      ? authStrings(antigravityCredential.token)
-      : [antigravityCredential.apiKey]
-    : [];
+  const antigravitySecretValues = antigravityCredential ? antigravitySecrets(antigravityCredential) : [];
   const modelSecrets = [
     config.grant.token,
-    ...antigravitySecrets,
+    ...antigravitySecretValues,
     ...[config.claudeEnv, config.codexEnv, opencodeEnv].flatMap((env) =>
       ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]
         .map((key) => env[key])
@@ -178,7 +175,7 @@ async function main(dialout = false) {
     throw Error("invalid_exec_environment");
   const secrets = [
     ...(config.nativeAuthSecrets ?? []),
-    ...antigravitySecrets,
+    ...antigravitySecretValues,
     ...(config.subscription ? [config.subscription.capability] : []),
     config.grant.token,
     ...execCredentialValues(execEnv),

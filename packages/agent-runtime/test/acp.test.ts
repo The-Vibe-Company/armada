@@ -316,7 +316,13 @@ for (const [apiKey, phase] of [
 antigravityTest(
   "Antigravity writes a private Google token file and redacts credentials echoed by the agent",
   async () => {
-    const token = { access_token: "fixture-access-value", refresh_token: "fixture-refresh-value", expiry: 123 };
+    const token = {
+      access_token: "fixture-access-value",
+      refresh_token: "fixture-refresh-value",
+      expiry: "2026-11-20T18:00:00.123456789Z",
+      token_type: "Bearer",
+      expires_in: 3599,
+    };
     const f = antigravityFixture({ method: "google", token });
     try {
       await expect(f.driver().start(f.context("echo-token", "default")).done).resolves.toBe("finished");
@@ -324,12 +330,13 @@ antigravityTest(
       const file = join(directory, "antigravity-oauth-token");
       expect(statSync(directory).mode & 0o777).toBe(0o700);
       expect(statSync(file).mode & 0o777).toBe(0o600);
-      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ token });
+      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ token, auth_method: "consumer" });
       expect(f.registered).toEqual([token.access_token, token.refresh_token]);
       expect(f.events.some((event) => event.kind === "message" && event.text.includes("***"))).toBe(true);
       const streamed = f.events
         .flatMap((event) => (event.kind === "message" && event.partial ? [event.text] : []))
         .join("");
+      expect(streamed).toBe(`*** *** ${token.expiry} ${token.token_type} ${token.expires_in}`);
       for (const value of f.registered) {
         expect(JSON.stringify(f.events)).not.toContain(value);
         expect(streamed).not.toContain(value);
@@ -341,7 +348,10 @@ antigravityTest(
 );
 
 antigravityTest("Antigravity refuses a symlinked Google token file", () => {
-  const f = antigravityFixture({ method: "google", token: { access_token: "fixture-access-value" } });
+  const f = antigravityFixture({
+    method: "google",
+    token: { access_token: "fixture-access-value", refresh_token: "fixture-refresh-value" },
+  });
   try {
     const directory = join(f.root, "antigravity", "antigravity-acp");
     mkdirSync(directory, { recursive: true, mode: 0o700 });

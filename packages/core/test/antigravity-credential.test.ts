@@ -7,10 +7,13 @@ const google = {
 };
 const gemini = { method: "gemini-api-key" as const, apiKey: "key" };
 
-test("accepts the Google token pair with or without a native expiry timestamp", () => {
-  const withExpiry = { ...google, token: { ...google.token, expiry: "2026-11-20T18:00:00.123456789+00:00" } };
+test("accepts a Google token pair and preserves optional Go OAuth2 metadata", () => {
+  const native = {
+    ...google,
+    token: { ...google.token, expiry: "2026-11-20T18:00:00.123456789+00:00", token_type: "Bearer", expires_in: 3599 },
+  };
   expect(parseAntigravityCredential(google)).toEqual(google);
-  expect(parseAntigravityCredential(withExpiry)).toEqual(withExpiry);
+  expect(parseAntigravityCredential(native)).toEqual(native);
 });
 
 test("accepts a Gemini API key", () => {

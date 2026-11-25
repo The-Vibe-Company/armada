@@ -13,6 +13,13 @@ const credential = z.discriminatedUnion("method", [
     token: z.strictObject({
       access_token: secret,
       refresh_token: secret,
+      token_type: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[^\s\p{Cc}\p{Cs}]+$/u)
+        .optional(),
+      expires_in: z.number().int().nonnegative().optional(),
       expiry: z.iso.datetime({ offset: true }).max(64).optional(),
     }),
   }),
