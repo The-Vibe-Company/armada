@@ -560,8 +560,8 @@ export function createModalInitialTurnJob(
 
       const { epoch } = target;
       const actor = { userId: target.owner_id, orgId: target.org_id, role: target.role };
-      const canDispatch = async (tx?: Sql) =>
-        (await context.canDispatch(tx)) && launchAuthorityCurrent(tx ?? sql, sandboxId, payload.data);
+      const canDispatch = async (tx: Sql) =>
+        (await context.canDispatch(tx)) && launchAuthorityCurrent(tx, sandboxId, payload.data);
       const assertClaim = async (tx: Sql) => {
         if (!(await canDispatch(tx))) throw new VaultError("conflict", "Launch setup authority is unavailable.");
       };
@@ -779,7 +779,8 @@ export function createModalInitialTurnJob(
           { id: sandboxId, request_id: job.id, prompt },
           generation,
           async (tx) => {
-            const { rows } = await (tx ?? sql).query(
+            if (!tx) return false;
+            const { rows } = await tx.query(
               `select 1 from public.runtime_enrolments
                where sandbox_id=$1 and lifecycle_generation=$2 and epoch=$3 and runtime_hash is not null`,
               [sandboxId, generation, epoch],

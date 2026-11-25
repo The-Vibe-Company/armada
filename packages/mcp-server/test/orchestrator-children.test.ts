@@ -215,8 +215,14 @@ test.each(admissionScenarios)(
       const boat = fakeBoat();
       const fixtureProvider = { ...boatAdmissionProvider(boat), id: provider };
       let armed = false;
+      let authorityOutsideTransaction = false;
       const guarded: Sql = {
         ...sql,
+        async query<T>(statement: string, params?: unknown[]) {
+          if (statement.includes("orchestrator_child_operations") && /for share of [\w,]*\bs\b/.test(statement))
+            authorityOutsideTransaction = true;
+          return sql.query<T>(statement, params);
+        },
         transaction: async (work) => {
           const result = await sql.transaction!(async (tx) => {
             let parentLockHeld = scenario === "brief parent contention" || scenario === "contended Boat admission";
@@ -354,12 +360,13 @@ test.each(admissionScenarios)(
         await authority.revoke(id);
         const send = mock(async () => ({}));
         const turn = (await jobs.claim("turn_dispatch", crypto.randomUUID(), 30, 1))!;
-        await createTurnDispatchJob(sql, ENCRYPTION_KEY, send).run(turn, {
+        await createTurnDispatchJob(guarded, ENCRYPTION_KEY, send).run(turn, {
           signal: new AbortController().signal,
           canDispatch: async () => true,
           handoffGeneration: async () => "1",
         });
         expect(send).not.toHaveBeenCalled();
+        expect(authorityOutsideTransaction).toBe(false);
         expect((await db.query("select state from account_turn_queue where request_id=$1", [setup.id])).rows).toEqual([
           { state: "failed" },
         ]);
