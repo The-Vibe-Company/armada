@@ -864,7 +864,9 @@ type ModalLaunchPlan = (ModalPlacementPlan | BoatLaunchPlan) & {
     Omit<ModalTicket, "enrolmentToken"> &
       Pick<IssueRuntimeTicket, "ownerId"> & {
         configuration: IssueRuntimeTicket["configuration"] & { grant: { expiresAt: number } };
-      } & Pick<RuntimeTicketGuard, "lockPrerequisites"> & { checkAccountPin(tx: Sql): Promise<void> }
+      } & Pick<RuntimeTicketGuard, "lockPrerequisites"> & {
+        accountPin: Pick<RuntimeConfigurationTarget, "credentialId" | "credentialVersion">;
+      }
   >;
 };
 
@@ -902,12 +904,9 @@ export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
       if (!authority?.member) throw new ModalBootstrapRefused("Modal launch owner membership is unavailable.");
       if (!authority.credential) throw new ModalBootstrapRefused("Modal launch account is unavailable.");
     },
-    async checkAccountPin(tx: Sql) {
-      const current = await tx.query(
-        "select 1 from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3",
-        [sandbox.id, sandbox.credentialId, sandbox.credentialVersion],
-      );
-      if (!current.rows.length) throw new ModalBootstrapRefused("Modal launch account pin changed.");
+    accountPin: {
+      credentialId: sandbox.credentialId ?? null,
+      credentialVersion: sandbox.credentialVersion ?? null,
     },
   };
 }
@@ -1063,6 +1062,9 @@ export async function runModalLaunch(
       rows: [receipt],
     } = await tx.query<{
       org_id: string;
+      dispatchable: boolean;
+      credential_id: string | null;
+      credential_version: number | null;
       provider_sandbox_id: string | null;
       journaled_id: string | null;
       has_intent: boolean;
@@ -1075,7 +1077,10 @@ export async function runModalLaunch(
       handoff_staged: boolean;
       ticket_issued: boolean;
     }>(
-      `select s.org_id, s.provider_sandbox_id,
+      `select s.org_id, s.provider_sandbox_id, s.credential_id, s.credential_version,
+              coalesce(j.lease_owner=$4 and j.lease_epoch=$5 and j.lease_until>clock_timestamp()
+                and j.attempts<=j.max_attempts and (j.deadline_at is null or j.deadline_at>clock_timestamp()), false)
+                as dispatchable,
               j.outcome #>> '{modal_machine,entry,machineId}' as journaled_id,
               j.outcome #> '{modal_machine,entry}' is not null as has_intent,
               s.stop_requested_at is not null as stop_requested,
@@ -1100,8 +1105,21 @@ export async function runModalLaunch(
          and s.provider_sandbox_id is not null
        where s.id=$1 and s.provider::text=$3 and (s.runtime_transport='dialout' or s.boat_runtime)
          and s.status in ('starting','ready','running') and s.deleted_at is null`,
-      [sandboxId, job.id, provider],
+      [sandboxId, job.id, provider, job.lease_owner ?? null, job.lease_epoch],
     );
+    return receipt;
+  };
+  const readPinnedEnrolment = async (
+    tx: Sql,
+    pin: Pick<RuntimeConfigurationTarget, "credentialId" | "credentialVersion">,
+  ) => {
+    const receipt = await readEnrolment(tx);
+    if (
+      !receipt ||
+      receipt.credential_id !== (pin.credentialId ?? null) ||
+      receipt.credential_version !== (pin.credentialVersion ?? null)
+    )
+      throw new ModalBootstrapRefused("Modal launch account pin changed.");
     return receipt;
   };
   const done = { status: "done" } satisfies JobResult;
@@ -1124,7 +1142,7 @@ export async function runModalLaunch(
     const row = await readEnrolment(tx);
     if (row?.starting) return row;
   };
-  let skipProvider = pending.cancel_without_provider || (!hasJournal && !(await context.canDispatch()));
+  let skipProvider = pending.cancel_without_provider || (!hasJournal && !pending.dispatchable);
   let plan: ModalLaunchPlan | undefined;
   if (!skipProvider) {
     try {
@@ -1158,7 +1176,7 @@ export async function runModalLaunch(
     dispatchModalLaunch(sql, job, context, plan, targetIncarnation, resolve, launchAuthorized);
   const dispatch = plan
     ? await applyPlan(plan, async (request, preparation, handoff, physicalExpiry) => {
-        const { ownerId, configuration, lockPrerequisites, checkAccountPin, ...prepared } = preparation;
+        const { ownerId, configuration, lockPrerequisites, accountPin, ...prepared } = preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
           const enrolmentToken = await decryptSecret(
             Uint8Array.from(Buffer.from(pending.bootstrap_ticket_enc, "base64")),
@@ -1169,9 +1187,8 @@ export async function runModalLaunch(
           const current = await sql.transaction(async (tx) => {
             await lockPrerequisites(tx);
             return withJobLease(scopedRuntimeSql(tx), job, async (locked) => {
-              await checkAccountPin(locked);
-              const receipt = await readEnrolment(locked);
-              if (!receipt?.check_after || !(await context.canDispatch(locked)) || !(await launchAuthorized(locked)))
+              const receipt = await readPinnedEnrolment(locked, accountPin);
+              if (!receipt.check_after || !(await context.canDispatch(locked)) || !(await launchAuthorized(locked)))
                 return false;
               if (!("boat" in plan) && !receipt.handoff_staged)
                 throw new ModalBootstrapRefused("Modal bootstrap replay lacks a prepared handoff.");
@@ -1226,9 +1243,8 @@ export async function runModalLaunch(
             ticketGuard: {
               lockPrerequisites,
               async check(tx) {
-                await checkAccountPin(tx);
-                const receipt = await readEnrolment(tx);
-                if (receipt?.enrolled || receipt?.check_after) throw enrolmentInProgress;
+                const receipt = await readPinnedEnrolment(tx, accountPin);
+                if (receipt.enrolled || receipt.check_after) throw enrolmentInProgress;
               },
             },
           });

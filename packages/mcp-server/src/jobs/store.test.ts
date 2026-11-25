@@ -531,7 +531,7 @@ test.each(["lost reply", "refusal", "bootstrap failure", "enrolled failure", "co
           artifact: { sha256: "", bytes: 1 },
           cacheDir: "/fixture",
           lockPrerequisites: async () => {},
-          checkAccountPin: async () => {},
+          accountPin: { credentialId: account.id, credentialVersion: account.version },
         }),
         machine: (ticket: (request: typeof machine, expiry: number) => Promise<{ enrolmentToken: string } | null>) => ({
           async create() {
@@ -1632,7 +1632,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
         artifact: artifactManifest.runtime,
         cacheDir: "/home/user/runtime-cache",
         async lockPrerequisites() {},
-        async checkAccountPin() {},
+        accountPin: { credentialId: null, credentialVersion: null },
       };
     };
     const launch = initial
@@ -1860,30 +1860,36 @@ test("Modal launches Antigravity with a selected account confined to private enr
   expect(JSON.stringify([configuration, rows])).not.toContain(key);
 });
 
-test("Modal admission and deferred enrolment use at most 56 SQL statements", async () => {
+test("Modal admission and deferred enrolment use at most 53 SQL statements", async () => {
   const statements: string[] = [];
+  const checkpoints: number[] = [];
   const admission = await modalAdmissionFixture("private", statements);
   const log = spyOn(console, "info");
   try {
     await observeGoldenLaunch("rest", async (timing) => {
       const { f, id, jobId, makeRunner, enrolPending } = await modalLaunchFixture(admission);
+      checkpoints.push(statements.length);
       const runner = makeRunner(undefined, f.sql, false);
       expect(await runner.reconcileOne(signal)).toBe(true);
       await runner.drain();
+      checkpoints.push(statements.length);
       await enrolPending();
+      checkpoints.push(statements.length);
       await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
       expect(await runner.reconcileOne(signal)).toBe(true);
       await runner.drain();
       expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='launch'", [id])).rows).toEqual([
         { state: "done" },
       ]);
+      checkpoints.push(statements.length);
       timing.checkpoint("shared_launcher");
     });
     const sample = log.mock.calls
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(56);
+    expect(statements.length).toBeLessThanOrEqual(53);
+    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 32, 7, 6]);
   } finally {
     log.mockRestore();
   }
