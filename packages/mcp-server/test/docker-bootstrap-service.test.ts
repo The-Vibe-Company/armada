@@ -25,6 +25,12 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
+import {
+  bindDockerStopFixture,
+  reportDockerExpiry,
+  runDockerStop,
+  stopFixtureMachineId,
+} from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
 const database = useMigratedDatabase();
@@ -370,7 +376,8 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
     let resolver = credentials;
     if (change === "pin")
       await db.query(`update public.credentials set status='revoked' where id=$1`, [f.credentialId]);
-    if (change === "stop") await reservations.stop(f.actor, f.sandbox.id, randomUUID());
+    if (change === "stop")
+      await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: randomUUID() });
     if (change === "host") await hosts.revoke(f.admin, f.hostId);
     if (change === "rejoin") {
       await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
@@ -417,7 +424,7 @@ test("revoking a host retires a queued resume and releases the slot its complete
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
   await db.query(`update public.sandboxes set status='ready' where id=$1`, [f.sandbox.id]);
   const stopId = randomUUID();
-  await reservations.stop(f.actor, f.sandbox.id, stopId);
+  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
   expect((await hosts.list(f.admin))[0]?.running).toBe(0);
   const resumeId = randomUUID();
@@ -465,7 +472,7 @@ test.each(["codex", "claude", "opencode"] as const)(
       }),
     ).toEqual({ state: "pending" });
     const stopId = randomUUID();
-    await reservations.stop(f.actor, f.sandbox.id, stopId);
+    await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "stop", requestId: stopId });
     await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
     // Resuming a retained allocation never pulls an image or creates another home volume.
     await db.query("update public.docker_hosts set disk_free_bytes=$2 where id=$1", [
@@ -556,9 +563,7 @@ test.each(["replacement ticket", "issuer role change"])("Docker idle-stop proof 
       f.admin.orgId,
       f.admin.userId,
     ]);
-  await expect(
-    hosts.enqueueSandbox(f.actor, f.sandbox.id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
-  ).rejects.toThrow();
+  await expect(hosts.enqueueStop(f.actor, f.sandbox.id, requestId, { checkpoint: requestId })).rejects.toThrow();
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
   expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
 });
@@ -666,19 +671,12 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
       });
     },
   });
-  await expect(
-    hosts.enqueueSandbox(f.actor, f.sandbox.id, {
-      requestId: randomUUID(),
-      operation: "stop",
-      idleCheckpointRequest: randomUUID(),
-    }),
-  ).rejects.toThrow();
+  await expect(hosts.enqueueStop(f.actor, f.sandbox.id, randomUUID(), { checkpoint: randomUUID() })).rejects.toThrow();
   const checkpoint = createRuntimeCheckpoint(sql, key, bridge, { docker: true });
   const idle = createRuntimeIdle(sql, key, checkpoint, {
     now: () => clock,
     delayMs: 600_000,
-    dockerStop: (actor, id, requestId) =>
-      hosts.enqueueSandbox(actor, id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
+    dockerStop: (actor, id, requestId) => hosts.enqueueStop(actor, id, requestId, { checkpoint: requestId }),
   });
   if (scenario === "checkpointed") {
     await checkpoint(
@@ -687,6 +685,7 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
     );
     clock += 60_000;
   }
+  await bindDockerStopFixture(sql, f.sandbox.id);
   await idle.reconcileOne(new AbortController().signal);
   if (scenario === "idle" || scenario === "opted out") {
     expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
@@ -696,10 +695,16 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
     expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
     return;
   }
+  await runDockerStop(sql, key, f.sandbox.id);
   const stop = await hosts.poll(f.hostToken, f.installationId);
   if (stop?.operation !== "stop") throw Error("missing idle stop");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopping");
-  await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: stop.requestId,
+    outcome: "completed",
+    machineId: stopFixtureMachineId,
+  });
+  await runDockerStop(sql, key, f.sandbox.id);
   const stored = (
     await db.query<{ status: string; status_reason: string; expires_at: Date | string }>(
       "select status,status_reason,expires_at from public.sandboxes where id=$1",
@@ -735,7 +740,7 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
   await expect(admittedResume(f, resumeId)).rejects.toThrow("is full");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
   await hosts.complete(f.hostToken, f.installationId, { requestId: occupied.id, outcome: "completed" });
-  await hosts.expired(f.hostToken, f.installationId, { requestId: occupied.id });
+  await reportDockerExpiry(sql, key, hosts, f.hostToken, f.installationId, { requestId: occupied.id });
   await admittedResume(f, resumeId);
   const resume = await hosts.poll(f.hostToken, f.installationId);
   if (resume?.operation !== "resume") throw Error("missing resume");
@@ -1367,7 +1372,6 @@ test.each(refusalOrders)(
     await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
     expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
     if (order === "ACK first") {
-      await expect(reservations.job(f.actor, id, resume.requestId)).resolves.toMatchObject({ state: "failed" });
       const controls = createDockerSandboxControls(sql, key, { resume: service });
       await expect(
         controls.invoke(

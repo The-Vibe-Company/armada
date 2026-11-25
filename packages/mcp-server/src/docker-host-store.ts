@@ -52,7 +52,7 @@ import { type DockerInventoryContainer, dockerInventoryDeploymentId } from "./do
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import type { Job as RunnerJob } from "./jobs/runner.ts";
 import type { DockerStopIntent } from "./jobs/stop.ts";
-import { createJobsStore } from "./jobs/store.ts";
+import { createJobsStore, jobRequestKey } from "./jobs/store.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -67,7 +67,6 @@ import {
   requestRefusedDockerResumeStop,
   transitionSandbox,
 } from "./sandbox-lifecycle.ts";
-import { enqueueStopOutput } from "./sandbox-outputs.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -145,13 +144,14 @@ type Sandbox = {
   lifecycle_generation: string | number;
   status_reason?: string | null;
   stop_requested_at: unknown;
+  stopped_at?: unknown;
   deleted_at: unknown;
 };
 type Selection = { requestId: string } & (
   | { operation: "create" | "delete" }
   | (Omit<RestoreJob, "requestId"> & { lifecycleGeneration: number; runnerJobId: string })
   | { operation: "deletePhysical"; machineId: string; lifecycleGeneration: number }
-  | { operation: "stop"; idleCheckpointRequest?: string; onlyIfIdle?: boolean }
+  | { operation: "stop" }
   | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -590,6 +590,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
       deny();
     const live = await tx.query(`select 1 from public.sandboxes where id=$1 and expires_at>now()`, [row.id]);
     if (!live.rows.length) deny();
+  }
+  async function assertIdleStop(tx: Sql, row: Sandbox, hostId: string) {
+    if (row.status !== "ready") deny();
+    const pendingWork = await tx.query(
+      `select 1 from public.docker_launch_manifests where sandbox_id=$1 and result_enc is null
+             union all
+             select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
+             union all
+             select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
+             union all
+             ${unsettledRuntimeCommands("$1", "$2", "$3")}
+             limit 1`,
+      [row.id, row.lifecycle_generation, hostId],
+    );
+    if (pendingWork.rows.length) deny();
   }
   async function checkpointedStop(tx: Sql, row: Sandbox, checkpoint: string) {
     const proof = await tx.query<{ work_merged: boolean; epoch: string }>(
@@ -1728,24 +1743,113 @@ export function createDockerHostStore(sql: Sql, key: string) {
         });
       });
     },
-    async lockCheckpointedStop(tx: Sql, sandboxId: string, intent: DockerStopIntent) {
-      const { row } = await lockSandboxAdmission(tx, intent.actor, sandboxId, "stop", intent);
+    enqueueStop(
+      actor: Actor,
+      sandboxId: string,
+      requestId: string | undefined,
+      options: { checkpoint?: string; onlyIfIdle?: boolean } = {},
+    ) {
+      if (requestId !== undefined) id(requestId);
+      return transaction(async (tx) => {
+        const { host, row } = await lockSandboxAdmission(tx, actor, sandboxId, "stop");
+        const actorEpoch = await permission(tx, actor, row, "stop");
+        if (row.deleted_at !== null || row.status === "stopped" || row.stopped_at != null) return null;
+        const request =
+          requestId && !options.checkpoint
+            ? {
+                ownerId: actor.userId,
+                digest: createHash("sha256")
+                  .update(JSON.stringify([sandboxId, options.onlyIfIdle === true]))
+                  .digest("hex"),
+              }
+            : undefined;
+        if (request && requestId) {
+          const {
+            rows: [saved],
+          } = await tx.query<{ id: string; generation: string; request_digest: string }>(
+            `select id,generation::text,request_digest from public.jobs where idem_key=$1`,
+            [jobRequestKey(actor.orgId, "stop", actor.userId, requestId)],
+          );
+          if (saved) {
+            if (saved.request_digest !== request.digest || saved.generation !== String(row.lifecycle_generation))
+              deny();
+            return saved.id;
+          }
+        }
+        const {
+          rows: [prior],
+        } = await tx.query<{ id: string; state: string }>(
+          `select id,state from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop'
+           and state in ('queued','leased','failed') order by created_at desc,id desc limit 1`,
+          [row.id, row.lifecycle_generation],
+        );
+        if (prior && prior.state !== "failed") {
+          if (request) deny();
+          return prior.id;
+        }
+        const proof = options.checkpoint ? await checkpointedStop(tx, row, options.checkpoint) : undefined;
+        if (options.onlyIfIdle) await assertIdleStop(tx, row, host.id);
+        const machineGeneration = Number(await currentMachineCleanup(tx, row));
+        const machineId = await allocationReceipt(tx, row);
+        if (!machineId || !Number.isSafeInteger(machineGeneration)) deny();
+        const deadline = new Date(Date.now() + 120_000);
+        const payload: DockerStopIntent = {
+          actor,
+          actorEpoch,
+          machineId,
+          generation: Number(row.lifecycle_generation),
+          ...(["failed", "stopping"].includes(row.status) ? { exitPending: true } : {}),
+          daemonGeneration: row.docker_generation,
+          hostId: host.id,
+          installationId: row.docker_installation_id,
+          captureUntil: deadline.getTime() - 98_000,
+          ...(proof && options.checkpoint
+            ? {
+                checkpoint: options.checkpoint,
+                workMerged: proof.work_merged,
+                runtimeEpoch: proof.epoch,
+              }
+            : { onlyIfIdle: options.onlyIfIdle ?? false }),
+        };
+        return createJobsStore(sql, key).enqueue(
+          "stop",
+          sandboxId,
+          payload.generation,
+          requestId,
+          payload,
+          {
+            orgId: actor.orgId,
+            maxAttempts: 8,
+            deadline,
+          },
+          tx,
+        );
+      });
+    },
+    async lockStop(tx: Sql, sandboxId: string, intent: DockerStopIntent) {
+      const { host, row } = await lockSandboxAdmission(tx, intent.actor, sandboxId, "stop", intent);
       await permission(tx, intent.actor, row, "stop", intent.actorEpoch);
-      const proof = await checkpointedStop(tx, row, intent.checkpoint);
       if (
         String(row.lifecycle_generation) !== String(intent.generation) ||
-        proof.work_merged !== intent.workMerged ||
-        proof.epoch !== intent.runtimeEpoch
+        row.docker_generation !== intent.daemonGeneration
       )
         deny();
+      if (intent.checkpoint) {
+        const proof = await checkpointedStop(tx, row, intent.checkpoint);
+        if (proof.work_merged !== intent.workMerged || proof.epoch !== intent.runtimeEpoch) deny();
+      }
+      if (intent.onlyIfIdle) await assertIdleStop(tx, row, host.id);
+      const machineGeneration = Number(await currentMachineCleanup(tx, row));
+      if (!Number.isSafeInteger(machineGeneration)) deny();
+      return machineGeneration;
     },
-    checkpointedStopOutcome(sandboxId: string, intent: DockerStopIntent) {
+    stopOutcome(sandboxId: string, generation: string, intent: DockerStopIntent) {
       return transaction(async (tx) => {
         const row = (
           await tx.query<Sandbox>(
             `select * from public.sandboxes where id=$1 and provider='docker' and lifecycle_generation=$2
-            and status='stopping' and docker_host_id=$3 and docker_installation_id=$4 and docker_generation=$5 for update`,
-            [sandboxId, intent.generation + 1, intent.hostId, intent.installationId, intent.daemonGeneration],
+            and status in ('stopping','failed') and docker_host_id=$3 and docker_installation_id=$4 and docker_generation=$5 for update`,
+            [sandboxId, generation, intent.hostId, intent.installationId, intent.daemonGeneration],
           )
         ).rows[0];
         if (!row || (await allocationReceipt(tx, row)) !== intent.machineId) return "unknown";
@@ -2013,10 +2117,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
         exact(selection, [
           "requestId",
           "operation",
-          ...(selection.operation === "stop" && selection.onlyIfIdle !== undefined ? ["onlyIfIdle"] : []),
-          ...(selection.operation === "stop" && selection.idleCheckpointRequest !== undefined
-            ? ["idleCheckpointRequest"]
-            : []),
           ...(selection.operation === "bootstrap" || selection.operation === "resume" ? ["bootstrapDescriptor"] : []),
           ...(selection.operation === "deletePhysical" ? ["machineId", "lifecycleGeneration"] : []),
           ...(selection.operation === "restore"
@@ -2039,22 +2139,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
         )
           deny();
         const epoch = await permission(tx, actor, row, selection.operation);
-        if (selection.operation === "stop" && row.status === "stopping") {
-          const requestId = dockerMachineJobId(row.docker_generation, "stop");
-          const shared = await tx.query(
-            `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and host_id=$2 and request_id=$3
-              and bound_operation='stop' and cancelled_at is null and (
-                outcome is null or (outcome='completed' and result_machine_id is not null and exists(
-                  select 1 from public.jobs where sandbox_id=$1 and generation=$4 and kind='stop'
-                    and state in ('queued','leased')
-                ))
-              )`,
-            [row.id, host.id, requestId, row.lifecycle_generation],
-          );
-          if (shared.rows.length) return { requestId };
-        }
-        if (selection.operation === "stop" && selection.onlyIfIdle && !["ready", "stopped"].includes(row.status))
-          deny();
         // The host lock serializes admission: observe an existing request only
         // after waiting, so concurrent lost-response retries reconcile too.
         const known =
@@ -2071,20 +2155,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
           ).rows.length
         )
           deny();
-        if (!known && selection.operation === "stop" && selection.onlyIfIdle && row.status === "ready") {
-          const pendingWork = await tx.query(
-            `select 1 from public.docker_launch_manifests where sandbox_id=$1 and result_enc is null
-             union all
-             select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
-             union all
-             select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
-             union all
-             ${unsettledRuntimeCommands("$1", "$2", "$3")}
-             limit 1`,
-            [sandboxId, row.lifecycle_generation, host.id],
-          );
-          if (pendingWork.rows.length) deny();
-        }
         // A drain refuses new optional work. Keep replay of already-admitted requests
         // under their original binding so a lost enqueue response is recoverable.
         if (
@@ -2107,56 +2177,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
           return enqueueRestore(tx, row, job, bound, known, runnerJobId);
         }
         if (!known) await state(tx, row, selection.operation);
-        let workMerged = false;
-        if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
-          const checkpoint = selection.idleCheckpointRequest;
-          id(checkpoint);
-          const proof = await checkpointedStop(tx, row, checkpoint);
-          workMerged = proof.work_merged;
-          const boundGeneration = await currentMachineCleanup(tx, row);
-          if (boundGeneration !== undefined) {
-            const generation = Number(boundGeneration);
-            const machineId = await allocationReceipt(tx, row);
-            if (!machineId || !Number.isSafeInteger(generation) || boundGeneration !== String(row.lifecycle_generation))
-              deny();
-            const prior = (
-              await tx.query<{ id: string; state: string }>(
-                `select id,state from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop'
-               order by created_at desc,id desc limit 1`,
-                [row.id, generation],
-              )
-            ).rows[0];
-            if (prior && prior.state !== "failed") return { requestId: selection.requestId };
-            const deadline = new Date(Date.now() + 120_000);
-            const payload: DockerStopIntent = {
-              actor,
-              actorEpoch: epoch,
-              checkpoint,
-              workMerged,
-              machineId,
-              generation,
-              runtimeEpoch: proof.epoch,
-              daemonGeneration: row.docker_generation,
-              hostId: host.id,
-              installationId: row.docker_installation_id,
-              captureUntil: deadline.getTime() - 98_000,
-            };
-            await createJobsStore(sql, key).enqueue(
-              "stop",
-              sandboxId,
-              generation,
-              prior ? `${checkpoint}:${prior.id}` : checkpoint,
-              payload,
-              {
-                orgId: actor.orgId,
-                maxAttempts: 8,
-                deadline,
-              },
-              tx,
-            );
-            return { requestId: selection.requestId };
-          }
-        }
         const request = await machine(tx, row, selection.operation);
         const target = { requestId: selection.requestId, request };
         let job: Job;
@@ -2202,14 +2222,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           );
         }
         if (selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
-          const idle = selection.idleCheckpointRequest !== undefined;
           const result = await transitionSandbox(tx, {
             sandboxId,
             expectedGeneration: row.lifecycle_generation,
             fromStates: ["starting", "ready", "running"],
             toState: "stopping",
-            actor: idle ? "idle" : "owner",
-            code: idle ? (workMerged ? "docker_work_merged" : "docker_idle_paused") : "docker_stop_admitted",
+            actor: "owner",
+            code: "docker_stop_admitted",
             effects: [],
           });
           if (result.kind === "conflict") deny();
@@ -2744,25 +2763,28 @@ export function createDockerHostStore(sql: Sql, key: string) {
             return;
           if (logical.status === "deleted" || (await supersededLifecycle(tx, job, true))) return;
         }
-        // The authenticated host's observed physical stop supplies the evidence.
-        // The server clock and the runner's dispatch deadline cannot prove exit.
-        const transition = await transitionSandbox(tx, {
-          sandboxId: logical.id,
-          expectedGeneration: logical.lifecycle_generation,
-          fromStates: ["starting", "ready", "running", "stopping", "stopped", "failed"],
-          toState: "stopped",
-          actor: "docker_host",
-          code: "docker_expiry_observed",
-          effects: [],
-        });
-        if (transition.kind === "conflict") deny();
-        await enqueueStopOutput(
-          tx,
-          createJobsStore(sql, key),
+        if (
+          logical.stopped_at != null &&
+          ["expired", "agent_finished", "work_merged"].includes(logical.status_reason ?? "")
+        )
+          return true;
+        if (logical.stopped_at != null && logical.status === "failed" && logical.stop_requested_at != null) return true;
+        // A report is physical evidence. ACK only after the worker commits, so the daemon
+        // keeps its expiry report and retained-output upload pending across server crashes.
+        const jobs = createJobsStore(sql, key);
+        const jobId = await jobs.enqueue(
+          "stop",
           logical.id,
-          logical.org_id,
-          logical.lifecycle_generation,
+          Number(logical.lifecycle_generation),
+          `expiry:${result.requestId}`,
+          { expired: true, orgId: logical.org_id },
+          { orgId: logical.org_id, maxAttempts: 8, deadline: new Date(Date.now() + 120_000) },
+          tx,
         );
+        const {
+          rows: [expiry],
+        } = await tx.query<{ state: string }>("select state::text from public.jobs where id=$1", [jobId]);
+        return expiry?.state === "done";
       });
     },
     complete(

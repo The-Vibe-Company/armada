@@ -486,7 +486,8 @@ export function createDockerHostRoutes(
       if ("expired" in body) {
         if (body.expired !== true) throw new InvalidInput();
         const requestId = string(body.requestId);
-        await store.expired(token, installationId, { requestId });
+        if ((await store.expired(token, installationId, { requestId })) === false)
+          return new Response(null, { status: 503, headers });
         return Response.json({ requestId }, { headers });
       }
       const outcome = string(body.outcome);

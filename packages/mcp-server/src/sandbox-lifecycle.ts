@@ -623,13 +623,14 @@ export async function recordDockerCleanupReceipt(
   expectedGeneration: number,
   operation: "stop" | "delete",
 ) {
-  await tx.query(
+  const { rows } = await tx.query<{ status: string }>(
     `update public.sandboxes set stopped_at=now()
      where id=$1 and lifecycle_generation=$2 and stopped_at is null
-       and (status='failed' or ($3::boolean and status='stopped'))`,
+       and (status='failed' or ($3::boolean and status='stopped')) returning status`,
     [sandboxId, expectedGeneration, operation === "stop"],
   );
   if (operation === "stop") {
+    if (rows.length) return { kind: "applied", generation: expectedGeneration } as const;
     return transitionSandbox(tx, {
       sandboxId,
       expectedGeneration,

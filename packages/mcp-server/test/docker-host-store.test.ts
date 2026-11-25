@@ -23,6 +23,7 @@ import { createJobsStore } from "../src/jobs/store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { createSandboxOutputs, OUTPUTS_CAPTURE } from "../src/sandbox-outputs.ts";
+import { reportDockerExpiry } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
@@ -516,11 +517,7 @@ test("Docker stop takeover reuses the final snapshot and settles from the retain
      values($1,$2,$3,0,now())`,
     [a.sandboxId, session.epoch, checkpoint],
   );
-  await store.enqueueSandbox(a.owner, a.sandboxId, {
-    operation: "stop",
-    requestId: checkpoint,
-    idleCheckpointRequest: checkpoint,
-  });
+  await store.enqueueStop(a.owner, a.sandboxId, checkpoint, { checkpoint });
   const jobs = createJobsStore(sql, key);
   let captures = 0;
   const reader = () => ({
@@ -892,7 +889,7 @@ test("a stale Machine create does not dispatch or fail the current generation", 
   await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [a.sandboxId]);
 
   await denied(store.submitMachineCreate(a.owner, a.request));
-  await store.expired(a.hostToken, a.installationId, { requestId: a.generation });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.generation });
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.generation });
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   await store.complete(a.hostToken, a.installationId, { requestId: a.generation, outcome: "failed" });
@@ -1194,15 +1191,16 @@ test("authenticated restore expiry settles the exact starting generation before 
   const expiry = { requestId: a.restore.requestId };
   await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.selection.runnerJobId]);
   const interrupted = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
-  await expect(interrupted.faultingStore.expired(a.hostToken, a.installationId, expiry)).rejects.toMatchObject({
-    cause: interrupted.failure,
-  });
+  await expect(
+    reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry, interrupted.faultingSql),
+  ).rejects.toThrow(interrupted.failure);
+  await sql.query("update jobs set lease_until=clock_timestamp() where kind='stop' and state='leased'");
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
   expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([]);
 
-  await store.expired(a.hostToken, a.installationId, expiry);
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry);
   await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed" });
-  await store.expired(a.hostToken, a.installationId, expiry);
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry);
   expect(await lifecycle(a.sandboxId)).toMatchObject({
     status: "stopped",
     status_reason: "expired",
@@ -1240,13 +1238,14 @@ test.each([false, true])(
     expect(await lifecycle(a.sandboxId)).toMatchObject(before);
 
     const interrupted = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
-    await expect(interrupted.faultingStore.expired(a.hostToken, a.installationId, expiry)).rejects.toMatchObject({
-      cause: interrupted.failure,
-    });
+    await expect(
+      reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry, interrupted.faultingSql),
+    ).rejects.toThrow(interrupted.failure);
+    await sql.query("update jobs set lease_until=clock_timestamp() where kind='stop' and state='leased'");
     expect(await lifecycle(a.sandboxId)).toMatchObject(before);
 
-    await store.expired(a.hostToken, a.installationId, expiry);
-    await store.expired(a.hostToken, a.installationId, expiry);
+    await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry);
+    await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry);
     expect(await lifecycle(a.sandboxId)).toMatchObject({
       status: "stopped",
       status_reason: "expired",
@@ -1274,7 +1273,7 @@ test("retention cleanup settles an attached restore after expiry with atomic rol
   await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId: "c".repeat(64) });
   await denied(store.cleaned(a.hostToken, a.installationId, cleanup));
   await store.attachMachineRestore(a.owner, claim);
-  await store.expired(a.hostToken, a.installationId, { requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId });
 
   const { faultingStore, failure } = failDockerObservationCommit(a.sandboxId, cleanup.cleanupReason);
   await expect(faultingStore.cleaned(a.hostToken, a.installationId, cleanup)).rejects.toMatchObject({
@@ -1387,7 +1386,7 @@ test("poll retires obsolete work without fencing a delayed physical completion",
 test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
   const a = await restoreFixture();
   await a.poll();
-  await store.expired(a.hostToken, a.installationId, { requestId: a.restore.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.restore.requestId });
   const signal = new AbortController().signal;
   const outputs = (token: string, installation: string, body: ReadableStream<Uint8Array> | null) =>
     store.retainedOutputs(token, installation, a.restore.requestId, body, signal);
@@ -1606,7 +1605,7 @@ test("restore dispatch cancels stale intent and reconciles a late physical recei
   expect(
     (await db.query("select result_machine_id from docker_host_jobs where request_id=$1", [result.requestId])).rows,
   ).toEqual([{ result_machine_id: result.machineId }]);
-  await store.expired(a.hostToken, a.installationId, { requestId: result.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: result.requestId });
   await denied(store.complete(a.hostToken, a.installationId, { requestId: result.requestId, outcome: "failed" }));
   expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting" });
@@ -1619,7 +1618,7 @@ test.each(["pending", "completed"] as const)(
     expect(await a.poll()).toEqual(a.restore);
     if (phase === "completed")
       await store.complete(a.hostToken, a.installationId, { requestId: a.restore.requestId, outcome: "completed" });
-    await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+    await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.create.requestId });
     await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
     expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
     if (phase === "pending") expect(await a.poll()).toEqual(a.restore);
@@ -1691,20 +1690,17 @@ test("a malformed restore intent does not hide unrelated work", async () => {
 
 function interruptDockerCommit(written: (tx: Sql) => Promise<boolean>) {
   const failure = new Error("Docker transaction interrupted before commit");
-  const faultingStore = createDockerHostStore(
-    {
-      query: sql.query,
-      transaction: (work) =>
-        database().transaction(async (tx) => {
-          const scoped: Sql = { query: (query, params) => tx.query(query, params) };
-          const result = await work(scoped);
-          if (await written(scoped)) throw failure;
-          return result;
-        }),
-    },
-    key,
-  );
-  return { faultingStore, failure };
+  const faultingSql: Sql = {
+    query: sql.query,
+    transaction: (work) =>
+      database().transaction(async (tx) => {
+        const scoped: Sql = { query: (query, params) => tx.query(query, params) };
+        const result = await work(scoped);
+        if (await written(scoped)) throw failure;
+        return result;
+      }),
+  };
+  return { faultingStore: createDockerHostStore(faultingSql, key), faultingSql, failure };
 }
 
 function failDockerJobCommit(requestId: string, outcome: "completed" | "failed" | null) {
@@ -1965,8 +1961,7 @@ test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked
   "idle-only stop checks %s work",
   async (queue) => {
     const db = database();
-    const a = await boundFixture();
-    await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+    const a = await machineStopFixture();
     await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
     const turn = randomUUID();
     const sealed = await encryptSecret("queued turn", key);
@@ -2011,7 +2006,7 @@ test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked
     const stop = { requestId: randomUUID(), operation: "stop" as const };
     if (queue === "revoked runtime") {
       await db.query("update public.runtime_enrolments set runtime_hash=null where sandbox_id=$1", [a.sandboxId]);
-      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      await store.enqueueStop(a.owner, a.sandboxId, stop.requestId, { onlyIfIdle: true });
       return;
     }
     if (queue === "revoked issuer") {
@@ -2019,10 +2014,10 @@ test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked
         a.actor.orgId,
         a.actor.userId,
       ]);
-      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      await store.enqueueStop(a.owner, a.sandboxId, stop.requestId, { onlyIfIdle: true });
       return;
     }
-    await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
+    await denied(store.enqueueStop(a.owner, a.sandboxId, stop.requestId, { onlyIfIdle: true }));
     expect(
       (await db.query("select status,stop_requested_at from public.sandboxes where id=$1", [a.sandboxId])).rows,
     ).toEqual([{ status: "ready", stop_requested_at: null }]);
@@ -2034,7 +2029,7 @@ test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked
         "update public.runtime_commands set request_id='outputs_9999999999999_sample' where sandbox_id=$1 and request_id=$2",
         [a.sandboxId, turn],
       );
-      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      await store.enqueueStop(a.owner, a.sandboxId, stop.requestId, { onlyIfIdle: true });
       return;
     }
     await store.enqueueSandbox(a.owner, a.sandboxId, stop);
@@ -2227,14 +2222,15 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
     const before = await lifecycle(a.sandboxId);
     const expiry = { requestId: a.startup.requestId };
     if (operation === "create") {
-      const { faultingStore, failure } = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
-      await expect(faultingStore.expired(a.hostToken, a.installationId, expiry)).rejects.toMatchObject({
-        cause: failure,
-      });
+      const { faultingSql, failure } = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
+      await expect(
+        reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry, faultingSql),
+      ).rejects.toThrow(failure);
+      await sql.query("update jobs set lease_until=clock_timestamp() where kind='stop' and state='leased'");
       expect(await lifecycle(a.sandboxId)).toEqual(before);
       expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([]);
     }
-    await store.expired(a.hostToken, a.installationId, expiry);
+    await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, expiry);
     const stopped = await lifecycle(a.sandboxId);
     expect(stopped?.status).toBe("stopped");
     expect(stopped?.status_reason).toBe("expired");
@@ -2244,7 +2240,7 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
     await expect(a.authority.withSession(a.runtime.runtimeToken, a.runtime.epoch, async () => true)).rejects.toThrow(
       "runtime_enrolment_denied",
     );
-    await createDockerHostStore(sql, key).expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
     expect(await lifecycle(a.sandboxId)).toEqual(stopped);
     expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([
       { from_status: before?.status, to_status: "stopped", generation: stopped?.lifecycle_generation },
@@ -2260,7 +2256,7 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
     const deleted = await lifecycle(a.sandboxId);
     expect(deleted?.status).toBe("deleted");
     expect(deleted?.deleted_at).not.toBeNull();
-    await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
     expect(await lifecycle(a.sandboxId)).toEqual(deleted);
   }
 });
@@ -2283,7 +2279,7 @@ test("a complete stopped Docker archive replaces the live sample, while a trunca
     `insert into sandbox_outputs(sandbox_id,name,digest,size,content_enc) values($1,'previous.txt',$2,3,$3)`,
     [a.sandboxId, createHash("sha256").update("old").digest("hex"), await encryptSecret("b2xk", key)],
   );
-  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
   const route = createDockerHostRoutes(store, async () => {
     throw Error("Host upload used user auth");
   });
@@ -2337,7 +2333,7 @@ test("an attached Docker restore can publish the replacement's retained outputs"
   expect(await a.poll()).toEqual(a.restore);
   await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId: "c".repeat(64) });
   await store.attachMachineRestore(a.owner, claim);
-  await store.expired(a.hostToken, a.installationId, { requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId });
   const signal = new AbortController().signal;
   const outputs = (body: ReadableStream<Uint8Array> | null) =>
     store.retainedOutputs(a.hostToken, a.installationId, requestId, body, signal);
@@ -2352,7 +2348,7 @@ test("an attached Docker restore can publish the replacement's retained outputs"
 
 test("a mixed-release replica sees and can supersede a Docker upload before publication", async () => {
   const a = await boundStartup("create");
-  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
   const db = database();
   let transactions = 0;
   const probeAndAdmissionTransactions = 2;
@@ -2400,7 +2396,7 @@ test("a mixed-release replica sees and can supersede a Docker upload before publ
 test("stopped Docker output admission refuses application-secret taint before reading", async () => {
   const a = await boundStartup("create");
   await database().query("update sandboxes set application_secret_tainted=true where id=$1", [a.sandboxId]);
-  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
   expect(
     await store.retainedOutputs(a.hostToken, a.installationId, a.startup.requestId, null, new AbortController().signal),
   ).toBe(204);
@@ -2522,7 +2518,7 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       expect(physicallyStopped.status).toBe("failed");
       expect(physicallyStopped.stopped_at).not.toBeNull();
       expect(physicallyStopped.lifecycle_generation).toBe(failed.lifecycle_generation);
-      await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+      await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
       expect(await lifecycle(a.sandboxId)).toEqual({ ...physicallyStopped, stop_requested_at: expect.anything() });
       const remove = { requestId: randomUUID(), operation: "delete" as const };
       await store.enqueueSandbox(a.actor, a.sandboxId, remove);
@@ -2867,7 +2863,7 @@ test("runtime self completion needs no child access and retries failed stop/dele
   expect(retryStop?.operation).toBe("stop");
   if (!retryStop) throw Error("Missing retry stop");
   // A racing host expiry must not cancel the explicit immediate-cleanup intent.
-  await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
   expect((await lifecycle(a.sandboxId))?.status_reason).toBe("agent_finished");
   await store.complete(a.hostToken, a.installationId, { requestId: retryStop.requestId, outcome: "completed" });
   const remove = await store.poll(a.hostToken, a.installationId);
@@ -2967,7 +2963,7 @@ test("retired registrants retain only bound reconciliation and admin cleanup", a
     ).resolves.toEqual({ hostId: a.hostId, retentionSeconds: undefined });
     await expect(store.limitsForHost(a.hostToken, a.installationId)).resolves.toBeUndefined();
     await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
-    await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.startup.requestId });
     expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
     const remove = { requestId: randomUUID(), operation: "delete" as const };
     await store.enqueueSandbox({ userId: a.backupAdmin, orgId: a.actor.orgId }, a.sandboxId, remove);
@@ -3034,7 +3030,7 @@ test("a late completed create ACK after cancellation restores the reservation in
   // the restored reservation is what keeps capacity honest in the meantime.
   expect((await lifecycle(a.sandboxId))?.status).toBe("failed");
   expect((await lifecycle(a.sandboxId))?.stopped_at).toBeNull();
-  await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.create.requestId });
   expect((await store.list(a.actor))[0]?.running).toBe(0);
   expect((await lifecycle(a.sandboxId))?.stopped_at).not.toBeNull();
 });
@@ -3067,7 +3063,7 @@ test("a cancelled job's first host receipt is terminal and a later conflicting r
   // A failed create is not physical proof the container stopped, so its slot
   // stays reserved until a stop/delete/expiry fact releases it.
   expect((await store.list(a.actor))[0]?.running).toBe(1);
-  await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  await reportDockerExpiry(sql, key, store, a.hostToken, a.installationId, { requestId: a.create.requestId });
   expect((await store.list(a.actor))[0]?.running).toBe(0);
 });
 
