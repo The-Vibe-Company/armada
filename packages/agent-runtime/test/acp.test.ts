@@ -76,7 +76,17 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
             ? ["D", "OCK", "ER", "_OK"]
             : [context.request.text],
       );
-      const finals = events.filter((event) => event.kind === "message" && !event.partial);
+      if (action === "finish") {
+        const command = `echo ${"x".repeat(250)}😀${"y".repeat(155)}`;
+        const preview = command.slice(0, 255);
+        const tools = events.flatMap((event) => (event.kind === "message" ? event.tools : []));
+        expect(tools).toEqual([
+          { id: preview, name: preview, input: command },
+          { id: preview, name: "tool_result" },
+          { id: "tool", name: "shell" },
+        ]);
+      }
+      const finals = events.filter((event) => event.kind === "message" && !event.partial && !event.tools.length);
       expect(finals.map((event) => (event.kind === "message" ? event.text : ""))).toEqual(
         action === "interrupt" ? [] : [action === "steer" ? "next" : context.request.text],
       );
@@ -333,6 +343,8 @@ antigravityTest(
       expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ token, auth_method: "consumer" });
       expect(f.registered).toEqual([token.access_token, token.refresh_token]);
       expect(f.events.some((event) => event.kind === "message" && event.text.includes("***"))).toBe(true);
+      const tools = f.events.flatMap((event) => (event.kind === "message" ? event.tools : []));
+      expect(tools).toEqual([{ id: "fixture-tool", name: `${"a".repeat(254)}**`, input: { "***": "echo" } }]);
       const streamed = f.events
         .flatMap((event) => (event.kind === "message" && event.partial ? [event.text] : []))
         .join("");

@@ -4,6 +4,7 @@ import { validateHarnessCwd } from "./cwd.ts";
 import { bounded } from "./deadline.ts";
 import { acpStopReasonCode, HarnessError, nativeHarnessError, RequestRefused } from "./errors.ts";
 import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protocol.ts";
+import { toolIdentifier } from "./tool-preview.ts";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
@@ -201,27 +202,28 @@ export class AcpDriver implements Driver {
             if (
               (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") &&
               typeof u.toolCallId === "string"
-            )
+            ) {
+              const title = typeof u.title === "string" ? u.title : "";
+              const redact = (text: string) => c.redactToolText?.(text) ?? text;
+              const label = redact(title.replaceAll("\0", "")).trim();
+              const name = toolIdentifier(label, u.sessionUpdate === "tool_call_update" ? "tool_result" : "tool");
+              const input = u.rawInput === undefined && label.length > name.length ? redact(title) : u.rawInput;
               c.emit({
                 kind: "message",
                 text: "",
                 partial: false,
                 tools: [
                   {
-                    id: u.toolCallId,
-                    name:
-                      typeof u.title === "string"
-                        ? u.title
-                        : u.sessionUpdate === "tool_call_update"
-                          ? "tool_result"
-                          : "tool",
-                    ...(u.rawInput === undefined ? {} : { input: u.rawInput }),
+                    id: toolIdentifier(redact(u.toolCallId.replaceAll("\0", ""))),
+                    name,
+                    ...(input === undefined ? {} : { input }),
                     ...(u.status === "completed" || u.status === "failed"
                       ? { result: { output: u.rawOutput ?? u.content ?? null, isError: u.status === "failed" } }
                       : {}),
                   },
                 ],
               });
+            }
           }
         } catch {
           failure(new HarnessError("invalid_harness_protocol"));

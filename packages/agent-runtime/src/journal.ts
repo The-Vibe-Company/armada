@@ -5,6 +5,7 @@ import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
+import { boundedPreview, toolIdentifier } from "./tool-preview.ts";
 
 const MAX_EVENT_BYTES = 262144;
 const MAX_COLLISION_ALIASES = MAX_EVENT_BYTES / 4;
@@ -57,12 +58,6 @@ function truncatedEvent(
   });
 }
 
-/** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
-function boundedPreview(text: string, limit: number): string {
-  if (text.length <= limit) return text;
-  const end = limit > 0 && /[\uD800-\uDBFF]/.test(text[limit - 1] ?? "") ? limit - 1 : limit;
-  return text.slice(0, end);
-}
 function maskText(original: string, scrubbed: string, mask: (text: string) => string) {
   const short = mask(original);
   if (short === original || short === scrubbed) return scrubbed;
@@ -555,18 +550,21 @@ export class Journal {
       scrubbed.kind = event.kind;
       if (event.textMode !== undefined) scrubbed.textMode = event.textMode;
       if (event.responseKind !== undefined) scrubbed.responseKind = event.responseKind;
-      if (!mask) return JSON.stringify(scrubbed);
-      return JSON.stringify({
-        ...scrubbed,
-        text: appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask),
-        tools: scrubbed.tools.map((tool, index) => ({
+      if (mask)
+        scrubbed.text = appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask);
+      scrubbed.tools = scrubbed.tools.map((tool, index) => {
+        const original = event.tools[index]!;
+        const field = (before: string, after: string) => toolIdentifier(mask ? maskText(before, after, mask) : after);
+        return {
           ...tool,
-          name: maskText(event.tools[index]!.name, tool.name, mask),
-          ...(tool.server !== undefined ? { server: maskText(event.tools[index]!.server!, tool.server, mask) } : {}),
-          ...(tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
-          ...(tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
-        })),
+          id: field(original.id, tool.id),
+          name: field(original.name, tool.name),
+          ...(tool.server === undefined ? {} : { server: field(original.server!, tool.server) }),
+          ...(mask && tool.input !== undefined ? { input: maskPayload(tool.input, mask) } : {}),
+          ...(mask && tool.result ? { result: { ...tool.result, output: maskPayload(tool.result.output, mask) } } : {}),
+        };
       });
+      return JSON.stringify(scrubbed);
     }
     if (event.kind !== "other") return body;
     const scrubbed = { ...JSON.parse(body), kind: event.kind };

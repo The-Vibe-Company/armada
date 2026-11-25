@@ -153,6 +153,7 @@ for await (const line of lines) {
               update: {
                 sessionUpdate: "tool_call",
                 toolCallId: "fixture-tool",
+                title: `${"a".repeat(254)}${token.access_token}`,
                 rawInput: { [token.access_token]: "echo" },
               },
             },
@@ -183,6 +184,15 @@ for await (const line of lines) {
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "unrelated" } },
         },
       });
+      if (text === "DOCKER_OK") {
+        const command = `echo ${"x".repeat(250)}😀${"y".repeat(155)}`;
+        for (const update of [
+          { sessionUpdate: "tool_call", toolCallId: command, title: command },
+          { sessionUpdate: "tool_call_update", toolCallId: command, title: "" },
+          { sessionUpdate: "tool_call", toolCallId: "\0", title: "  sh\0ell  " },
+        ])
+          send({ method: "session/update", params: { sessionId, update } });
+      }
       const fragments = echo
         ? [text.slice(0, 10), text.slice(10)]
         : text === "DOCKER_OK"

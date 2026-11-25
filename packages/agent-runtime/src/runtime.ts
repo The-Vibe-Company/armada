@@ -721,6 +721,7 @@ export class Runner {
         ...(sessionId ? { sessionId } : {}),
         ...(this.mcp ? { mcp: this.mcp } : {}),
         session: (id, previousId) => this.journal.saveSession(p.conversationId, p.request.harness, id, previousId),
+        redactToolText: (text) => this.journal.redactLiteralText(text),
         emit: (event) => {
           if (event.kind === "other" && event.rawDiagnostic && this.journal.hasShortApplicationSecrets) return;
           const fields = event.kind === "other" ? { kind: event.kind, type: event.type, data: event.data } : event;

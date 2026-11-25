@@ -185,7 +185,14 @@ export class AntigravityDriver implements Driver {
         })),
       });
     };
-    return this.acp.start({ ...context, emit });
+    return this.acp.start({
+      ...context,
+      redactToolText: (text) => {
+        const scrubbed = mask(text);
+        return context.redactToolText?.(scrubbed) ?? scrubbed;
+      },
+      emit,
+    });
   }
 
   close() {
