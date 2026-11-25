@@ -99,14 +99,13 @@ export function createSandboxAccessServices(input: {
     if (
       admitRecovery &&
       saved.modalTransport === "dialout" &&
-      (saved.status === "stopping" || saved.status === "stopped")
+      ["stopping", "stopped", "failed"].includes(saved.status)
     ) {
       await admitRecovery(async (tx) => {
         const proof = await tx.query(
           `select 1 from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
-           join public.runtime_checkpoints p on p.sandbox_id=s.id
            where s.id=$1 and s.lifecycle_generation=$2 and j.kind='stop' and j.state in ('queued','leased','done')
-             and p.request_id=$3 and p.completed_at is not null and s.status in ('stopping','stopped') for update of s`,
+             and j.outcome->>'modal_child_operation'=$3 and s.status in ('stopping','stopped','failed') for update of s`,
           [saved.id, saved.lifecycleGeneration, operation.id],
         );
         if (!proof.rows.length) throw new DelegatedAccessError("conflict");
@@ -179,7 +178,7 @@ export function createSandboxAccessServices(input: {
       if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
       await stopStore.update(saved.id, {
         ...stopAdmission,
-        queueModalStop: true,
+        queueModalStop: operation.id,
         status: stoppingStatus,
         stopRequested: true,
         statusReason,
