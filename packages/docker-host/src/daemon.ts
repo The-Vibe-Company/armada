@@ -32,7 +32,8 @@ export type Receipt = {
   expiryOutputsPending?: true;
 } & (
   | { operation: "delete" }
-  | { operation: "create" | "stop"; machineId?: string }
+  | { operation: "create"; machineId?: string }
+  | { operation: "stop"; machineId?: string; absentMachineId?: string }
   | { operation: "bootstrap" | "resume" | "deletePhysical"; inputHash: string }
   | { operation: "restore"; inputHash: string; predecessorKey: string; machineId?: string }
   | {
@@ -62,7 +63,8 @@ export type State = {
     baselineVersion?: number | null,
     baselineTool?: SnapshotBaselineTool | null,
     missingRefIndex?: number | null,
-    machineId?: string,
+    machineId?: string | null,
+    absentMachineId?: string,
   ][];
   cleanupLimit?: number;
   retention?: {
@@ -121,7 +123,7 @@ export interface Executor {
     predecessor: Extract<Job, { operation: "restore" }>["predecessor"],
   ): Promise<unknown>;
   create(request: DockerMachineRequest): Promise<unknown>;
-  stop(request: DockerMachineRequest): Promise<unknown>;
+  stop(request: DockerMachineRequest, machineId?: string): Promise<unknown>;
   delete(request: DockerMachineRequest, target?: { scope: "physical-only"; machineId: string }): Promise<unknown>;
   stopIfExpired(request: DockerMachineRequest): Promise<unknown>;
   deleteStopped?(request: DockerMachineRequest): Promise<void>;
@@ -934,8 +936,37 @@ async function admitLocked(
         if (job.operation !== "restore" || !executor.restore) throw Error("Restore unavailable");
         const machineId = allocationMachineId(await executor.restore(receipt.request, job.predecessor));
         if (machineId !== undefined) receipt.machineId = machineId;
-      } else if (receipt.operation === "create" || receipt.operation === "stop") {
-        const machineId = allocationMachineId(await executor[receipt.operation](receipt.request));
+      } else if (receipt.operation === "stop") {
+        const key = generationKey(receipt.request);
+        const allocation = state.receipts.find(
+          (entry) =>
+            (entry.operation === "create" || entry.operation === "restore") &&
+            entry.outcome === "completed" &&
+            entry.machineId !== undefined &&
+            generationKey(entry.request) === key,
+        );
+        const retired = state.retired?.find(
+          (entry) =>
+            entry[2] === key &&
+            (entry[4] === "create" || entry[4] === "restore") &&
+            entry[5] === "completed" &&
+            Boolean(entry[11]),
+        );
+        const expectedId =
+          allocation && "machineId" in allocation ? allocation.machineId : (retired?.[11] ?? undefined);
+        const result = await executor.stop(receipt.request, expectedId);
+        const machineId = allocationMachineId(result);
+        if (machineId !== undefined) receipt.machineId = machineId;
+        if (
+          result &&
+          typeof result === "object" &&
+          "absentMachineId" in result &&
+          typeof result.absentMachineId === "string" &&
+          /^[a-f0-9]{64}$/.test(result.absentMachineId)
+        )
+          receipt.absentMachineId = result.absentMachineId;
+      } else if (receipt.operation === "create") {
+        const machineId = allocationMachineId(await executor.create(receipt.request));
         if (machineId !== undefined) receipt.machineId = machineId;
       } else if (receipt.operation === "deletePhysical") {
         if (job.operation !== "deletePhysical") throw Error("Changed host job");
@@ -1064,6 +1095,7 @@ async function admitLocked(
         ...(old[9] ? { baselineTool: old[9] } : {}),
         ...(old[10] ? { missingRefIndex: old[10] } : {}),
         ...(old[11] ? { machineId: old[11] } : {}),
+        ...(old[12] ? { absentMachineId: old[12] } : {}),
       } as Receipt;
       await reportReceipt(state, replay);
       return "worked";
@@ -1230,6 +1262,10 @@ export function compactReceipts(state: State): void {
       receipt.machineId
     )
       compacted[11] = receipt.machineId;
+    if (receipt.operation === "stop" && receipt.absentMachineId) {
+      compacted[11] = null;
+      compacted[12] = receipt.absentMachineId;
+    }
     retired.push(compacted);
     return false;
   });

@@ -542,20 +542,36 @@ export function createDockerMachineExecutor(options: {
     await checked(["cp", "--archive", "-", `${state.containerName}:/home`], archive);
   }
 
-  async function stop(request: DockerMachineRequest) {
+  async function absentStop(machineId: string | undefined) {
+    if (!machineId) return;
+    if (await containerIdExists(machineId)) fail("ownership_mismatch");
+    return { absentMachineId: machineId };
+  }
+
+  async function stop(request: DockerMachineRequest, expectedMachineId?: string) {
     const state = await owned(request);
-    if (!state.container) return;
+    if (!state.container) return absentStop(expectedMachineId);
     const machineId = state.container.Id;
     if (typeof machineId !== "string" || !dockerContainerId.test(machineId)) fail("ownership_mismatch");
+    if (expectedMachineId !== undefined && machineId !== expectedMachineId) fail("ownership_mismatch");
     const before = object(state.container.State);
     if (before.Running === false && before.Status === "exited") return { machineId };
     await checked(["container", "stop", "--time", "10", machineId]);
     const stopped = await owned(request);
-    if (!stopped.container) return;
+    if (!stopped.container) return absentStop(machineId);
     const status = object(stopped.container.State);
     if (stopped.container.Id !== machineId) fail("ownership_mismatch");
     if (status.Running !== false || status.Status !== "exited") fail("docker_failed");
     return { machineId };
+  }
+
+  async function containerIdExists(machineId: string) {
+    const ids = (await checked(["container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}"]))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    if (!dockerContainerId.test(machineId) || ids.some((id) => !dockerContainerId.test(id))) fail("ownership_mismatch");
+    return ids.includes(machineId);
   }
 
   async function remove(
@@ -574,11 +590,7 @@ export function createDockerMachineExecutor(options: {
       if (state.container) fail("docker_failed");
     }
     if (physicalOnly) {
-      const ids = (await checked(["container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}"]))
-        .trim()
-        .split("\n")
-        .filter(Boolean);
-      if (ids.some((id) => !dockerContainerId.test(id)) || ids.includes(target.machineId)) fail("ownership_mismatch");
+      if (await containerIdExists(target.machineId)) fail("ownership_mismatch");
       return;
     }
     // Successful exact absence observation is required before deleting the exact owned volume.
