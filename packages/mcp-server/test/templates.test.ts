@@ -40,7 +40,6 @@ async function fixture() {
     delete from launch_template_revisions;
     alter table launch_template_revisions enable trigger immutable_template_revision;
     delete from launch_templates;
-    delete from provider_launch_requests;
     delete from ordinary_launch_receipts;
     delete from sandboxes;
     delete from golden_operation_fences;

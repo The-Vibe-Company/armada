@@ -138,8 +138,11 @@ test.each(["prompt", "readable variables", "MCP health", "MCP configuration", "M
     if (operation === "readable variables") {
       const manifest = await encryptSecret(JSON.stringify({ request: {}, variables: { TEST_VALUE: "test" } }), key);
       await database().query(
-        `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,result_enc)
-         select $1,e.epoch,$2,$3,$4 from public.mcp_actor_epochs e where e.user_id=$5 and e.org_id=$6`,
+        `insert into public.jobs(kind,sandbox_id,org_id,generation,idem_key,request_owner_id,request_digest,state,deadline_at,max_attempts,payload_enc,outcome)
+         select 'launch',$1::uuid,e.org_id,1,format('["request","%s","launch","%s",%s]',e.org_id,e.user_id,to_json(format('["docker","%s"]',$1::uuid))),
+           e.user_id,$2,'done',now()+interval '1 hour',1,$3,
+           jsonb_build_object('docker_actor_epoch',e.epoch::text,'docker_receipt',encode($4::bytea,'hex'))
+         from public.mcp_actor_epochs e where e.user_id=$5 and e.org_id=$6`,
         [input.id, "a".repeat(64), manifest, await encryptSecret("{}", key), f.actor.userId, f.actor.orgId],
       );
     }
@@ -349,8 +352,11 @@ test("normal launch preparation cannot be bypassed by private readiness or an un
     healthId = randomUUID();
   const input = { requestId: randomUUID(), text: "Original admitted prompt" };
   await db.query(
-    `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc)
-    select $1,e.epoch,$2,$3 from public.mcp_actor_epochs e where e.user_id=$4 and e.org_id=$5`,
+    `insert into public.jobs(kind,sandbox_id,org_id,generation,idem_key,request_owner_id,request_digest,state,deadline_at,max_attempts,payload_enc,outcome)
+     select 'launch',$1::uuid,e.org_id,1,format('["request","%s","launch","%s",%s]',e.org_id,e.user_id,to_json(format('["docker","%s"]',$1::uuid))),
+       e.user_id,$2,'queued',now()+interval '1 hour',1,$3,
+       jsonb_build_object('docker_actor_epoch',e.epoch::text)
+     from public.mcp_actor_epochs e where e.user_id=$4 and e.org_id=$5`,
     [
       f.sandbox.id,
       "a".repeat(64),

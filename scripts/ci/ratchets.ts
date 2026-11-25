@@ -2,23 +2,11 @@ import { lstatSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import {
   isNativePathSource,
-  providerAdapterExclusions,
+  isProviderBranchSource,
   providerBranchPattern,
   scanNativePaths,
   testPaths,
 } from "../metrics/architecture-rules";
-
-const serverAdapters = new Set(
-  [
-    "boat-delegated-access-provider.ts",
-    "boat-runtime-resume.ts",
-    "docker-runtime-lifecycle.ts",
-    "modal-integration.ts",
-    "modal-reaper.ts",
-    "modal-runtime-resume.ts",
-    "observed-boat.ts",
-  ].map((name) => `packages/mcp-server/src/${name}`),
-);
 
 const serverSource = /^packages\/mcp-server\/src\//;
 const routeTables = /^packages\/mcp-server\/src\/control[^/]*\.ts$/;
@@ -114,7 +102,7 @@ type Counter = {
 const counters: Record<string, Counter> = {
   "provider-branch": {
     name: "provider-branch",
-    includes: (path) => !providerAdapterExclusions.test(path) && !serverAdapters.has(path),
+    includes: isProviderBranchSource,
     pattern: providerBranchPattern,
   },
   "versioned-route": {
@@ -147,13 +135,13 @@ function isNonTestTypeScript(path: string) {
 }
 
 function inScope(path: string) {
-  return isNonTestTypeScript(path) || isNativePathSource(path);
+  return isNonTestTypeScript(path) || isNativePathSource(path) || isProviderBranchSource(path);
 }
 
 function* matches(counter: Counter, files: Files) {
   for (const [path, content] of files) {
     if (!counter.includes(path)) continue;
-    if (counter.name !== "native-path" && !isNonTestTypeScript(path)) continue;
+    if (counter.name !== "native-path" && counter.name !== "provider-branch" && !isNonTestTypeScript(path)) continue;
     if ("scan" in counter) {
       for (const occurrence of counter.scan(path, content)) yield { path, content, ...occurrence };
     } else {

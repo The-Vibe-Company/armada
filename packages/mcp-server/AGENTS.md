@@ -19,6 +19,13 @@ Authority: `docs/state-model.md`.
 10. **No new claim loop.** New background work extends an existing lane in `packages/mcp-server/src/server-workers.ts`. Register new job kinds with the shared jobs runner in `packages/mcp-server/src/jobs/runner.ts`. Never write a bespoke claim loop, outbox table or lane.
 11. **Three providers.** A lifecycle change states its Boat × Modal × Docker behaviour. Staging proves Modal and Docker; Boat evidence is the coordinator's.
 
+### Machine contract
+Authority: `docs/machine-contract.md`.
+- Operations: `create`, `bootstrap`, `stop({retain})`, `resume`, `delete`, `observe`, `listInventory`.
+- Idempotent on `(sandboxId, generation)`.
+- Adapters hold no lease and renew none.
+- Every adapter passes `packages/core/test-support/machine-conformance.ts`; provider behaviour is tested there, not per call site.
+
 ### Design note (required for every change in scope)
 Written in the issue before code. It covers:
 - the invariants above that the change touches;

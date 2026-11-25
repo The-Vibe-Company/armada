@@ -15,6 +15,7 @@ test("counts architecture signals across a fixture tree with production and migr
     ["packages/provider-boat/src/run.ts", "if (provider === 'boat') launch();\n"],
     ["packages/agent-runtime/src/run.ts", 'const path = "native";\n'],
     ["packages/docker-host/src/run.ts", "if (provider === 'docker') launch();\n"],
+    ["packages/mcp-server/src/docker-machine-adapter.ts", "if (provider === 'docker') launch();\n"],
     ["packages/core/src/runtime.test.ts", 'const path = "native";\n'],
     ["packages/core/src/database.types.ts", 'type Path = "native";\n'],
     ["apps/dashboard/e2e/mock.ts", 'const path = "native";\n'],
@@ -32,11 +33,11 @@ test("counts architecture signals across a fixture tree with production and migr
   expect(countArchitecture(files)).toEqual({
     nativeReferences: 2,
     nativeReferenceFiles: 1,
-    nonTestSourceLines: 8,
+    nonTestSourceLines: 9,
     providerIdBranchesOutsideAdapters: 2,
     sandboxStatusWriterFiles: 2,
     bespokeLeaseClaimImplementations: 4,
     leaseClaimTables: ["dispatch_jobs", "jobs", "sandboxes", "task_jobs"],
-    netSourceLines: 8,
+    netSourceLines: 9,
   });
 });

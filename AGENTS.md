@@ -35,6 +35,7 @@
 10. **One version** across package manifests under `packages`. **English** in code, output, docs and comments.
 11. **Landmines rules are mandatory.** Give the reason for any inline disable in the PR and only shrink baselines.
 12. **Self-register.** Define routes, MCP tools, workers, mounts and CLI commands in their owning modules. Wire server routes, workers and mounts through `packages/mcp-server/src/modules.ts` and commands through `packages/cli/src/commands/index.ts`. Use `@armada/core/<area>` subpaths.
+13. **Providers are machines.** Outside `packages/provider-*`, `packages/docker-host` and the machine adapters, never branch on a provider id; read `MachineCapabilities`.
 
 ## Pull requests
 - **One module, at most 600 changed lines.** Generated files, pure deletions and `git mv` do not count. If the work is bigger, stop and tell the coordinator so the ticket is split.
