@@ -7,6 +7,7 @@ import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts"
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import {
+  modalDialoutPlacement,
   requiresMissingMachineObservation,
   retainsDiskOnStop,
   runtimeBridgeTarget,
@@ -240,7 +241,6 @@ export function configureTools(
       }
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
-      const { provider } = await live(found.id, true, found);
       signal?.throwIfAborted();
       const needsCheckpoint =
         found.ownerId === caller.userId &&
@@ -266,6 +266,31 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
+      if (modalDialoutPlacement(found)) {
+        if (found.lifecycleGeneration === undefined)
+          throw new VaultError("conflict", "Modal generation is unavailable.");
+        const status: SandboxStatus = found.status === "failed" ? "failed" : "stopping";
+        await data.sandboxes.update(found.id, {
+          ...stopAdmission,
+          ...retainedGuard,
+          queueModalStop: true,
+          status,
+          stoppedAt: null,
+          stopRequested: true,
+          advanceGeneration: true,
+          activityToken: crypto.randomUUID(),
+          expectedGeneration: found.lifecycleGeneration,
+          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
+        });
+        return {
+          id: found.id,
+          status,
+          ...(checkpoint === null
+            ? { preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded." }
+            : {}),
+        };
+      }
+      const { provider } = await live(found.id, true, found);
       return sandboxActivity(
         data.sandboxes,
         found,

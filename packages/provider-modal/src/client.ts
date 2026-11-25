@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ModalBinding } from "@armada/core";
 import { ModalClient } from "modal";
 import { refusal } from "./errors.ts";
@@ -5,6 +6,23 @@ export interface ModalConnection {
   client?: ModalClient;
   tokenId?: string;
   tokenSecret?: string;
+}
+const stopBudget = new AsyncLocalStorage<{ signal: AbortSignal; deadlineAt: number | undefined }>();
+export function withModalStopSignal<T>(
+  signal: AbortSignal | undefined,
+  deadlineAt: number | undefined,
+  work: () => Promise<T>,
+) {
+  return signal ? stopBudget.run({ signal, deadlineAt }, work) : work();
+}
+
+export function modalStopTimeout(maximum: number, quantum = 1) {
+  const budget = stopBudget.getStore();
+  budget?.signal.throwIfAborted();
+  const remaining = budget?.deadlineAt === undefined ? maximum : budget.deadlineAt - Date.now();
+  const timeout = Math.floor(Math.min(maximum, remaining) / quantum) * quantum;
+  if (timeout <= 0) throw new Error("Modal stop dispatch deadline elapsed.");
+  return timeout;
 }
 export function modalConnection(options: ModalConnection): ModalClient {
   const supplied = options.tokenId !== undefined || options.tokenSecret !== undefined;
@@ -16,7 +34,20 @@ export function modalConnection(options: ModalConnection): ModalClient {
   if (options.client) return options.client;
   const { tokenId, tokenSecret } = options;
   if (!tokenId || !tokenSecret) throw refusal("provider_routing_unavailable", "Explicit Modal credentials required.");
-  return new ModalClient({ tokenId, tokenSecret });
+  return new ModalClient({
+    tokenId,
+    tokenSecret,
+    grpcMiddleware: [
+      async function* (call, rpc) {
+        const stop = stopBudget.getStore()?.signal;
+        if (!stop) return yield* call.next(call.request, rpc);
+        stop.throwIfAborted();
+        const signal = rpc.signal ? AbortSignal.any([stop, rpc.signal]) : stop;
+        const bounded = { ...rpc, signal, retries: 0 };
+        return yield* call.next(call.request, bounded);
+      },
+    ],
+  });
 }
 
 export async function boundModalApp(client: Pick<ModalClient, "apps">, appName: string, binding: ModalBinding) {

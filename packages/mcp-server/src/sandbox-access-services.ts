@@ -98,6 +98,22 @@ export function createSandboxAccessServices(input: {
   }
   async function stopChild(operation: ChildOperation, admitRecovery?: StopRecoveryAdmission) {
     const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+    if (
+      admitRecovery &&
+      saved.modalTransport === "dialout" &&
+      ["stopping", "stopped", "failed"].includes(saved.status)
+    ) {
+      await admitRecovery(async (tx) => {
+        const proof = await tx.query(
+          `select 1 from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+           where s.id=$1 and s.lifecycle_generation=$2 and j.kind='stop' and j.state in ('queued','leased','done')
+             and j.outcome->>'modal_child_operation'=$3 and s.status in ('stopping','stopped','failed') for update of s`,
+          [saved.id, saved.lifecycleGeneration, operation.id],
+        );
+        if (!proof.rows.length) throw new DelegatedAccessError("conflict");
+      });
+      return;
+    }
     if (saved.boatRuntime && (saved.status === "stopping" || saved.stopRequestedAt)) return;
     const retained =
       saved.modalTransport === "dialout" || (saved.boatRuntime && ["ready", "running"].includes(saved.status));
@@ -119,7 +135,6 @@ export function createSandboxAccessServices(input: {
       }
       if (saved.status === "starting") throw new ChildStopNotAdmitted("sandbox_not_ready");
     }
-    const provider = await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -169,6 +184,21 @@ export function createSandboxAccessServices(input: {
       ownerStop: true,
       ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
     };
+    if (saved.modalTransport === "dialout") {
+      if (saved.lifecycleGeneration === undefined) throw new DelegatedAccessError("conflict");
+      await stopStore.update(saved.id, {
+        ...stopAdmission,
+        queueModalStop: operation.id,
+        status: stoppingStatus,
+        stopRequested: true,
+        statusReason,
+        advanceGeneration: true,
+        activityToken: crypto.randomUUID(),
+        expectedGeneration: saved.lifecycleGeneration,
+      });
+      return;
+    }
+    const provider = await resolveProvider();
     await sandboxActivity(
       stopStore,
       saved,

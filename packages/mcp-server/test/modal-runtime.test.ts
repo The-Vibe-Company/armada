@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { DelegatedAuthority, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
-import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
+import { enqueueModalStop } from "../src/sandbox-lifecycle.ts";
+import { runClaimedStop } from "./stop-job.fixture.ts";
 import { database, ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
 
 let prepared: Promise<Awaited<ReturnType<typeof database>>> | undefined;
@@ -180,23 +181,40 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   expect(await admit()).toBe(true);
 
   const access = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
-  const host = access.wrap({
+  const host = {
     ...fake.provider,
-    id: "modal",
-    async get() {
-      throw Error("Host observation unavailable");
+    id: "modal" as const,
+    async get(id: string) {
+      return { ...(await fake.provider.get(id)), providerState: "active", physicalGeneration: "1" };
     },
-  });
+    async runtimeStopMachine() {
+      return {
+        physical: { machineId: machine.id, generation: 1 },
+        stopped: false,
+        machine: {
+          async stop({ retain }: { retain: boolean }) {
+            expect(retain).toBe(false);
+            await fake.provider.stop({ sandboxId: machine.id });
+            return null;
+          },
+        },
+      };
+    },
+  };
   const provider = await createRuntimeServing(sql, ENCRYPTION_KEY)(
-    host,
+    access.wrap(host),
     { ...row, visibility: "private", modal: { workspace: "workspace", environment: "main", appId: "app" } },
     { userId: people.owner },
+    async () => ({ status: "clean" }),
   );
   const request = { sandboxId: machine.id };
-  await expect(provider.stop(request)).rejects.toThrow("requires a lifecycle stop or terminal state");
+  await expect(provider.delete(request)).rejects.toThrow("requires a lifecycle stop or terminal state");
   expect(await admit()).toBe(true);
 
-  await sql.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [row.id]);
+  await sql.transaction!(async (tx) => {
+    await tx.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [row.id]);
+    expect(await enqueueModalStop(tx, row.id, generation)).toBe(true);
+  });
   const parent = await sql.query<{ epoch: string }>(
     "select authority_epoch::text as epoch from armada_access_parents where id=$1",
     [row.id],
@@ -204,28 +222,8 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   expect(BigInt(parent.rows[0]!.epoch)).toBeGreaterThan(BigInt(issuedEpoch));
   await expect(admit()).rejects.toThrow("denied");
   await expect(provider.delete(request)).rejects.toThrow("requires a lifecycle stop or terminal state");
-  const records: unknown[] = [];
-  const response = await observeRequest(
-    async () => {
-      await expect(provider.stop({ ...request, requireRetention: true })).rejects.toThrow(
-        "verified runtime checkpoint",
-      );
-      return new Response(null, { status: 409 });
-    },
-    (line) => records.push(JSON.parse(line)),
-  );
-  expect(records).toContainEqual(
-    expect.objectContaining({
-      event: "operator_failure",
-      requestId: response.headers.get("x-request-id"),
-      sandboxId: row.id,
-      phase: "sandbox.stop.runtime_dispatch",
-      refusalCode: "checkpoint_proof_missing",
-    }),
-  );
-  await provider.stop(request);
+  expect((await runClaimedStop(sql, async () => provider)).result.status).toBe("done");
   expect((await fake.provider.get(machine.id)).state).toBe("stopped");
-
-  await sql.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [row.id]);
+  expect((await createSqlData(sql)(caller).sandboxes.get(row.id))?.status).toBe("stopped");
   await expect(provider.delete(request)).resolves.toMatchObject({ status: "pending" });
 });

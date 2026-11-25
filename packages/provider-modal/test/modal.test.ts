@@ -111,6 +111,39 @@ function createFixtureSql(getDatabase: typeof getDb) {
   return sql;
 }
 const fixtureSql = createFixtureSql(getDb);
+async function stopRuntime(
+  provider: Pick<ReturnType<typeof createModalProvider>["provider"], "runtimeStopMachine">,
+  proof: { sandboxId: string; physicalGeneration: string; epoch: string; watermark: number },
+  options?: Pick<
+    Parameters<ReturnType<typeof createModalProvider>["provider"]["runtimeStopMachine"]>[0],
+    "write" | "reconcileOnly" | "deadlineAt"
+  >,
+) {
+  const { sandboxId, physicalGeneration, epoch, watermark } = proof;
+  const { physical } = await provider.runtimeStopMachine({
+    recordId: sandboxId,
+    sandboxId,
+    generation: Number(physicalGeneration),
+    checkpoint: { epoch, watermark },
+    write: (work) => work(fixtureSql),
+  });
+  const binding = await provider.runtimeStopMachine({
+    recordId: sandboxId,
+    sandboxId,
+    generation: 8,
+    physical: { ...physical, generation: Number(physicalGeneration) },
+    checkpoint: { epoch, watermark },
+    write: (work) => work(fixtureSql),
+    ...options,
+  });
+  return binding.machine.stop({
+    machineId: physical.machineId,
+    sandboxId,
+    generation: 8,
+    retain: true,
+    signal: new AbortController().signal,
+  });
+}
 function fixture(
   accessScope: Scope = scope,
   sql: Sql = fixtureSql,
@@ -122,6 +155,7 @@ function fixture(
   let artifactVolume: Volume | undefined;
   const requestedRuntimes: (string | undefined)[] = [];
   const resourceRequests: Record<string, unknown>[] = [];
+  let snapshotBudget: number | undefined;
   const sdkCommands: { argv: string[]; params: object; stdin: string[] }[] = [];
   let manifestResult: { exitCode: number | null; stdout: string } | undefined;
   let failSnapshot = false;
@@ -238,8 +272,9 @@ function fixture(
               wait: async () => 0,
             };
           },
-          snapshotFilesystem: async (p: object) => {
-            expect(p).toEqual({ ttlMs: null });
+          snapshotFilesystem: async (p: { ttlMs: null; timeoutMs?: number }) => {
+            expect(p.ttlMs).toBeNull();
+            snapshotBudget = p.timeoutMs;
             log.push("snapshot");
             expect(provisioned).toBe(false);
             if (failSnapshot) throw new Error("synthetic private SDK data");
@@ -371,6 +406,9 @@ function fixture(
       artifactVolume = volume;
     },
     sdkCommands,
+    get snapshotBudget() {
+      return snapshotBudget;
+    },
     setManifestResult(exitCode: number | null, stdout = "private collector detail") {
       manifestResult = { exitCode, stdout };
     },
@@ -908,7 +946,7 @@ test.each([
   expect(f.resourceRequests[1]).toMatchObject(resources);
   expect(f.resourceRequests[0]).not.toHaveProperty("cpu");
   expect(f.resourceRequests[0]).not.toHaveProperty("memoryMiB");
-  await f.provider.stopRuntime({ sandboxId: row.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+  await stopRuntime(f.provider, { sandboxId: row.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
   await f.provider.resumeRuntime({
     sandboxId: row.id,
     generation: 2,
@@ -1164,10 +1202,30 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
     });
   });
   await expect(
-    f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "2", epoch: "7", watermark: 2 }),
+    stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "2", epoch: "7", watermark: 2 }),
   ).rejects.toMatchObject({ code: "conflict" });
-  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
-  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
+  const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 };
+  await expect(
+    stopRuntime(f.provider, proof, {
+      deadlineAt: Date.now() + 10_000,
+      write: (work) =>
+        work({
+          async query(statement, params) {
+            if (
+              statement.includes("update public.modal_machines") &&
+              JSON.parse(String(params?.[4])).phase === "stopped"
+            )
+              throw Error("lost final Modal receipt write");
+            return fixtureSql.query(statement, params);
+          },
+        }),
+    }),
+  ).rejects.toThrow();
+  expect((await f.store.get(worker.id)).phase).toBe("terminate");
+  expect(f.snapshotBudget).toBeGreaterThan(0);
+  expect(f.snapshotBudget).toBeLessThanOrEqual(10_000);
+  await stopRuntime(f.provider, proof, { reconcileOnly: true, write: (work) => work(fixtureSql) });
+  await stopRuntime(f.provider, proof);
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
   await expect(
     f.provider.resumeRuntime({
@@ -1206,7 +1264,7 @@ test("retained Modal rollback retries termination and fences a newer replacement
   const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   const checkpoint = { epoch: "1", watermark: 2 };
-  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", ...checkpoint });
+  await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", ...checkpoint });
   const { recoveryImageId } = await f.store.get(worker.id);
   const request = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint };
   await f.provider.resumeRuntime(request);
@@ -1244,7 +1302,7 @@ test("retained Modal rollback retries termination and fences a newer replacement
 test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
   const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
-  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
+  await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
   f.failCreate(true);
   await expect(
     f.provider.resumeRuntime({
@@ -1275,8 +1333,8 @@ test("uncertain enrolled Modal snapshot refuses retry or resume and compute fall
   const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 };
   const afterLaunch = f.log.length;
   f.failSnapshot(true);
-  await expect(f.provider.stopRuntime(proof)).rejects.toThrow();
-  await expect(f.provider.stopRuntime(proof)).rejects.toMatchObject({ code: "conflict" });
+  await expect(stopRuntime(f.provider, proof)).rejects.toThrow();
+  await expect(stopRuntime(f.provider, proof)).rejects.toMatchObject({ code: "conflict" });
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot"]);
   await expect(
     f.provider.resumeRuntime({
@@ -1716,7 +1774,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { name } = await savedGolden(f);
     const saved = await f.store.image(name);
     const child = await f.provider.fork({ from: name });
-    await f.provider.stopRuntime({ sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+    await stopRuntime(f.provider, { sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
     const recovery = (await f.store.get(child.id)).recoveryImageId;
     expect(recovery).toBeDefined();
     await seedHistoricalSnapshotTombstone(name);
@@ -1768,7 +1826,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       const seedName = crypto.randomUUID();
       await other.provider.snapshot({ sandboxId: seed.id, name: seedName });
       const child = await other.provider.fork({ from: seedName });
-      await other.provider.stopRuntime({ sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+      await stopRuntime(other.provider, { sandboxId: child.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
       const recovery = (await other.store.get(child.id)).recoveryImageId!;
       if (mode === "retained") {
         await other.provider.resumeRuntime({
@@ -1777,7 +1835,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
           checkpoint: { epoch: "1", watermark: 0 },
           ttlSeconds: 3600,
         });
-        await other.provider.stopRuntime({ sandboxId: child.id, physicalGeneration: "2", epoch: "2", watermark: 0 });
+        await stopRuntime(other.provider, { sandboxId: child.id, physicalGeneration: "2", epoch: "2", watermark: 0 });
         await other.provider.resumeRuntime({
           sandboxId: child.id,
           generation: 3,
@@ -1945,7 +2003,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { provider: restoredConnection } = await createRuntimeModalProvider(configuration);
     const fork = await restoredConnection.fork({ from: snapshot });
     expect((await f.store.get(fork.id)).managementAuthority).toEqual(requested);
-    await restoredConnection.stopRuntime({ sandboxId: fork.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
+    await stopRuntime(restoredConnection, { sandboxId: fork.id, physicalGeneration: "1", epoch: "1", watermark: 0 });
     await restoredConnection.resumeRuntime({
       sandboxId: fork.id,
       generation: 2,

@@ -30,6 +30,7 @@ import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
+import { runClaimedStop } from "./stop-job.fixture.ts";
 import { bunLikeSql, ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -78,6 +79,7 @@ describe("Modal user stop and wake-on-send", () => {
     async (recover) => {
       const f = await fixture();
       let needsRetry = recover;
+      let captures = 0;
       let state: "ready" | "stopped" = "ready";
       let retained: { epoch: string; watermark: number } | undefined;
       const host = {
@@ -85,16 +87,25 @@ describe("Modal user stop and wake-on-send", () => {
         async get() {
           return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
         },
-        async stop() {
-          state = "stopped";
+        async readOutputs() {
+          captures++;
+          return [{ name: "last.txt", bytes: new Uint8Array([42]) }];
         },
-        async stopRuntime({ epoch, watermark }: { epoch: string; watermark: number }) {
-          if (needsRetry) {
-            needsRetry = false;
-            throw Error("Stop response was lost before physical stop was confirmed");
-          }
-          retained = { epoch, watermark };
-          state = "stopped";
+        async runtimeStopMachine({ checkpoint }: { checkpoint: typeof retained }) {
+          return {
+            physical: { machineId: f.row.providerSandboxId, generation: 1 },
+            machine: {
+              async stop({ sandboxId, generation }: { sandboxId: string; generation: number }) {
+                if (needsRetry) {
+                  needsRetry = false;
+                  throw Error("Worker interrupted after final output capture");
+                }
+                retained = checkpoint;
+                state = "stopped";
+                return { sandboxId, generation, kind: "image", ref: "image" };
+              },
+            },
+          };
         },
       };
       const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
@@ -139,20 +150,20 @@ describe("Modal user stop and wake-on-send", () => {
         runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
       };
       const stop = () => dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls);
+      expect(await stop()).toMatchObject({ status: "stopping" });
+      const resolve = async () => providers.resolve((await controls.data(f.caller).sandboxes.get(f.row.id))!, f.caller);
       if (recover) {
-        await expect(stop()).rejects.toThrow();
-        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
-        const target = (await controls.data(f.caller).sandboxes.get(f.row.id))!;
-        const provider = await providers.resolve(target, f.caller);
-        const stopCall = spyOn(provider, "stop");
-        const lifecycle = createSandboxLifecycle(f.sql, async () => provider);
-        expect(await lifecycle.reconcileOne()).toBe(true);
-        await lifecycle.drain();
-        expect(stopCall).toHaveBeenCalledWith({ sandboxId: f.row.providerSandboxId, requireRetention: true });
-        expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.status).toBe("stopped");
-      } else {
-        expect(await stop()).toMatchObject({ status: "stopped" });
+        const first = await runClaimedStop(f.sql, resolve, false);
+        expect(first.result.status).toBe("retry");
+        expect(first.job.outcome).toBeNull();
+        expect(
+          (await f.db.query("select outcome->'output' as output from jobs where id=$1", [first.job.id])).rows,
+        ).toMatchObject([{ output: { inline: [{ name: "last.txt" }] } }]);
+        await f.db.query("update jobs set lease_until=now()-interval '1 second' where id=$1", [first.job.id]);
       }
+      expect((await runClaimedStop(f.sql, resolve)).result.status).toBe("done");
+      expect(captures).toBe(1);
+      expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.status).toBe("stopped");
       const accountTurns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
       accountTurns.setDispatch((caller, request) =>
         dispatchControlCommand("sandbox/send", caller, { ...request }, controls),

@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import type { Harness, HarnessCredentials, Sql } from "@armada/core";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 
-function fixture(status = "stopped", provider = "boat", modalTransport: string | null = "dialout") {
+function fixture(
+  status = "stopped",
+  provider = "boat",
+  modalTransport: string | null = "dialout",
+  pendingOutput = false,
+) {
   const user = crypto.randomUUID(),
     org = crypto.randomUUID(),
     id = crypto.randomUUID();
@@ -18,6 +23,7 @@ function fixture(status = "stopped", provider = "boat", modalTransport: string |
     boat_runtime: provider === "boat",
     model: "gpt-test",
     status,
+    lifecycle_generation: "4",
     deleted_at: null,
     stopped_at: status === "stopped" ? "2026-11-13" : null,
     leased: false,
@@ -33,6 +39,7 @@ function fixture(status = "stopped", provider = "boat", modalTransport: string |
         writes.push({ sql: query, values: [...values] });
         return { rows: [{ id }] } as never;
       }
+      if (query.includes("from public.jobs")) return { rows: pendingOutput ? [{ id }] : [] } as never;
       if (query.includes("native_drain_stop_requests")) return { rows: strictStop ? [{ id }] : [] } as never;
       if (query.includes("from public.sandboxes s")) return { rows: [{ ...row }] } as never;
       return { rows: [{ id: selected }] } as never;
@@ -127,6 +134,14 @@ test("Modal dialout refreshes through the runtime pin without requiring native h
   await f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce);
   expect(f.writes).toHaveLength(1);
   expect(f.writes[0]?.values).toEqual([f.row.id, f.selected, 2]);
+});
+
+test("Modal account change preserves the generation while staged stop outputs await handoff", async () => {
+  const f = fixture("stopped", "modal", "dialout", true);
+  await expect(f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce)).rejects.toMatchObject({
+    code: "credential_binding_unsafe",
+  });
+  expect(f.writes).toHaveLength(0);
 });
 
 test("an incompatible OpenCode plan key is refused before stopping a custom-connection conversation", async () => {

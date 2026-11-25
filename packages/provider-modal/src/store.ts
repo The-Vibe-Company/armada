@@ -129,6 +129,18 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         );
       }
     },
+    async saveStop(tx, row) {
+      await authorize(tx);
+      const result = await tx.query(
+        `update public.modal_machines set record=$5::jsonb
+         where scope=$1 and id=$2 and org_id=$3 and owner_id=$4
+         and record->>'physicalId'=$6 and (record->>'generation')::bigint=$7
+         and coalesce(lease_until < clock_timestamp(), true)
+         returning id`,
+        [key, row.info.id, scope.orgId, scope.userId, JSON.stringify(row), row.physicalId, row.generation],
+      );
+      if (!result.rows.length) throw refusal("conflict", "Modal stop journal changed.");
+    },
     async image(name) {
       await authorize();
       const result = await sql.query<{ record: SavedImage }>(

@@ -39,12 +39,17 @@ or permission bypass. Do not execute it as part of a PR or an audit.
    a resumed generation. Only with confirmed evidence set status stopped
    (for Boat, definitive absence never authorizes this transition),
    stopped_at to the evidence time, stop_requested_at null, lifecycle_error null,
-   and clear reconciliation leases. Do not delete retained identity or data.
+   and clear reconciliation leases. On a failed Modal sandbox with live compute,
+   preserve its failure status and record the confirmed exit instead. If a Modal
+   stop job is parked at that generation, set its `run_after` to now in the same
+   transaction so it can publish staged outputs and retire. Do not delete retained
+   identity or data.
 
 If original normal authority is legitimately available again, the operator may
 instead requeue the same fenced row by setting reconcile_after to now and clearing
-the hold diagnostic under the same transaction/preconditions. Normal reconciliation
-must still observe the provider; requeueing alone never proves physical exit.
+the hold diagnostic under the same transaction/preconditions. For a Modal runtime with a queued shared stop job, also set that exact job's
+`run_after` to now in the same transaction. Keep its generation, deadline, and
+checkpoint evidence. Normal reconciliation must still observe the provider; requeueing alone never proves physical exit.
 
 A Boat recovery stop is identified by a `runtime_resume_unenrolled` transition
 into `stopping` for the current lifecycle generation. Definitive absence is
