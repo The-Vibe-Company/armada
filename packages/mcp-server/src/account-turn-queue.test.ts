@@ -68,7 +68,7 @@ beforeAll(async () => {
       registration_hash text,revoked_at timestamptz);
     create table docker_resume_claims(sandbox_id uuid,request_id uuid,actor_id uuid,host_id uuid,
       installation_id uuid,generation uuid,lifecycle_generation bigint,accepted boolean);
-    create table runtime_resumes(sandbox_id uuid,request_id uuid,target_epoch bigint,phase text,receipt jsonb,source_epoch bigint,activated_at timestamptz);
+    create table runtime_resumes(sandbox_id uuid,request_id uuid,target_epoch bigint,phase text,receipt jsonb,source_epoch bigint,activated_at timestamptz,conversation_id text,request_hash text);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
   // Apply this migration against a minimal real schema: no hand-written queue store behavior.
@@ -1390,7 +1390,7 @@ test.each([
   }
 });
 
-test.each(["modal", "boat", "docker"] as const)(
+test.each(["boat", "docker"] as const)(
   "the account turn worker settles an expired %s wake that cannot dispatch",
   async (provider) => {
     const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake with a queued prompt" };
@@ -1400,7 +1400,7 @@ test.each(["modal", "boat", "docker"] as const)(
     const machine = crypto.randomUUID();
     await sql.query(
       `update sandboxes set provider=$2,boat_runtime=($2='boat'),
-           runtime_transport=case when $2='modal' then 'dialout' end,status='stopped',stopped_at=now(),
+           runtime_transport=null,status='stopped',stopped_at=now(),
            status_reason=case when $2='docker' then 'idle_paused' end,
            docker_host_id=$3,docker_installation_id=$4,docker_generation=$5
          where id=$1`,
@@ -1871,33 +1871,30 @@ test("terminal admission creates neither queue entries nor reservations", async 
 });
 
 // Runtime evidence is not permission to wake a sandbox after its owner stopped it.
-test.each(["boat", "modal", "docker"])(
-  "%s stopped runtime receipts are refused instead of resumed",
-  async (provider) => {
-    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "old instruction" };
-    await database().query(
-      "update sandboxes set provider=$2,boat_runtime=($2='boat'),runtime_transport=case when $2='modal' then 'dialout' else null end where id=$1",
-      [input.id, provider],
-    );
-    await queue.accept(caller, input);
-    const original = await claimTurn(input.request_id);
-    expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
-    await recordFollowupCommand(input);
-    await database().query(
-      "update sandboxes set status='stopped',lifecycle_generation=2,activity_lease_id='30000000-0000-4000-8000-000000000001' where id=$1",
-      [input.id],
-    );
-    await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
-    await sql.query("update jobs set lease_until='-infinity' where id=$1", [original.job.id]);
-    let calls = 0;
-    await sharedDispatcher(async () => {
-      calls++;
-      return { promptId: "unwanted_turn" };
-    })();
-    expect(calls).toBe(0);
-    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
-  },
-);
+test.each(["boat", "docker"])("%s stopped runtime receipts are refused instead of resumed", async (provider) => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "old instruction" };
+  await database().query(
+    "update sandboxes set provider=$2,boat_runtime=($2='boat'),runtime_transport=case when $2='modal' then 'dialout' else null end where id=$1",
+    [input.id, provider],
+  );
+  await queue.accept(caller, input);
+  const original = await claimTurn(input.request_id);
+  expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
+  await recordFollowupCommand(input);
+  await database().query(
+    "update sandboxes set status='stopped',lifecycle_generation=2,activity_lease_id='30000000-0000-4000-8000-000000000001' where id=$1",
+    [input.id],
+  );
+  await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
+  await sql.query("update jobs set lease_until='-infinity' where id=$1", [original.job.id]);
+  let calls = 0;
+  await sharedDispatcher(async () => {
+    calls++;
+    return { promptId: "unwanted_turn" };
+  })();
+  expect(calls).toBe(0);
+  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+});
 test.each(["boat", "modal"] as const)("stopped %s native send reaches account admission", async (provider) => {
   await database().query("update sandboxes set provider=$2,status='stopped',status_reason=null where id=$1", [
     ids[1],

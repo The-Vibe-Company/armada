@@ -167,6 +167,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       authority?: LaunchAuthority | undefined;
     },
     resumeOnly = false,
+    readRetainedReceipt = false,
   ) {
     const requestId = input.request_id;
     const normalized = normalizedTurnInput(input);
@@ -212,6 +213,33 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       ).rows[0];
       if (!target || !caller.orgs.some((org) => org.orgId === target.org_id))
         throw new VaultError("not_found", "No owned sandbox.");
+      if (readRetainedReceipt && target.runtime_transport === "dialout") {
+        const historical = await historicalModalResumeReceipt(tx, caller, {
+          id: input.id,
+          requestId,
+          prompt: input.prompt,
+        });
+        if (historical) {
+          if (input.model !== undefined || input.reasoning_effort !== undefined)
+            throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
+          return { historical };
+        }
+        const {
+          rows: [accepted],
+        } = await tx.query<Entry>(
+          `select q.* from public.account_turn_queue q join public.mcp_actor_epochs e
+             on e.org_id=q.org_id and e.user_id=q.owner_id and e.epoch=q.actor_epoch
+           join public.jobs j on j.sandbox_id=q.sandbox_id and j.generation=q.queued_generation+1
+             and j.kind='resume' and j.state='done' and j.generation=q.dispatch_generation
+           where q.sandbox_id=$1 and q.request_id=$2 and q.owner_id=$3 and q.org_id=$4 and q.result_enc is not null`,
+          [input.id, requestId, caller.userId, target.org_id],
+        );
+        if (accepted) {
+          if (accepted.input_hash !== hash)
+            throw new VaultError("conflict", "Reuse the original request_id and identical input.");
+          return accepted;
+        }
+      }
       const refusal = sandboxControlRefusal(
         {
           ...target,
@@ -373,16 +401,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   }
   async function accept(caller: Caller, input: RuntimeFollowupInput, { resumeOnly = false } = {}) {
     const requestId = input.request_id?.toLowerCase() ?? randomUUID();
-    if (input.request_id) {
-      const historical = await historicalModalResumeReceipt(sql, caller, {
-        id: input.id,
-        requestId,
-        prompt: input.prompt,
-      });
-      if (historical) return historical;
-    }
-    const entry = await persist(caller, { ...input, request_id: requestId }, undefined, resumeOnly);
+    const entry = await persist(
+      caller,
+      { ...input, request_id: requestId },
+      undefined,
+      resumeOnly,
+      Boolean(input.request_id),
+    );
     if (!entry) return null;
+    if ("historical" in entry) return entry.historical;
     if (entry.result_enc) return JSON.parse(await decryptSecret(entry.result_enc, key));
     if (entry.state === "failed")
       throw new VaultError("conflict", "Queued prompt was cancelled; inspect sandbox status.");

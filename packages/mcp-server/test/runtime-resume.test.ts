@@ -126,7 +126,9 @@ describe("historical Modal resume receipt", () => {
     );
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge);
     expect(await resume(f.caller, request)).toEqual(receipt as Awaited<ReturnType<typeof resume>>);
-    expect(await createAccountTurnQueue(f.sql, ENCRYPTION_KEY).accept(f.caller, request)).toEqual(receipt);
+    const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    expect(await turns.accept(f.caller, request)).toEqual(receipt);
+    await expect(turns.accept(f.caller, { ...request, model: "changed" })).rejects.toMatchObject({ code: "invalid" });
 
     await expect(resume(f.caller, { ...request, prompt: "changed" })).rejects.toMatchObject({ code: "conflict" });
   });
@@ -2128,6 +2130,9 @@ describe("Modal resume job", () => {
         [f.row.id],
       );
       expect(rows).toEqual([{ generation: String(firstGeneration + 1) }]);
+      await f.sql.query("update public.sandboxes set expires_at=now() where id=$1", [f.row.id]);
+      expect(await turns.accept(f.caller, request)).toMatchObject({ promptId: accepted.value.promptId });
+      expect(await explicit(f.caller, request)).toEqual(accepted.value);
     } finally {
       unsubscribe();
     }

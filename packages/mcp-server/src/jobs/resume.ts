@@ -180,7 +180,7 @@ export function createResumeJob(options: {
              join public.members m on m.org_id=q.org_id and m.user_id=q.owner_id
              join public.mcp_actor_epochs e on e.org_id=q.org_id and e.user_id=q.owner_id and e.epoch=q.actor_epoch
              left join public.jobs j on j.sandbox_id=q.sandbox_id and j.generation=q.queued_generation+1
-               and j.kind='resume' and j.state='done'
+               and j.kind='resume' and j.state='done' and j.generation=q.dispatch_generation
            where q.sandbox_id=$1 and q.request_id=$2 and q.owner_id=$3`,
           [found.id, request.request_id, caller.userId],
         );
