@@ -61,6 +61,17 @@ test("coalescing merges adjacent text-only deltas in delta mode while preserving
     { id: "10", text: "pre", textMode: "delta", tools: [tool] },
     { id: "11", text: "final", textMode: "snapshot", tools: [] },
   ]);
+  const claudeRun = coalesceEventMessages([
+    message("12", "Hel"),
+    message("13", "lo"),
+    { ...message("14", "Hello", "snapshot"), partial: false, responseKind: "assistant" },
+    message("15", "!"),
+    { ...message("16", "tool output", "snapshot"), partial: false, responseKind: "tool_result" },
+  ]);
+  expect(claudeRun).toMatchObject([
+    { id: "15", text: "Hello!", textMode: "snapshot", responseKind: "assistant", tools: [] },
+    { id: "16", text: "tool output", textMode: "snapshot", responseKind: "tool_result", tools: [] },
+  ]);
 });
 
 test("backward delta coalescing preserves raw cursors and cross-page text reconstruction", () => {

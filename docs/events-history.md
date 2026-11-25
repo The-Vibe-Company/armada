@@ -77,5 +77,5 @@ Follow switches from the initial backward page to forward polling at its newest 
 ## Historical measurement
 
 The #814 synthetic delta-only coalescing measurement no longer describes the
-safe contract: delta-only windows now retain raw events rather than collapsing
-them into a partial snapshot.
+safe contract: delta-only windows coalesce adjacent text-only deltas in `delta`
+mode rather than collapsing them into a synthetic partial snapshot.
