@@ -20,7 +20,11 @@ import type { CallerResult } from "./caller.ts";
 import { fail } from "./control-response.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
-import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
+import {
+  DockerHostUpgradeRequired,
+  dockerHostVersionOffer,
+  supportsDockerHostProtocol,
+} from "./docker-host-version.ts";
 import { dockerInventoryDeploymentId, dockerMachineInventory } from "./docker-machine-inventory.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
@@ -186,7 +190,7 @@ export function createDockerHostRoutes(
         if (listing)
           return Response.json(
             {
-              targetVersion: VERSION,
+              ...dockerHostVersionOffer,
               serverVersion: VERSION,
               placement: options.placement === true,
               hosts: await store.list(actor),
@@ -461,7 +465,7 @@ export function createDockerHostRoutes(
           {
             ...(retentionSeconds === undefined ? {} : { retentionSeconds }),
             ...(wait === undefined ? {} : { held: true }),
-            targetVersion: VERSION,
+            ...dockerHostVersionOffer,
             containerInventory: 1,
             containerInventoryDeploymentId: inventoryDeploymentId(hostId, installationId),
             resumeClaims: [],

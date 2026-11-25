@@ -128,6 +128,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     if (args.options.has("--json")) auth.out(`${JSON.stringify(result, null, 2)}\n`);
     else {
       if (result.targetVersion) auth.out(`Target daemon version: ${result.targetVersion}\n`);
+      if (result.minimumVersion) auth.out(`Minimum supported daemon version: ${result.minimumVersion}\n`);
       auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n");
       for (const host of result.hosts) {
         const resources = dockerHostResourceDisplay(host);

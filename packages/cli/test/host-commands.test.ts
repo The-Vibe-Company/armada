@@ -136,7 +136,7 @@ test("host ls exposes safe metadata as text or JSON and revoke uses host UUID", 
     const result = await capture(["host", "ls", ...(json ? ["--json"] : [])], async (request) => {
       expect(new URL(request.url).pathname).toEndWith("/hosts/list");
       expect(await request.json()).toEqual({ org });
-      return Response.json({ placement: true, serverVersion: "2.49.6", hosts: [summary] });
+      return Response.json({ placement: true, targetVersion: "13.0.0", minimumVersion: "4.0.0", hosts: [summary] });
     });
     expect(result.code).toBe(0);
     if (json) expect(JSON.parse(result.out).hosts[0]).toEqual(summary);
@@ -148,6 +148,8 @@ test("host ls exposes safe metadata as text or JSON and revoke uses host UUID", 
         "3",
         summary.lastSeenAt,
         "Upgrade the Docker host daemon",
+        "Target daemon version: 13.0.0",
+        "Minimum supported daemon version: 4.0.0",
         "armada host add",
       ])
         expect(result.out).toContain(value);
