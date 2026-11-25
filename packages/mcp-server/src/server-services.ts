@@ -62,6 +62,7 @@ import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
+import { createRelayHub } from "./relay-hub.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -581,6 +582,14 @@ export async function createServerServices(env: Record<string, string | undefine
     createRuntimeNativeAuth(sql, config.encryptionKey),
   );
   const runtimeSockets = createRuntimeSockets(runtimeEnrolments, runtimeCommands);
+  const relayHub = createRelayHub({
+    sql,
+    authority: runtimeEnrolments,
+    encryptionKey: config.encryptionKey,
+    publicUrl: config.publicUrl,
+    dashboardUrl: config.dashboardUrl,
+  });
+  control.relayHub = relayHub;
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
   const outputs = createSandboxOutputs(
     sql,
@@ -660,6 +669,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeGitHub,
     runtimeMcp,
     runtimeSockets,
+    relayHub,
     langfuse,
     delegatedAccess,
     modelAuth,

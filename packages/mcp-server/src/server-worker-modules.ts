@@ -152,9 +152,10 @@ const jobsLane: LaneFactory = ({
   };
 };
 
-const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, dockerBootstrap }) =>
+const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, dockerBootstrap, relayHub }) =>
   createRuntimeIdle(sql, config.encryptionKey, runtimeCheckpoint, {
     delayMs: idleDelayMs,
+    hasActiveRelay: (sandboxId) => relayHub.hasActiveRelay(sandboxId),
     ...(dockerBootstrap
       ? {
           dockerStop: (actor, id, requestId) =>
@@ -201,7 +202,9 @@ export const dockerModule: ServerModule = ({ mounts, workers }) => {
 export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);
   workers.managed.set("runtime-idle", idleLane);
-  shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
+  shutdown.stopSockets = async ({ runtimeSockets, relayHub }) => {
+    await Promise.all([runtimeSockets.stop(), relayHub.stop()]);
+  };
 };
 const modalArtifactWorker = ({ modal, modalArtifactCache, options }: ServerServices) => {
   if (!modalArtifactCache) return undefined;

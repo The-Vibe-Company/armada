@@ -1,5 +1,7 @@
+import type { ServerWebSocket } from "bun";
 import { createHandler } from "./http.ts";
 import { assembleServer } from "./modules.ts";
+import type { RelaySocketData } from "./relay-hub.ts";
 import { BUN_REQUEST_BODY_BACKSTOP, ingressRequest } from "./request-body-ceiling.ts";
 import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import type { RuntimeSocketData } from "./runtime-sockets.ts";
@@ -11,9 +13,11 @@ import { runtimeWakes, startEventNotifyListener } from "./wake-bus.ts";
 
 export { bunSql } from "./sql.ts";
 
+type ServerSocketData = ({ kind: "channel" } & RuntimeSocketData) | RelaySocketData;
+
 export async function startServer(env: Record<string, string | undefined>, options: ServerOptions = {}) {
   const services = await createServerServices(env, options);
-  const { config, control, runtimeSockets } = services;
+  const { config, control, runtimeSockets, relayHub } = services;
   const eventStreamShutdown = new AbortController();
   control.eventStreamShutdown = eventStreamShutdown.signal;
   control.stopAdmissionShutdown = eventStreamShutdown.signal;
@@ -27,32 +31,55 @@ export async function startServer(env: Record<string, string | undefined>, optio
   const requestDrain = createServerRequestDrain(handler, options.logError);
   const { fetch, requests } = requestDrain;
   const server = Object.assign(
-    Bun.serve<RuntimeSocketData>({
+    Bun.serve<ServerSocketData>({
       port: config.port,
       hostname: "0.0.0.0",
       // The 128 MiB ingress ceiling is enforced by the observed handler, so its 413 carries the
       // request ID and record; Bun's own limit is only a backstop. Control JSON (128 KiB) and
       // broker (1 KiB) stay bounded per route.
       maxRequestBodySize: BUN_REQUEST_BODY_BACKSTOP,
-      fetch: (request, instance) =>
-        new URL(request.url).pathname === "/api/runtime/channel"
-          ? observeRequest(
-              () => {
-                // Read the ID here: the upgrade callback runs inside a database session callback.
-                const requestId = currentRequestId()!;
-                return runtimeSockets.upgrade(request, (data) =>
-                  instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: requestId } }),
-                );
-              },
-              options.logError,
-              request,
-            )
-          : fetch(request),
+      fetch: (request, instance) => {
+        const pathname = new URL(request.url).pathname;
+        const wsUpgrade =
+          pathname === "/api/runtime/channel"
+            ? (id: string) =>
+                runtimeSockets.upgrade(request, (data) =>
+                  instance.upgrade(request, {
+                    data: { kind: "channel", ...data },
+                    headers: { [REQUEST_ID_HEADER]: id },
+                  }),
+                )
+            : pathname === "/api/runtime/relay" || pathname === "/api/v1/relay/ws"
+              ? (id: string) =>
+                  (pathname === "/api/runtime/relay" ? relayHub.upgradeRuntime : relayHub.upgradeClient)(
+                    request,
+                    (data) => instance.upgrade(request, { data, headers: { [REQUEST_ID_HEADER]: id } }),
+                  )
+              : undefined;
+        // Read the request ID before entering a database session callback.
+        return wsUpgrade
+          ? observeRequest(() => wsUpgrade(currentRequestId()!), options.logError, request)
+          : fetch(request);
+      },
       error: (error) =>
         observeRequest(() => {
           throw error;
         }, options.logError),
-      websocket: runtimeSockets.websocket,
+      websocket: {
+        ...relayHub.websocket,
+        open: (s) =>
+          s.data.kind === "channel"
+            ? runtimeSockets.websocket.open?.(s as ServerWebSocket<RuntimeSocketData>)
+            : relayHub.websocket.open?.(s as ServerWebSocket<RelaySocketData>),
+        message: (s, m) =>
+          s.data.kind === "channel"
+            ? runtimeSockets.websocket.message(s as ServerWebSocket<RuntimeSocketData>, m)
+            : relayHub.websocket.message(s as ServerWebSocket<RelaySocketData>, m),
+        close: (s, c, r) =>
+          s.data.kind === "channel"
+            ? runtimeSockets.websocket.close?.(s as ServerWebSocket<RuntimeSocketData>, c, r)
+            : relayHub.websocket.close?.(s as ServerWebSocket<RelaySocketData>, c, r),
+      },
     }),
     {
       workerDone: Promise.resolve(),

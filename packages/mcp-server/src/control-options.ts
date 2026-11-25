@@ -42,6 +42,7 @@ export interface ControlOptions {
   listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
   eventStreamShutdown?: AbortSignal;
   eventFeed?: import("./event-feed.ts").EventFeed;
+  relayHub?: import("./relay-hub.ts").RelayHub;
   configureStopRequest?: (request: Request) => void;
   stopAdmissionShutdown?: AbortSignal;
   configureScopedMutationRequest?: (request: Request) => void;
