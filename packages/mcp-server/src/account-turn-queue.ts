@@ -38,7 +38,7 @@ import { canRepeatPinnedRuntimeSettings, usesHostLaunch } from "./provider-runti
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
-import { historicalModalResumeReceipt } from "./runtime-resume-receipts.ts";
+import { historicalRuntimeResumeReceipt } from "./runtime-resume-receipts.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
 import { ToolError } from "./tool-error.ts";
 
@@ -213,14 +213,19 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       ).rows[0];
       if (!target || !caller.orgs.some((org) => org.orgId === target.org_id))
         throw new VaultError("not_found", "No owned sandbox.");
-      if (readRetainedReceipt && target.runtime_transport === "dialout") {
-        const historical = await historicalModalResumeReceipt(tx, caller, {
+      if (readRetainedReceipt && (target.boat_runtime || target.runtime_transport === "dialout")) {
+        const historical = await historicalRuntimeResumeReceipt(tx, caller, {
           id: input.id,
           requestId,
           prompt: input.prompt,
         });
         if (historical) {
-          if (input.model !== undefined || input.reasoning_effort !== undefined)
+          const repeatPinned = canRepeatPinnedRuntimeSettings(target.provider);
+          if (
+            (input.model !== undefined && (!repeatPinned || input.model !== target.model)) ||
+            (input.reasoning_effort !== undefined &&
+              (!repeatPinned || input.reasoning_effort !== target.reasoning_effort))
+          )
             throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
           return { historical };
         }
@@ -279,6 +284,10 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             ? { model: target.model, reasoningEffort: target.reasoning_effort }
             : undefined,
         );
+      }
+      if (target.boat_runtime && (resumeOnly || target.status === "stopped")) {
+        await tx.query("set local lock_timeout = '750ms'");
+        await tx.query("lock table public.account_turn_queue in row exclusive mode");
       }
       const member = (
         await tx.query<{ epoch: string }>(
@@ -542,12 +551,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
              failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}'
            from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
              and q.dispatch_until<=clock_timestamp()
-             and (${FAILED_DOCKER_WAKE} or (
-               s.provider='boat' and s.boat_runtime
-               and s.activity_lease_id is distinct from q.request_id
-               and exists(select 1 from public.runtime_resumes r
-                 where r.sandbox_id=q.sandbox_id and r.request_id=q.request_id and r.receipt is null)
-             ))
+             and ${FAILED_DOCKER_WAKE}
            returning q.sandbox_id,q.request_id`,
         );
         for (const receipt of failedWakes)

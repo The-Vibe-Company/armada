@@ -13,7 +13,7 @@ import { holdUnconfirmedBoatStop, settleBoatStop } from "../sandbox-lifecycle.ts
 import { enqueueStopOutput, type OutputReader, stageStopOutputs } from "../sandbox-outputs.ts";
 import { runtimePreservationNote } from "../work-preservation.ts";
 import type { Job, JobContext, JobResult } from "./runner.ts";
-import { createJobsStore } from "./store.ts";
+import { createJobsStore, mergeStopOutcome, withJobLease } from "./store.ts";
 
 type ExitEvidence = { stoppedAt: Date | undefined };
 
@@ -26,6 +26,7 @@ type Target = MachineIdentity & {
   scope: string | null;
   deadline: number;
   retain: boolean;
+  resumeUnconfirmed: boolean;
 };
 
 function boatStopMachine(sql: Sql, key: string, deploymentId: string) {
@@ -98,6 +99,12 @@ export function createBoatStop(
     } = await sql.query<Omit<Target, "generation" | "launchGeneration"> & { launchGeneration: string | null }>(
       `select s.id as "sandboxId", s.provider_sandbox_id as "machineId",s.org_id as "orgId",
          s.owner_id as "ownerId",s.source_golden_visibility as visibility,(extract(epoch from j.deadline_at)*1000)::float8 as deadline,
+         exists(select 1 from public.jobs resume where resume.sandbox_id=s.id
+           and resume.kind='resume' and resume.generation between s.lifecycle_generation-1 and s.lifecycle_generation
+           and coalesce(resume.outcome->'evidence',resume.outcome) ? 'boat_restore_dispatched'
+           and not (coalesce(resume.outcome->'evidence',resume.outcome) ? 'boat_restore_observed'))
+           and not coalesce(j.outcome ? 'boat_resume_seen_active',false)
+           as "resumeUnconfirmed",
          (not s.application_secret_tainted and s.status<>'failed') as retain,
          launch.generation::text as "launchGeneration", launch.authority->>'scope' as scope,
          launch.authority->>'backendId' as "backendId"
@@ -153,6 +160,14 @@ export function createBoatStop(
       signal.throwIfAborted();
       const observed = await machine.observe({ ...identity, signal });
       if (observed.kind === "unknown") return retry();
+      if (target.resumeUnconfirmed) {
+        if (observed.kind !== "present" || observed.phase !== "running") return retry();
+        const recorded = await withJobLease(sql, job, async (tx) => {
+          await mergeStopOutcome(tx, job.id, { boat_resume_seen_active: true });
+          return true;
+        });
+        if (!recorded) return retry();
+      }
       const absent = observed.receipt?.operation === "delete";
       archiveObserved = observed.kind === "absent" && !absent;
       if (absent && (target.retain || !target.backendId)) return retry();

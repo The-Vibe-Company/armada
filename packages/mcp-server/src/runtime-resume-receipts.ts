@@ -3,7 +3,7 @@ import { type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { RuntimeResumeReceipt } from "./runtime-resume.ts";
 
-export async function historicalModalResumeReceipt(
+export async function historicalRuntimeResumeReceipt(
   sql: Sql,
   caller: Caller,
   input: { id: string; requestId: string; prompt: string },
@@ -20,7 +20,7 @@ export async function historicalModalResumeReceipt(
        from public.runtime_resumes r join public.sandboxes s on s.id=r.sandbox_id
        join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
        where r.sandbox_id=$1 and r.request_id=$2 and s.owner_id=$3 and s.org_id=any($4::uuid[])
-         and s.runtime_transport='dialout' and s.deleted_at is null`,
+         and (s.boat_runtime or s.runtime_transport='dialout') and s.deleted_at is null`,
     [input.id, input.requestId, caller.userId, caller.orgs.map((org) => org.orgId)],
   );
   if (!saved) return;

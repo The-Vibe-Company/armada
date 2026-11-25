@@ -12,12 +12,13 @@ import type { ModalClient } from "modal";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
 import { memorySessionStore } from "../../cli/src/session.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { providerRegistry } from "../src/http.ts";
+import { createResumeJob } from "../src/jobs/resume.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
-import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime.fixture.ts";
@@ -300,10 +301,23 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     const raced = row.id;
     await createRuntimeCheckpoint(sql, ENCRYPTION_KEY, bridge)(caller, { ...input(), runtimeVersion: 1 });
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [raced]);
-    const resume = createRuntimeResume(sql, ENCRYPTION_KEY, bridge, async () => {
-      throw Error("Deletion must fence runtime activation");
+    const resume = createResumeJob({
+      sql,
+      key: ENCRYPTION_KEY,
+      commands: bridge,
+      turns: createAccountTurnQueue(sql, ENCRYPTION_KEY),
+      async provider() {
+        throw Error("Deletion must fence runtime activation");
+      },
+      async prepare() {
+        throw Error("Deletion must fence runtime bootstrap");
+      },
+      async prepareMcp() {
+        return undefined;
+      },
+      async restoreScopedAccess() {},
     });
-    context.runtimeSend = createRuntimeFollowup(sql, ENCRYPTION_KEY, bridge, undefined, resume);
+    context.runtimeSend = createRuntimeFollowup(sql, ENCRYPTION_KEY, bridge, undefined, undefined, resume.wake);
     let admitted!: () => void;
     const started = new Promise<void>((resolve) => {
       admitted = resolve;
@@ -321,7 +335,7 @@ test("sandbox deletion authorizes live owners/admins, fences activity, and prese
     if (admission) throw Error(`Delete returned ${admission.status} before acquiring its lease.`);
     await expect(callSharedTool(context, "send", input("resume"))).rejects.toMatchObject({
       code: "conflict",
-      message: "Resume requires a confirmed retained stop and no unresolved admission.",
+      message: "Resume requires the admitted retained stop.",
     });
     expect(starts).toHaveLength(1);
     release?.();

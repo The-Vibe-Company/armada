@@ -190,7 +190,7 @@ describe("direct Modal runtime admission", () => {
       { orgId: f.row.orgId, maxAttempts: 1 },
     );
     await f.db.query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [request.id]);
-    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, async () => {
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, undefined, async () => {
       throw new Error("Resume dispatch was reached before launch setup.");
     });
     await expect(send(f.caller, request)).rejects.toMatchObject({
