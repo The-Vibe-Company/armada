@@ -239,12 +239,12 @@ function pinnedModalFailure(receipt: Record<string, unknown>) {
   );
 }
 
-function configureDockerLaunch(options: ControlOptions, request: Request | undefined) {
-  if (options.admitHostLaunch && request) options.configureDockerLaunchRequest?.(request);
+function configureHostLaunch(options: ControlOptions, request: Request | undefined) {
+  if (options.admitHostLaunch && request) options.configureScopedMutationRequest?.(request);
 }
 
 async function handleSandboxLaunch({ caller, body, options, request }: ControlRouteContext) {
-  if (usesHostLaunch(body.provider)) configureDockerLaunch(options, request);
+  if (usesHostLaunch(body.provider)) configureHostLaunch(options, request);
   const { store, encryptionKey } = options;
   const userId = caller.userId;
   const parsed = launchOperation.input.body.safeParse(body);
@@ -257,7 +257,6 @@ async function handleSandboxLaunch({ caller, body, options, request }: ControlRo
     );
   const launch = parsed.data;
   if ("hostId" in launch || "snapshotId" in launch) {
-    if (!usesHostLaunch(launch.provider)) throw new VaultError("invalid", "Provider does not support host launches.");
     const org = scopedOrg(caller, launch.org);
     const { admitHostLaunch } = options;
     if (!admitHostLaunch) throw new VaultError("unavailable", "Normal Docker launch is not configured.");
@@ -354,7 +353,7 @@ export const launchRoutes = defineRoutes("launch", {
     handler: handleSandboxLaunch,
   },
   [controlRouteKey(launchTemplateOperation.route)]: ({ caller, body, options, request }) => {
-    configureDockerLaunch(options, request);
+    configureHostLaunch(options, request);
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
     return launchTemplate(options.templates, caller, body, templateRuntime(options, caller), "template_rest");
   },

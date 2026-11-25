@@ -54,7 +54,6 @@ export interface ControlOptions {
     id: string,
   ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   admitHostLaunch?: import("./docker-launch-placement.ts").AdmitHostLaunch;
-  configureDockerLaunchRequest?: (request: Request) => void;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   docker?: {
     hosts?: boolean;
