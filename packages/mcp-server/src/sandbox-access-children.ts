@@ -9,6 +9,7 @@ import {
   type Sql,
   validateSkillPins,
 } from "@armada/core/server";
+import { initialLaunchFailed, initialLaunchPending } from "./account-turn-dispatch.ts";
 import type { ChildAuthority } from "./child-authority.ts";
 import { DataError } from "./data.ts";
 import { ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
@@ -278,18 +279,20 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             if (input.action !== "launch") {
               const {
                 rows: [lease],
-              } = await tx.query<{ busy: boolean; extension_refused: boolean }>(
+              } = await tx.query<{ busy: boolean; launch_failed: boolean; extension_refused: boolean }>(
                 `select (coalesce(reconcile_lease_until>clock_timestamp(),false)
-                      or ($2='message' and status='starting')
+                      or ($2='message' and (status='starting' or ${initialLaunchPending("s")}))
                       or ($2='stop' and (boat_runtime or runtime_transport is not distinct from 'dialout')
                         and activity_lease_id is not null)) as busy,
+                      ($2='message' and ${initialLaunchFailed("s")}) as launch_failed,
                       ($2='extend' and boat_runtime) as extension_refused
-                  from public.sandboxes where id=$1`,
+                  from public.sandboxes s where id=$1`,
                 [receipt.sandboxId, input.action],
               );
               if (!lease) throw new Error("Child sandbox disappeared during admission.");
               if (lease.extension_refused)
                 throw new ToolError("extension_state", "Enrolled Boat sandboxes do not support lifetime extension.");
+              if (lease.launch_failed) throw new ModalLaunchSetupConflict("modal_launch_setup_failed");
               if (lease.busy) return { busy: true as const };
             }
             admissionSignal.throwIfAborted();
@@ -328,9 +331,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             code,
             refusalCode: denied
               ? "authority_denied"
-              : error instanceof ToolError
-                ? error.code
-                : "dispatch_admission_error",
+              : error instanceof ModalLaunchSetupConflict
+                ? error.reason
+                : error instanceof ToolError
+                  ? error.code
+                  : "dispatch_admission_error",
           },
         );
         // No executor was invoked. Failed fresh admission is confirmed non-allocation,
