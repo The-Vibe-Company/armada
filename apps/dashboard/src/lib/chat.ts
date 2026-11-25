@@ -264,3 +264,46 @@ function oneLine(text: string): string {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length > 140 ? `${line.slice(0, 139)}…` : line;
 }
+
+function lastItemSignature(last: ChatItem | undefined) {
+  if (!last) return "";
+  switch (last.kind) {
+    case "assistant":
+      return `${last.key}:${last.text.length}:${last.streaming ? 1 : 0}:${last.model ?? ""}`;
+    case "user":
+      return `${last.key}:${last.status}:${last.text.length}`;
+    case "steer":
+      return `${last.key}:${last.text.length}`;
+    case "outcome":
+      return `${last.key}:${last.status}:${last.reason?.length ?? 0}`;
+    case "tool":
+      return last.key;
+  }
+}
+
+export function transcriptSignature(items: readonly ChatItem[], running: boolean) {
+  const toolParts: string[] = [];
+  for (const item of items) {
+    if (item.kind !== "tool") continue;
+    const { id, name, input, result } = item.tool;
+    let inputSize = 0;
+    if (typeof input === "string") inputSize = input.length + 1;
+    else if (input !== undefined) inputSize = toolSummary(input).length + 1;
+    const resultState = result
+      ? `${result.isError ? "e" : "d"}${typeof result.output === "string" ? result.output.length : 1}`
+      : "p";
+    toolParts.push(`${id}:${name}:${inputSize}:${resultState}`);
+  }
+  return `${items.length}|${running ? 1 : 0}|${lastItemSignature(items.at(-1))}|${toolParts.join(",")}`;
+}
+
+export function formatElapsedSeconds(startedAt: number, now: number) {
+  if (!Number.isFinite(startedAt) || startedAt <= 0 || !Number.isFinite(now)) return null;
+  const totalSeconds = Math.max(0, Math.floor((now - startedAt) / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+}

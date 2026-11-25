@@ -88,6 +88,34 @@ export function messageKeyFor(previous: LaunchKey | null, data: FormData, fresh?
   );
 }
 
+export type ComposerKeyEvent = {
+  key: string;
+  shiftKey: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey?: boolean;
+  repeat?: boolean;
+  isComposing?: boolean;
+  nativeEvent?: { isComposing?: boolean };
+  keyCode?: number;
+};
+
+export type ComposerKeyAction = "submit" | "interrupt" | "none";
+
+export function composerKeyAction(event: ComposerKeyEvent, options: { running: boolean; pending: boolean }) {
+  if (event.repeat || event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229)
+    return "none" satisfies ComposerKeyAction;
+  if (event.key === "Escape") {
+    return (
+      options.running && !options.pending && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+        ? "interrupt"
+        : "none"
+    ) satisfies ComposerKeyAction;
+  }
+  if (event.key === "Enter" && !event.altKey && !event.shiftKey) return "submit" satisfies ComposerKeyAction;
+  return "none" satisfies ComposerKeyAction;
+}
+
 /**
  * Whether the composer may send to a sandbox, and whether that send wakes a retained workspace. The persisted stop
  * reason belongs to the rendered status only: once a poll reports another status, it is unknown until the page

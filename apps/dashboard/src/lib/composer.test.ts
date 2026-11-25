@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type ComposerKeyEvent,
   composerAdmission,
+  composerKeyAction,
   drivingFailureMessage,
   isDefiniteComposerRefusal,
   messageKeyFor,
@@ -136,5 +138,33 @@ describe("composer admission", () => {
         error: drivingFailureMessage({ message: "Sandbox stopped", code: "sandbox_terminal" }, true),
       }),
     ).toBe(true);
+  });
+});
+
+describe("composer keyboard shortcuts", () => {
+  const base = { shiftKey: false, metaKey: false, ctrlKey: false, altKey: false, isComposing: false };
+  const idle = { running: false, pending: false };
+  const running = { running: true, pending: false };
+
+  test("Enter and Cmd/Ctrl+Enter submit; Shift+Enter, Alt+Enter, IME, repeat and Escape follow rules", () => {
+    const cases: Array<[Partial<ComposerKeyEvent> & { key: string }, typeof idle, string]> = [
+      [{ key: "Enter" }, idle, "submit"],
+      [{ key: "Enter", metaKey: true }, idle, "submit"],
+      [{ key: "Enter", ctrlKey: true }, idle, "submit"],
+      [{ key: "Enter", shiftKey: true }, idle, "none"],
+      [{ key: "Enter", metaKey: true, shiftKey: true }, idle, "none"],
+      [{ key: "Enter", altKey: true }, idle, "none"],
+      [{ key: "Enter", isComposing: true }, idle, "none"],
+      [{ key: "Enter", nativeEvent: { isComposing: true } }, idle, "none"],
+      [{ key: "Enter", keyCode: 229 }, idle, "none"],
+      [{ key: "Enter", repeat: true }, idle, "none"],
+      [{ key: "Escape" }, running, "interrupt"],
+      [{ key: "Escape", repeat: true }, running, "none"],
+      [{ key: "Escape" }, idle, "none"],
+      [{ key: "Escape" }, { running: true, pending: true }, "none"],
+      [{ key: "Escape", shiftKey: true }, running, "none"],
+      [{ key: "Escape", isComposing: true }, running, "none"],
+    ];
+    for (const [ev, opts, expected] of cases) expect(composerKeyAction({ ...base, ...ev }, opts)).toBe(expected);
   });
 });

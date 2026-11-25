@@ -49,11 +49,13 @@ import type { ActionResult } from "@/lib/action";
 import {
   type ChatItem,
   chatTurnRunning,
+  formatElapsedSeconds,
   projectChat,
   STEER_RESTARTS_TURN,
   type ToolActivity,
   toolSummary,
   toolText,
+  transcriptSignature,
 } from "@/lib/chat";
 import { type ChatTurnModel, deleteChatCache, getChatCache, setChatCache } from "@/lib/chat-cache";
 import { type ChatStreamFrame, chatEventStream } from "@/lib/chat-event-stream";
@@ -65,6 +67,7 @@ import {
 } from "@/lib/chat-outbox";
 import {
   composerAdmission,
+  composerKeyAction,
   INCOMPLETE_MODEL,
   isDefiniteComposerRefusal,
   messageKeyFor,
@@ -884,11 +887,13 @@ function Transcript({
   onMore: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLOListElement>(null);
   const pinned = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
   const [unseen, setUnseen] = useState(false);
   const last = items.at(-1);
-  const signature = `${items.length}:${last?.key ?? ""}:${last?.kind === "assistant" ? last.text.length : ""}:${running}`;
+  const hasItems = items.length > 0;
+  const signature = transcriptSignature(items, running);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the content changes, as told by its signature.
   useLayoutEffect(() => {
@@ -915,8 +920,9 @@ function Transcript({
       if (bottom) setUnseen(false);
     });
     observer.observe(element);
+    if (hasItems && content.current) observer.observe(content.current);
     return () => observer.disconnect();
-  }, []);
+  }, [hasItems]);
 
   function onScroll() {
     const element = scroller.current;
@@ -991,7 +997,7 @@ function Transcript({
             </div>
           )
         ) : (
-          <ol className="mx-auto flex max-w-[740px] flex-col gap-6">
+          <ol ref={content} className="mx-auto flex max-w-[740px] flex-col gap-6">
             {groups.map((group) =>
               group.kind === "tools" ? (
                 <li key={group.key}>
@@ -1121,11 +1127,20 @@ function Outcome({ status, reason }: { status: "failed" | "interrupted"; reason:
 
 function ToolGroup({ tools, running }: { tools: ToolActivity[]; running: boolean }) {
   const complete = tools.every((tool) => tool.result);
-  const [open, setOpen] = useState(false);
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const expanded = userOpen ?? !complete;
+  const hasRunningTool = running && !complete;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasRunningTool) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [hasRunningTool]);
   return (
     <Collapsible
-      open={!complete || open}
-      onOpenChange={setOpen}
+      open={expanded}
+      onOpenChange={(next) => setUserOpen(next)}
       className="overflow-hidden rounded-xl border border-border/80 bg-[var(--surface)]"
     >
       <CollapsibleTrigger asChild>
@@ -1134,22 +1149,30 @@ function ToolGroup({ tools, running }: { tools: ToolActivity[]; running: boolean
           variant="ghost"
           className="h-auto w-full justify-start gap-2 rounded-none px-3 py-1.5 text-xs text-muted-foreground"
         >
-          <ChevronRightIcon
-            aria-hidden
-            className={cn("size-3.5 transition-transform", (!complete || open) && "rotate-90")}
-          />
+          <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
           <span className="font-medium text-foreground">{complete ? "Worked" : running ? "Working" : "Activity"}</span>
           <span>
             · {tools.length} {tools.length === 1 ? "step" : "steps"}
           </span>
         </Button>
       </CollapsibleTrigger>
-      <CollapsibleContent>
-        <ul className="border-t" aria-label="Tool calls">
-          {tools.map((tool) => (
-            <ToolRow key={tool.id} tool={tool} running={running} />
-          ))}
-        </ul>
+      <CollapsibleContent forceMount>
+        <div
+          data-tool-group-body={expanded ? "open" : "closed"}
+          aria-hidden={!expanded || undefined}
+          className={cn(
+            "grid transition-[grid-template-rows,opacity] duration-200 ease-(--ease-out) motion-reduce:transition-none",
+            expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+          )}
+        >
+          <div className="min-h-0 overflow-hidden" inert={!expanded}>
+            <ul className="border-t" aria-label="Tool calls">
+              {tools.map((tool) => (
+                <ToolRow key={tool.id} tool={tool} running={running} now={now} />
+              ))}
+            </ul>
+          </div>
+        </div>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -1157,7 +1180,7 @@ function ToolGroup({ tools, running }: { tools: ToolActivity[]; running: boolean
 
 const OUTPUT_LIMIT = 8000;
 
-function ToolRow({ tool, running }: { tool: ToolActivity; running: boolean }) {
+function ToolRow({ tool, running, now }: { tool: ToolActivity; running: boolean; now: number }) {
   const [open, setOpen] = useState(false);
   const summary = toolSummary(tool.input);
   const failed = tool.result?.isError === true;
@@ -1171,6 +1194,7 @@ function ToolRow({ tool, running }: { tool: ToolActivity; running: boolean }) {
       ? tool.input
       : null;
   const state = tool.result ? (failed ? "error" : "done") : running ? "running" : "unknown";
+  const elapsed = state === "running" ? formatElapsedSeconds(tool.at, now) : null;
   return (
     <Collapsible open={open} onOpenChange={setOpen} asChild>
       <li data-tool={tool.name} data-tool-state={state}>
@@ -1187,6 +1211,14 @@ function ToolRow({ tool, running }: { tool: ToolActivity; running: boolean }) {
             <ToolState state={state} />
             <span className="shrink-0 font-mono font-medium">{edit ? "Edited" : tool.name}</span>
             {summary && <span className="min-w-0 truncate font-mono text-muted-foreground">{summary}</span>}
+            {elapsed && (
+              <span
+                data-tool-elapsed
+                className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground"
+              >
+                {elapsed}
+              </span>
+            )}
             {edit && <span className="ml-auto shrink-0 text-muted-foreground">{open ? "Hide diff" : "View diff"}</span>}
           </Button>
         </CollapsibleTrigger>
@@ -1280,6 +1312,19 @@ function ToolBlock({ label, text, empty, danger }: { label: string; text: string
   );
 }
 
+const DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"]';
+const OVERLAY_SELECTOR = `${DIALOG_SELECTOR}, [role="menu"], [role="listbox"]`;
+
+function hasOpenOverlay(selector: string) {
+  return (
+    typeof document !== "undefined" &&
+    typeof document.querySelector === "function" &&
+    Boolean(document.querySelector(selector))
+  );
+}
+
+const MAX_COMPOSER_HEIGHT_PX = 240;
+
 type Intent = "send" | "steer" | "interrupt";
 
 /**
@@ -1312,6 +1357,7 @@ function Composer({
   onSendSettled: (requestId: string, promptId: string | undefined) => void;
 }) {
   const form = useRef<HTMLFormElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [draft, setDraft] = useState("");
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -1340,10 +1386,31 @@ function Composer({
   );
   const enabled = !refusal && (CAN_SEND as readonly SandboxStatus[]).includes(status);
   const restarts = STEER_RESTARTS_TURN[harness];
-  /** The highlighted button, which Ctrl/Cmd+Enter presses: steering while a turn runs, unless the model changes. */
+  /** The highlighted button, which Enter (or Ctrl/Cmd+Enter) triggers: steering while a turn runs, unless the model changes. */
   const primary: Intent = running && !override ? "steer" : "send";
   /** Steer is unavailable because of a model change: say so, unless an error needs the space. */
   const steerHint = running && override && result?.ok !== false;
+
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    const el = textareaRef.current;
+    if (!el || !el.style) return;
+    el.style.height = "auto";
+    const scrollHeight = el.scrollHeight;
+    if (typeof scrollHeight === "number" && scrollHeight > 0) {
+      el.style.height = `${Math.min(scrollHeight, MAX_COMPOSER_HEIGHT_PX)}px`;
+      el.style.overflowY = draft.length > 0 && scrollHeight > MAX_COMPOSER_HEIGHT_PX ? "auto" : "hidden";
+    }
+  }, [draft, enabled]);
+
+  useEffect(() => {
+    if (!enabled || !sandboxId) return;
+    const el = textareaRef.current;
+    if (!el || typeof el.focus !== "function") return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches) return;
+    if (hasOpenOverlay(DIALOG_SELECTOR)) return;
+    el.focus({ preventScroll: true });
+  }, [sandboxId, enabled]);
 
   function change(data: FormData) {
     const field = (name: string) => String(data.get(name) ?? "");
@@ -1435,15 +1502,48 @@ function Composer({
     });
   }
 
+  const runRef = useRef(run);
+  runRef.current = run;
+
+  useEffect(() => {
+    if (!enabled || !running || pending !== null || typeof window === "undefined") return;
+    function onWindowKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.defaultPrevented || composerKeyAction(event, { running: true, pending: false }) !== "interrupt") return;
+      const target = event.target;
+      if (target === textareaRef.current || hasOpenOverlay(OVERLAY_SELECTOR)) return;
+      if (
+        typeof HTMLElement !== "undefined" &&
+        target instanceof HTMLElement &&
+        (target.tagName === "SELECT" ||
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest(OVERLAY_SELECTOR))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      runRef.current("interrupt");
+    }
+    window.addEventListener("keydown", onWindowKeyDown);
+    return () => window.removeEventListener("keydown", onWindowKeyDown);
+  }, [enabled, pending, running]);
+
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     run(primary);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    const action = composerKeyAction(event, { running, pending: pending !== null });
+    if (action === "submit") {
       event.preventDefault();
-      form.current?.requestSubmit();
+      if (draftRef.current.trim()) run(primary);
+      return;
+    }
+    if (action === "interrupt") {
+      event.preventDefault();
+      run("interrupt");
     }
   }
 
@@ -1469,9 +1569,10 @@ function Composer({
         Message
       </Label>
       <Textarea
+        ref={textareaRef}
         id={`${fieldId}-message`}
         name="prompt"
-        rows={2}
+        rows={1}
         value={draft}
         onChange={(event) => {
           sendKey.current = null;
@@ -1485,7 +1586,7 @@ function Composer({
               ? "Send a prompt to resume this sandbox…"
               : "Send the next prompt…"
         }
-        className="max-h-60 min-h-14 resize-y rounded-none border-0 bg-transparent px-1.5 py-1.5 shadow-none focus-visible:ring-0 sm:min-h-20 dark:bg-transparent"
+        className="max-h-60 min-h-11 resize-none rounded-none border-0 bg-transparent px-1.5 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
       />
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
@@ -1543,6 +1644,7 @@ function Composer({
                 type="button"
                 variant="ghost"
                 size="sm"
+                title="Interrupt · Esc"
                 className="max-sm:px-2"
                 disabled={pending !== null}
                 onClick={() => run("interrupt")}
@@ -1583,7 +1685,7 @@ function Composer({
             )}
             <Button
               aria-label={running ? "Send as new turn" : undefined}
-              title={primary === "send" ? "Send · Ctrl / ⌘ + Enter" : undefined}
+              title={primary === "send" ? "Send · Enter (Shift+Enter for newline)" : undefined}
               type="button"
               size="sm"
               className="max-sm:px-2.5"

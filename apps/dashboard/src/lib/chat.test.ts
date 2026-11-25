@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { type ChatItem, chatTurnRunning, projectChat, toolText } from "./chat.ts";
+import {
+  type ChatItem,
+  chatTurnRunning,
+  formatElapsedSeconds,
+  projectChat,
+  toolText,
+  transcriptSignature,
+} from "./chat.ts";
 import { type ChatEvent, mergeEvents } from "./events.ts";
 import { describeFailure } from "./failure.ts";
 
@@ -144,5 +151,30 @@ describe("chat projection", () => {
     );
     expect(view(chat.items)).toEqual(["user:Historical prompt", "user:Current prompt"]);
     expect(chat.running).toBe(false);
+  });
+
+  test("transcriptSignature tracks in-place tool updates and formatElapsedSeconds handles all ranges", () => {
+    const t = (id: string, extra: Record<string, unknown> = {}) =>
+      ({
+        kind: "tool",
+        key: `tool:${id}`,
+        at: 1000,
+        tool: { id, name: "Bash", at: 1000, ...extra },
+      }) satisfies ChatItem;
+    const t2 = t("t2", { name: "Read" });
+    const variants = [
+      {},
+      { input: { command: "ls" } },
+      { input: { command: "ls" }, result: { output: "ok", isError: false } },
+      { input: { command: "ls" }, result: { output: "ok", isError: true } },
+    ];
+    expect(new Set(variants.map((v) => transcriptSignature([t("t1", v), t2], true))).size).toBe(4);
+    expect([9_500, 22_900, 75_000, 3_730_000].map((now) => formatElapsedSeconds(10_000, now))).toEqual([
+      "0s",
+      "12s",
+      "1m 05s",
+      "1h 02m",
+    ]);
+    expect([formatElapsedSeconds(0, 10_000), formatElapsedSeconds(Number.NaN, 10_000)]).toEqual([null, null]);
   });
 });

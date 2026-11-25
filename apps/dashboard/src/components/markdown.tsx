@@ -1,18 +1,26 @@
+"use client";
+
 import { Fragment, memo, type ReactNode, useMemo } from "react";
-import { type Block, type Inline, parseMarkdown } from "@/lib/markdown";
+import { CopyButton } from "@/components/copy-button";
+import { type Block, type Inline, parseMarkdownBlock, splitMarkdownBlocks } from "@/lib/markdown";
 import { cn } from "@/lib/utils";
 
 /** Agent text as Markdown, rendered from a parsed tree: React escapes every string, no HTML is interpreted. */
 export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
-  const blocks = useMemo(() => parseMarkdown(text), [text]);
+  const segments = useMemo(() => splitMarkdownBlocks(text), [text]);
   return (
     <div className={cn("space-y-3 text-sm leading-relaxed break-words", className)}>
-      {blocks.map((block, index) => (
+      {segments.map((segment, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: blocks have no identity beyond their position in the text.
-        <BlockView key={index} block={block} />
+        <MarkdownBlock key={index} source={segment} />
       ))}
     </div>
   );
+});
+
+const MarkdownBlock = memo(function MarkdownBlock({ source }: { source: string }) {
+  const block = useMemo(() => parseMarkdownBlock(source), [source]);
+  return block ? <BlockView block={block} /> : null;
 });
 
 function BlockView({ block }: { block: Block }) {
@@ -29,12 +37,25 @@ function BlockView({ block }: { block: Block }) {
     }
     case "code":
       return (
-        <pre
-          className="overflow-x-auto rounded-md border bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed"
-          data-language={block.language || undefined}
-        >
-          <code>{block.text}</code>
-        </pre>
+        <div className="overflow-hidden rounded-lg border border-border/80 bg-muted/40">
+          <div className="flex items-center justify-between gap-2 border-b border-border/60 bg-muted/60 px-3 py-1 text-[11px] text-muted-foreground">
+            <span className="min-w-0 truncate font-mono font-medium select-none" data-code-language>
+              {block.language || "text"}
+            </span>
+            <CopyButton
+              value={block.text}
+              label={block.language ? `Copy ${block.language} code` : "Copy code"}
+              showLabel
+              className="h-6 px-2 text-[11px]"
+            />
+          </div>
+          <pre
+            className="overflow-x-auto px-3 py-2.5 font-mono text-xs leading-relaxed"
+            data-language={block.language || undefined}
+          >
+            <code>{block.text}</code>
+          </pre>
+        </div>
       );
     case "list": {
       const items = block.items.map((item, index) => (
