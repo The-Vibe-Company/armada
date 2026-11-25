@@ -115,7 +115,7 @@ export function createRuntimeGitHub(options: {
     const native = await createSqlData(sql)(caller).sandboxes.get(id);
     const s =
       native ??
-      (await createDockerSandboxService(sql, key).get(
+      (await createDockerSandboxService(sql).get(
         {
           userId: caller.userId,
           orgId:

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { DelegatedAuthority, type Sql } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -46,7 +47,7 @@ test("Modal OpenCode dial-out persists routing and retains enrolled authority th
     via: "service" as const,
   };
   const store = createSqlData(sql)(caller).sandboxes;
-  const row = await store.insert({
+  const row = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider: "modal",
     modalTransport: "dialout",
@@ -134,7 +135,7 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   };
   const fake = fakeBoat();
   const machine = await fake.provider.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
-  const row = await createSqlData(sql)(caller).sandboxes.insert({
+  const row = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider: "modal",
     modalTransport: "dialout",

@@ -22,5 +22,4 @@ export {
 export type { ModalRuntimeCapture } from "./runtime-work.ts";
 export { prepareFilesystemSnapshot, prepareFreshFilesystem } from "./snapshot.ts";
 export { createSshPreparation, SSH_PORT, scrubSsh } from "./ssh.ts";
-export { type GoldenSshRecipe, probeModalSsh } from "./ssh-probe.ts";
 export { createSqlModalStore, scopeKey } from "./store.ts";

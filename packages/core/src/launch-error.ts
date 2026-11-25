@@ -1,28 +1,17 @@
+import type { ApiFailureCode } from "./api-failure.ts";
 import type { HelperRefusal } from "./helper.ts";
 import type { PrivateSkillError, PrivateSkillFailure } from "./private-skill-error.ts";
-export const LAUNCH_INITIALIZATION_STAGES = [
-  "initialization_bind",
-  "initialization_ready",
-  "initialization_hydrate",
-  "initialization_github",
-  "initialization_repository",
-  "initialization_commands",
-  "initialization_cwd",
-  "initialization_mcp",
-  "initialization_publish",
-] as const;
-export type LaunchInitializationStage = (typeof LAUNCH_INITIALIZATION_STAGES)[number];
-export const LAUNCH_FAILURE_REASONS = [
-  "github_setup_background",
-  "github_setup_timeout",
-  "github_setup_nonzero",
-  "native_auth_write_failed",
-  "repository_ownership_mismatch",
-  "visibility_not_persisted",
-] as const;
-export type LaunchFailureReason = (typeof LAUNCH_FAILURE_REASONS)[number];
 
-import type { ApiFailureCode } from "./api-failure.ts";
+export type LaunchInitializationStage =
+  | "initialization_bind"
+  | "initialization_ready"
+  | "initialization_hydrate"
+  | "initialization_github"
+  | "initialization_repository"
+  | "initialization_commands"
+  | "initialization_cwd"
+  | "initialization_mcp"
+  | "initialization_publish";
 
 export type LaunchErrorCode =
   | ApiFailureCode
@@ -42,7 +31,7 @@ export class LaunchError extends Error {
   readonly code: LaunchErrorCode;
   /** Armada's id of the sandbox that was recorded before the failure, when there was one. */
   readonly sandboxId: string | undefined;
-  readonly safeReason: LaunchFailureReason | undefined;
+  readonly safeReason: "repository_ownership_mismatch" | undefined;
   readonly reason: HelperRefusal["reason"] | PrivateSkillFailure | undefined;
   readonly stage: PrivateSkillError["stage"] | undefined;
   readonly skillFailure: { reason: PrivateSkillFailure; stage: PrivateSkillError["stage"] } | undefined;
@@ -54,7 +43,7 @@ export class LaunchError extends Error {
     options?: {
       cause?: unknown;
       sandboxId?: string;
-      safeReason?: LaunchFailureReason;
+      safeReason?: "repository_ownership_mismatch";
       helperRefusal?: HelperRefusal;
       skillFailure?: { reason: PrivateSkillFailure; stage: PrivateSkillError["stage"] };
     },

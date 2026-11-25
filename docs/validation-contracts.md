@@ -439,16 +439,6 @@ their timings. Focused traces of `private-ssh.test.ts`,
 | `ssh-executor.test.ts` | refuses invalid SSH username metadata root; touch /tmp/forged before SSH | SSH executor starts real ssh-keygen, then refuses the SSH destination. | 4.22 ms |
 | `ssh-executor.test.ts` | refuses invalid SSH username metadata (empty string) before SSH | SSH executor starts real ssh-keygen, then refuses the SSH destination. | 4.46 ms |
 | `ssh-executor.test.ts` | refuses invalid SSH username metadata null before SSH | SSH executor starts real ssh-keygen, then refuses the SSH destination. | 4.04 ms |
-| `ssh-github-token.test.ts` | git overrides stale auth but preserves inherited auth when ephemeral state is missing or expired | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 57.22 ms |
-| `ssh-github-token.test.ts` | git refuses insecure state instead of downgrading to inherited credentials | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 57.71 ms |
-| `ssh-github-token.test.ts` | gh overrides stale auth but preserves inherited auth when ephemeral state is missing or expired | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 60.96 ms |
-| `ssh-github-token.test.ts` | gh refuses insecure state instead of downgrading to inherited credentials | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 59.39 ms |
-| `ssh-github-token.test.ts` | Git helper emits only the freshest available GitHub credential on the credential protocol | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 57.97 ms |
-| `ssh-github-token.test.ts` | installer refuses symlink and non-root-owned code paths before replacing any executable | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 64.00 ms |
-| `ssh-github-token.test.ts` | installer waits through transient lock contention but fails at its deadline before credential or executable writes | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 62.47 ms |
-| `ssh-github-token.test.ts` | installer reports the failed directory check or atomic install as a closed phase | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 63.88 ms |
-| `ssh-github-token.test.ts` | bootstrap relays an exact installer phase and maps all other child stderr to sudo | Local Python executes the emitted GitHub client, installer, or bootstrap with fixture dependencies. | 58.35 ms |
-| `ssh-readable-variables.test.ts` | Boat fixed bootstrap successfully restores the same readable file after /run loss | Local Python executes the emitted bootstrap and installer with fixture filesystem paths. | 122.09 ms |
 
 ## Server subprocess cases
 

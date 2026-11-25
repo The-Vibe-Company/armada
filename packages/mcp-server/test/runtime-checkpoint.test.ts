@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
-import { createSqlSandboxStore, createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
+import { createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -66,7 +67,7 @@ async function enrolledCheckpointTarget() {
       [people.org],
     )
   ).rows[0]!;
-  const row = await createSqlSandboxStore(sql).insert({
+  const row = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider: "modal",
     providerSandboxId: crypto.randomUUID(),

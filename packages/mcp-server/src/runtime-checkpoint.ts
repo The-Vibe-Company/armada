@@ -139,7 +139,7 @@ export function createRuntimeCheckpoint(
       )
     ).rows[0];
     if (!target) return null;
-    return createDockerSandboxService(sql, key).get({ userId: caller.userId, orgId: target.org_id }, id);
+    return createDockerSandboxService(sql).get({ userId: caller.userId, orgId: target.org_id }, id);
   };
   const authorize = async (caller: Caller, id: string) => {
     const row: Target | null = (await createSqlData(sql)(caller).sandboxes.get(id)) ?? (await dockerTarget(caller, id));

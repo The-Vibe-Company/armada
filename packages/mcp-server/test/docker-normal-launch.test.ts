@@ -53,7 +53,7 @@ import { createDockerNormalLaunch } from "../src/docker-normal-launch.ts";
 import { createDockerOutputReader } from "../src/docker-outputs.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
-import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import { createDockerSandboxService, DockerSandboxDenied } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
@@ -807,7 +807,7 @@ test("normal admission rejects unsupported input before resolution, scopes owner
   await rejected(f.service().launch({ ...f.caller, orgs: [] }, f.body), "not_found");
   expect(f.resolutions()).toBe(0);
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
-  await createDockerSandboxService(sql, key, { enabled: true }).reserve(f.actor, {
+  await createDockerSandboxService(sql).reserve(f.actor, {
     requestId: f.body.requestId,
     hostId: f.hostId,
     image: officialImage,
@@ -845,6 +845,42 @@ test("the published Docker launch schema admits a first prompt exactly when laun
       admitted ? "unavailable" : "invalid_request",
     );
   }
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+});
+
+test("reservation checks the current credential pin before allocating", async () => {
+  const db = database();
+  const f = await fixture();
+  const { credentialId, requestId } = f.body;
+  const reserve = (actor = f.actor, credentialVersion = 2) =>
+    createDockerSandboxService(sql).reserve(actor, {
+      credentialId,
+      credentialVersion,
+      requestId,
+      hostId: f.hostId,
+      image: officialImage,
+    });
+  await expect(reserve({ ...f.actor, userId: f.otherId })).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await expect(reserve(f.actor, 1)).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await db.query("update public.credentials set status='revoked' where id=$1", [credentialId]);
+  await expect(reserve()).rejects.toBeInstanceOf(DockerSandboxDenied);
+  await db.query("update public.credentials set status='active',expires_at=now()-interval '1 second' where id=$1", [
+    credentialId,
+  ]);
+  await expect(reserve()).rejects.toBeInstanceOf(DockerSandboxDenied);
+  expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
+  await db.query("update public.credentials set expires_at=null where id=$1", [credentialId]);
+  expect((await reserve()).status).toBe("starting");
+});
+
+test("a plain Docker launch refuses a draining host even after a long drain", async () => {
+  const db = database();
+  const f = await fixture();
+  await db.query("update public.docker_hosts set draining_at=now()-interval '2 hours' where id=$1", [f.hostId]);
+  await expect(f.service().launch(f.caller, f.body)).rejects.toMatchObject({
+    code: "host_draining",
+    message: expect.stringContaining("draining for uninstall"),
+  });
   expect(await counts(f)).toEqual({ sandboxes: 0, claims: 0, jobs: 0, commands: 0 });
 });
 
@@ -904,7 +940,7 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   const f = await fixture();
   f.setFailure();
   expect((await f.service().launch(f.caller, f.body)).sandbox.status).toBe("failed");
-  const row = await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId);
+  const row = await createDockerSandboxService(sql).get(f.actor, f.body.requestId);
   expect(row.status).toBe("failed");
   expect(
     (
@@ -918,7 +954,7 @@ test("failed startup returns a safe failure without claiming stopped, and pendin
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 1, commands: 0 });
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
-  expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("deleted");
+  expect((await createDockerSandboxService(sql).get(f.actor, f.body.requestId)).status).toBe("deleted");
 });
 
 test("Docker launch replay preserves the runtime artifact failure message", async () => {
@@ -3418,7 +3454,7 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
     expect((await db.query("select 1 from public.docker_resume_claims where sandbox_id=$1", [requestId])).rows).toEqual(
       [],
     );
-    expect((await createDockerSandboxService(sql, key).get(f.actor, requestId)).status).toBe("stopped");
+    expect((await createDockerSandboxService(sql).get(f.actor, requestId)).status).toBe("stopped");
   }
 });
 

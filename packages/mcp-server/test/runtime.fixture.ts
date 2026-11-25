@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Driver, HarnessState, Journal, Runner, type RunnerRequest } from "@armada/agent-runtime";
-import { createSqlSandboxStore, encryptSecret, type Harness, type Sql } from "@armada/core/server";
+import { encryptSecret, type Harness, type Sql } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -110,7 +111,7 @@ export async function runtimeFixture(
   ).rows[0]!;
   const goldenId = placement?.goldenId ?? (await runtimeFixtureGolden(db, people, provider));
   const providerSandboxId = placement?.providerSandboxId ?? "physical";
-  const row = await createSqlSandboxStore(sql).insert({
+  const row = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider,
     providerSandboxId,

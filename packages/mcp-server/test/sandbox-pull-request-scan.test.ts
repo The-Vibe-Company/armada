@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Provider, SandboxInfo } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsRunner } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
@@ -34,7 +35,7 @@ async function fixture(mode = "quiet") {
       [people.owner],
     )
   ).rows[0]!;
-  await data.sandboxes.insert({
+  await insertSandboxFixture(sql, {
     id,
     goldenId: golden.id,
     orgId: people.org,

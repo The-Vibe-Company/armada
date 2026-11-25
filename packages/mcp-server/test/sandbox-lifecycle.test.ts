@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -49,7 +50,7 @@ test("private Docker reservations remain untouched while the generic lifecycle r
     )
   ).rows[0];
   if (!credential) throw Error("missing model account");
-  const docker = await createDockerSandboxService(sql, ENCRYPTION_KEY, { enabled: true }).reserve(actor, {
+  const docker = await createDockerSandboxService(sql).reserve(actor, {
     requestId: crypto.randomUUID(),
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
@@ -123,15 +124,10 @@ test("an expired observation lease cannot publish a delayed terminal result", as
   let tick: Promise<boolean> | undefined;
   try {
     const sql = bunLikeSql(db);
-    const store = createSqlData(sql)({
-      via: "service",
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-    }).sandboxes;
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
     if (!golden) throw Error("missing golden");
     const id = crypto.randomUUID();
-    await store.insert({
+    await insertSandboxFixture(sql, {
       id,
       provider: "boat",
       providerSandboxId: "bx_23456789",
@@ -298,14 +294,9 @@ for (const outcome of [
     const { db, people } = await sharedDatabase();
 
     const sql = bunLikeSql(db);
-    const data = createSqlData(sql)({
-      via: "service",
-      userId: people.owner,
-      orgs: [{ orgId: people.org, role: "member" }],
-    });
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;
     const id = crypto.randomUUID();
-    await data.sandboxes.insert({
+    await insertSandboxFixture(sql, {
       id,
       provider: "boat",
       providerSandboxId: "bx_23456789",
@@ -772,7 +763,7 @@ test("replicas lease one observation and resume admission fences old writes whil
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
     if (!golden) throw Error("missing golden");
     const id = crypto.randomUUID();
-    await data.sandboxes.insert({
+    await insertSandboxFixture(sql, {
       id,
       provider: "boat",
       providerSandboxId: "bx_23456789",
@@ -1012,7 +1003,7 @@ test("runtime lifecycle stops compute without claiming a checkpoint invalidated 
   }).sandboxes;
   const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
   if (!golden) throw Error("missing golden");
-  const row = await store.insert({
+  const row = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider: "boat",
     providerSandboxId: "runtime-compute",

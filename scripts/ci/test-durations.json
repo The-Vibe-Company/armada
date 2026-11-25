@@ -190,9 +190,6 @@
     "packages/core/test/skillpack.test.ts": 0.024,
     "packages/core/test/snapshot-update.test.ts": 0.005,
     "packages/core/test/ssh-executor.test.ts": 0.071,
-    "packages/core/test/ssh-github-token.test.ts": 0.611,
-    "packages/core/test/ssh-orchestrator.test.ts": 0.138,
-    "packages/core/test/ssh-readable-variables.test.ts": 0.137,
     "packages/core/test/token-redaction.test.ts": 0.014,
     "packages/core/test/turn-model.test.ts": 0.007,
     "packages/core/test/vault-db.test.ts": 2.189,
@@ -231,7 +228,6 @@
     "packages/mcp-server/test/docker-normal-launch.test.ts": 27.51,
     "packages/mcp-server/test/docker-runtime-lifecycle.test.ts": 5.336,
     "packages/mcp-server/test/docker-sandbox-controls.test.ts": 5.764,
-    "packages/mcp-server/test/docker-sandbox-service.test.ts": 2.508,
     "packages/mcp-server/test/exec-selected-org-api.test.ts": 2.969,
     "packages/mcp-server/test/github-account-api.test.ts": 2.497,
     "packages/mcp-server/test/github-legacy.test.ts": 1.932,
@@ -466,23 +462,6 @@
         "packages/mcp-server/test/skill-catalog.test.ts"
       ],
       "seconds": 22.627
-    },
-    {
-      "files": [
-        "packages/core/test/golden-backend-slots-reserve.test.ts",
-        "packages/mcp-server/test/docker-host-routes.test.ts",
-        "packages/mcp-server/test/docker-runtime-lifecycle.test.ts",
-        "packages/mcp-server/test/docker-sandbox-service.test.ts",
-        "packages/mcp-server/test/golden-adoption.test.ts",
-        "packages/mcp-server/test/golden-authorization.test.ts",
-        "packages/mcp-server/test/orchestrator-children.test.ts",
-        "packages/mcp-server/test/provider-metadata.test.ts",
-        "packages/mcp-server/test/routines.test.ts",
-        "packages/mcp-server/test/runtime-sockets.test.ts",
-        "packages/mcp-server/test/sandbox-deletion.test.ts",
-        "packages/mcp-server/test/sandbox-usage.test.ts"
-      ],
-      "seconds": 19.522
     },
     {
       "files": ["packages/mcp-server/test/server-workers.test.ts", "packages/mcp-server/test/turn-pricing.test.ts"],

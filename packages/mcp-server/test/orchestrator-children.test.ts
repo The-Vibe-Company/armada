@@ -1,11 +1,6 @@
 import { expect, mock, spyOn, test } from "bun:test";
-import {
-  createSqlSandboxStore,
-  createSqlVaultStore,
-  DelegatedAuthority,
-  encryptSecret,
-  type Sql,
-} from "@armada/core/server";
+import { createSqlVaultStore, DelegatedAuthority, encryptSecret, type Sql } from "@armada/core/server";
+import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData, DataError } from "../src/data.ts";
@@ -66,7 +61,7 @@ async function fixture(
         ).rows[0]
       : (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0];
   if (!golden) throw Error("missing golden");
-  const parent = await createSqlSandboxStore(sql).insert({
+  const parent = await insertSandboxFixture(sql, {
     id: crypto.randomUUID(),
     provider,
     providerSandboxId: "parent-child-admission",
@@ -467,7 +462,7 @@ test("own children support independent target receipts while unrelated children 
     expect(rows).toHaveLength(4); // No synthetic three-child default from the provisional DTO.
     const readyChildren = [];
     for (const providerSandboxId of ["receipt-isolation-first", "receipt-isolation-second"]) {
-      const child = await createSqlSandboxStore(sql).insert({
+      const child = await insertSandboxFixture(sql, {
         id: crypto.randomUUID(),
         provider: parent.provider,
         providerSandboxId,
@@ -507,7 +502,7 @@ test.each(["launch", "message"] as const)(
     try {
       let childId: string | undefined;
       if (action === "message") {
-        const child = await createSqlSandboxStore(sql).insert({
+        const child = await insertSandboxFixture(sql, {
           id: crypto.randomUUID(),
           provider: parent.provider,
           providerSandboxId: "child-dispatch-admission",
@@ -654,10 +649,157 @@ test("scoped message after async launch waits for readiness before dispatch", as
   }
 });
 
+test.each(["succeeds", "revoked", "deadline expired", "setup failed"] as const)(
+  "scoped message during ready child launch setup: %s",
+  async (outcome) => {
+    const { close, db, sql, id, p, authority, token, selection } = await fixture("running", "anthropic", "modal");
+    let waiting = Promise.withResolvers<void>();
+    const abort = new AbortController();
+    const directSend = createRuntimeFollowup(
+      sql,
+      ENCRYPTION_KEY,
+      createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY),
+    );
+    let dispatches = 0;
+    let initialPromptAdmitted = false;
+    const provider = { ...boatAdmissionProvider(fakeBoat()), id: "modal" as const };
+    const admitLaunch = await modalAdmissionFixture(
+      sql,
+      ENCRYPTION_KEY,
+      createSqlVaultStore(sql),
+      {
+        orgId: p.org,
+        userId: p.owner,
+        visibility: "org",
+        binding: { workspace: "workspace", environment: "main", appId: "app" },
+      },
+      provider,
+    );
+    const services = createSandboxAccessServices({
+      sql: {
+        ...sql,
+        transaction: (work) =>
+          sql.transaction!(async (tx) =>
+            work({
+              async query<T>(statement: string, params?: unknown[]) {
+                const result = await tx.query<T>(statement, params);
+                if (statement.includes("as extension_refused") && (result.rows[0] as { busy?: boolean })?.busy)
+                  waiting.resolve();
+                return result;
+              },
+            }),
+          ),
+      },
+      providers: { resolve: async () => provider },
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+      admitLaunch,
+      async runtimeSend(caller, request) {
+        dispatches++;
+        if (!initialPromptAdmitted) return directSend(caller, request);
+        return {
+          id: request.id,
+          requestId: request.request_id!,
+          promptId: request.request_id!,
+          conversationId: "child-conversation",
+          status: "running",
+          runtime: { kind: "armada", epoch: "1" },
+        };
+      },
+    });
+    try {
+      const launch = await services.childWorker.launch(token, "launch", {
+        ...selection,
+        model: "claude-sonnet-4-6",
+        size: "small",
+      });
+      expect(launch.state).toBe("succeeded");
+      const sandboxId = launch.sandboxId;
+      const job = await createJobsStore(sql, ENCRYPTION_KEY).claim("launch", crypto.randomUUID(), 30, 1);
+      expect(job?.sandbox_id).toBe(sandboxId);
+      await db.query(
+        `update jobs set outcome='{"modal_machine":{"entry":{"operation":"create","phase":"allocated","machineId":"child-modal"}}}'
+         where sandbox_id=$1 and kind='launch'`,
+        [sandboxId],
+      );
+      await db.query("update sandboxes set provider_sandbox_id='child-modal' where id=$1", [sandboxId]);
+      await db.query("update sandboxes set status='ready' where id=$1", [sandboxId]);
+      const setup = (
+        await db.query<{ id: string }>(
+          "select id from jobs where sandbox_id=$1 and kind='launch_initial_turn' and state='queued'",
+          [sandboxId],
+        )
+      ).rows[0]!;
+      expect(setup).toBeDefined();
+
+      await db.query(
+        "insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash) values($1,1,1,repeat('a',64))",
+        [sandboxId],
+      );
+      const deadline = new AbortController();
+      const timeout =
+        outcome === "deadline expired"
+          ? // oxlint-disable-next-line landmines-testing/no-test-doubles -- Drive the internal admission timer without a wall-clock wait.
+            spyOn(AbortSignal, "timeout").mockReturnValueOnce(deadline.signal)
+          : undefined;
+      const send = services.childWorker.message(token, "message", sandboxId, "follow up", abort.signal);
+      async function expectWaiting() {
+        expect(await Promise.race([waiting.promise.then(() => "waiting"), send.then((receipt) => receipt.state)])).toBe(
+          "waiting",
+        );
+        expect(dispatches).toBe(0);
+      }
+      await expectWaiting().finally(() => timeout?.mockRestore());
+      if (outcome === "succeeds") {
+        await db.query("update jobs set state='done' where id=$1", [setup.id]);
+        const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
+        expect(
+          await queue.acceptInitialLaunch(
+            { via: "service", userId: p.owner, orgs: [{ orgId: p.org, role: "member" }] },
+            { id: sandboxId, request_id: setup.id, prompt: "first turn" },
+            "1",
+            async () => true,
+            { childOperationId: launch.id },
+          ),
+        ).toBe(true);
+        waiting = Promise.withResolvers<void>();
+        runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+        await expectWaiting();
+        initialPromptAdmitted = true;
+        await db.query("update account_turn_queue set state='admitted' where request_id=$1", [setup.id]);
+      } else if (outcome === "revoked") {
+        await authority.revoke(id);
+      } else if (outcome === "deadline expired") {
+        deadline.abort(new DOMException("Admission timed out", "TimeoutError"));
+      } else {
+        await db.query("update jobs set state='failed' where id=$1", [setup.id]);
+      }
+      runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+      expect(await send).toMatchObject({ state: outcome === "succeeds" ? "succeeded" : "failed", sandboxId });
+      expect(dispatches).toBe(outcome === "succeeds" ? 1 : 0);
+      if (outcome !== "succeeds") {
+        expect(
+          (
+            await db.query(
+              "select dispatched_at from orchestrator_child_operations where target_id=$1 and action='message'",
+              [sandboxId],
+            )
+          ).rows,
+        ).toEqual([{ dispatched_at: null }]);
+      }
+    } finally {
+      abort.abort();
+      await services.childWorker.drain();
+      await close();
+    }
+  },
+);
+
 test("an uncertain scoped message records a correlated operator diagnostic", async () => {
   const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: parent.provider,
       providerSandboxId: "child-message-outcome",
@@ -671,7 +813,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     });
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
     let claimMiss = false;
-    let setupPending = false;
+    let setupFailed = false;
     let admissions = 0;
     let dispatches = 0;
     const children = createSandboxChildren(
@@ -689,7 +831,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
       {
         async message() {
           dispatches++;
-          if (setupPending) throw new ModalLaunchSetupConflict("modal_launch_setup_pending");
+          if (setupFailed) throw new ModalLaunchSetupConflict("modal_launch_setup_failed");
           throw new RuntimeFollowupConflict("runtime_activity_busy", "private provider response");
         },
         async launch() {
@@ -766,10 +908,10 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     expect(claimMissResponse?.status).toBe(200);
     expect(dispatches).toBe(1);
     claimMiss = false;
-    setupPending = true;
-    const refused = await children.message(token, "message-setup-pending", child.id, "synthetic child prompt");
+    setupFailed = true;
+    const refused = await children.message(token, "message-setup-failed", child.id, "synthetic child prompt");
     expect(refused.state).toBe("failed");
-    expect(await children.message(token, "message-setup-pending", child.id, "synthetic child prompt")).toEqual(refused);
+    expect(await children.message(token, "message-setup-failed", child.id, "synthetic child prompt")).toEqual(refused);
     expect(dispatches).toBe(2);
     expect(lines.join("\n")).not.toContain("private provider response");
   } finally {
@@ -780,7 +922,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
 test("scoped enrolled Boat extension fails before recording dispatch", async () => {
   const { close, db, sql, id, p, golden, authority, token } = await fixture();
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "enrolled-child",
@@ -835,7 +977,7 @@ test.each([
     "modal",
   );
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: parent.provider,
       providerSandboxId: "reconciling-child",
@@ -961,7 +1103,7 @@ test.each([
 test("read-only delegated scope cannot override the launch method through untrusted selection fields", async () => {
   const { close, db, sql, p, parent, id, authority, selection, golden } = await fixture();
   try {
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "read-only-child",
@@ -1071,7 +1213,7 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
       true,
     );
     expect((await client.callTool({ name: "read", arguments: { sandboxId: parent.id } })).isError).toBe(true);
-    const unrelated = await createSqlSandboxStore(sql).insert({
+    const unrelated = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "same-owner-unrelated-worker",
@@ -1237,7 +1379,7 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
     };
     const resolved = await fake.provider.fork({ from: "test", name: "child", ttlSeconds: 3600, noEnv: true, env: {} });
     const physicalId = resolved.id;
-    const saved = await createSqlSandboxStore(sql).insert({
+    const saved = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "modal",
       providerSandboxId: physicalId,
@@ -1410,7 +1552,7 @@ test("managed child stop stays pending until the shared job confirms exit", asyn
   try {
     const fake = fakeBoat();
     const physical = await fake.provider.fork({ from: "test" });
-    const child = await createSqlSandboxStore(sql).insert({
+    const child = await insertSandboxFixture(sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: physical.id,
@@ -1446,7 +1588,7 @@ test("managed child stop stays pending until the shared job confirms exit", asyn
 test("the event feed grants a scoped bearer access only to its authorized child", async () => {
   const f = await fixture();
   try {
-    const child = await createSqlSandboxStore(f.sql).insert({
+    const child = await insertSandboxFixture(f.sql, {
       id: crypto.randomUUID(),
       provider: "boat",
       providerSandboxId: "event-feed-child",

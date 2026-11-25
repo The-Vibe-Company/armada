@@ -10,8 +10,8 @@ import {
   type ModalProvider,
   modalImage,
   prepareFilesystemSnapshot,
-  probeModalSsh,
 } from "../src/index.ts";
+import { probeModalSsh } from "./ssh-probe.ts";
 
 if (import.meta.main) {
   const ref = process.argv[2];

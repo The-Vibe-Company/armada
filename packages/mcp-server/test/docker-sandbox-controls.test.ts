@@ -28,7 +28,6 @@ import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
-import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -37,6 +36,7 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
+import { queueMailboxCreate } from "./docker-create.fixture.ts";
 import { bindDockerStopFixture, queueMailboxStop, runDockerStop, stopFixtureMachineId } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
@@ -50,7 +50,6 @@ const controls = createDockerSandboxControls(sql, Buffer.alloc(32, 13).toString(
 const key = Buffer.alloc(32, 13).toString("base64");
 const service = createDockerRuntimeLifecycle(sql, key, { enabled: true });
 const hosts = createDockerHostStore(sql, key);
-const reservations = createDockerSandboxService(sql, key, { enabled: true });
 const authority = createRuntimeEnrolments(sql, key);
 const commands = createRuntimeCommands(authority, key);
 const bootstrap = createDockerBootstrapService(sql, key, {
@@ -90,7 +89,7 @@ async function fixture() {
     userId,
     await encryptSecret(`offline-lifecycle-${randomUUID()}`, key),
   ]);
-  const sandbox = await reservations.reserve(actor, {
+  const sandbox = await queueMailboxCreate(sql, key, actor, {
     requestId: randomUUID(),
     hostId: host.hostId,
     image: `worker@sha256:${"a".repeat(64)}`,
@@ -726,7 +725,7 @@ test("Docker child deletion requires permanent delegated parent deletion before 
   const db = database();
   const f = await fixture(),
     who = caller(f.actor);
-  const parent = await reservations.reserve(f.actor, {
+  const parent = await queueMailboxCreate(sql, key, f.actor, {
     requestId: randomUUID(),
     hostId: f.hostId,
     image: f.sandbox.image,

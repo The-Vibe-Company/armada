@@ -1,4 +1,4 @@
-import type { SandboxPlacementProviderId, SandboxRecord, SandboxStatus } from "@armada/core";
+import type { Harness, SandboxPlacementProviderId, SandboxRecord, SandboxStatus, Visibility } from "@armada/core";
 import {
   decryptSecret,
   HOST_CAPABILITIES,
@@ -8,7 +8,6 @@ import {
   type Provider,
   ProviderError,
   SANDBOX_STOP_MARGIN_SECONDS,
-  type SandboxStore,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -31,21 +30,19 @@ import { INTERRUPTED_LAUNCH_REASON, isFailedModalLaunch, MODAL_LAUNCH_FAILURE } 
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
 
-export type ModalLaunchSandbox = Pick<
-  Parameters<SandboxStore["insert"]>[0],
-  | "goldenId"
-  | "harness"
-  | "model"
-  | "reasoningEffort"
-  | "repositoryDir"
-  | "resourceProject"
-  | "requestedTtlSeconds"
-  | "credentialId"
-  | "credentialVersion"
-  | "visibility"
-  | "externalRef"
-  | "stopWhenWorkMerged"
-> & {
+export type ModalLaunchSandbox = {
+  goldenId: string;
+  harness: Harness;
+  model: string;
+  reasoningEffort: string;
+  repositoryDir?: string | null;
+  resourceProject?: SandboxRecord["resourceProject"];
+  requestedTtlSeconds?: number;
+  credentialId?: string;
+  credentialVersion?: number;
+  visibility?: Visibility;
+  externalRef?: string;
+  stopWhenWorkMerged?: boolean;
   effectiveTtlSeconds: number;
   machineSize: NonNullable<SandboxRecord["machineSize"]>;
 };
@@ -427,70 +424,6 @@ export async function publishRuntimeReadiness(
     effects: [],
   });
   return transition.kind;
-}
-
-export async function finishLaunchSuccess(
-  tx: Sql,
-  scope: [string[], string],
-  sandboxId: string,
-  generation: number,
-  activityToken: string,
-  runtimeEpoch: string | undefined,
-  prompt?: { promptId: string; conversationIds: string[] },
-) {
-  const {
-    rows: [sandbox],
-  } = await tx.query<{ enrolled_path: boolean; owned: boolean }>(
-    `select ((s.provider='boat' and s.boat_runtime) or
-             (s.provider='modal' and s.runtime_transport is not distinct from 'dialout')) as enrolled_path,
-      s.owner_id=$2 as owned
-     from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update of s`,
-    [...scope, sandboxId],
-  );
-  const conflict = runtimeEpoch ? "epoch_conflict" : "conflict";
-  if (!sandbox?.owned || !sandbox.enrolled_path) return conflict;
-  if (!runtimeEpoch || !(await hasPreparedRuntime(tx, sandboxId, generation, runtimeEpoch))) return "epoch_conflict";
-  const eligible = await tx.query(
-    `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
-      and s.status='starting' and s.lifecycle_generation=$5
-      and s.activity_lease_id=$4 and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
-      and s.stopped_at is null and s.stop_requested_at is null and s.deleted_at is null
-      and not s.application_secret_tainted
-      and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
-      and s.task_prompt_id is null and cardinality(s.conversation_ids)=0`,
-    [...scope, sandboxId, activityToken, generation],
-  );
-  if (!eligible.rows.length) return "epoch_conflict";
-  const result = await transitionSandbox(tx, {
-    sandboxId,
-    expectedGeneration: generation,
-    fromStates: ["starting"],
-    toState: prompt ? "running" : "ready",
-    actor: "runtime_enrolment",
-    code: "runtime_enrolled",
-    effects: [],
-  });
-  if (result.kind === "conflict") return "epoch_conflict";
-  if (prompt) {
-    await tx.query(
-      `update public.sandboxes set task_prompt_id=$2,conversation_ids=$3::text[],
-        activity_lease_id=null,activity_until=null where id=$1`,
-      [sandboxId, prompt.promptId, prompt.conversationIds],
-    );
-    await settleRuntimeTurn(tx, sandboxId, generation);
-  } else {
-    await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
-  }
-  return "applied";
-}
-
-async function hasPreparedRuntime(tx: Sql, sandboxId: string, generation: number, epoch: string) {
-  const live = await tx.query(
-    `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
-      and epoch=$3 and runtime_hash is not null for update`,
-    [sandboxId, generation, epoch],
-  );
-  return live.rows.length > 0;
 }
 
 export async function recordDockerPromptAccepted(
@@ -1032,48 +965,6 @@ async function finishSandboxDeletion(tx: Sql, sandboxId: string, generation: str
   if (transition.kind === "conflict") throw new Error("Locked sandbox deletion could not transition.");
   await purgeWorkRecovery(tx, sandboxId);
   await releaseAccountCapacity(tx, sandboxId);
-}
-
-export async function finishLaunchFailure(
-  tx: Sql,
-  scope: [string[], string],
-  sandboxId: string,
-  generation: number,
-  activityToken: string,
-  message: string,
-  runtimeEpoch: string | undefined,
-) {
-  if (runtimeEpoch) {
-    const {
-      rows: [current],
-    } = await tx.query<{ status: string }>(
-      `select s.status from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE} for update of s`,
-      [...scope, sandboxId],
-    );
-    if (
-      !current ||
-      (current.status !== "failed" && !(await hasPreparedRuntime(tx, sandboxId, generation, runtimeEpoch)))
-    )
-      return "epoch_conflict";
-  }
-  const {
-    rows: [sandbox],
-  } = await tx.query<{ generation: string; status: "starting" | "failed" }>(
-    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1,
-       activity_lease_id=null, activity_until=null
-     where s.id=$3 and ${SANDBOX_VISIBLE} and (s.status='starting' or (s.status='failed' and s.stopped_at is null))
-       and s.provider in ('boat','modal') and s.deleted_at is null and s.stop_requested_at is null
-       and s.lifecycle_generation=$4 and s.activity_lease_id=$5
-       and (not $6::boolean or (s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
-         and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())))
-     returning s.lifecycle_generation::text as generation, s.status`,
-    [...scope, sandboxId, generation, activityToken, runtimeEpoch !== undefined],
-  );
-  if (!sandbox) return runtimeEpoch ? "epoch_conflict" : false;
-  if (sandbox.status === "failed") return true;
-  const result = await recordRuntimeStartupFailure(tx, sandboxId, sandbox.generation, "launch_failed", message);
-  if (result.kind === "conflict") throw new Error("Locked launch failure could not transition.");
-  return true;
 }
 
 export async function requestBoatLaunchFailure(tx: Sql, sandboxId: string, generation: string) {

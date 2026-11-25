@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { type ChildProcess, type spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Script } from "node:vm";
-import { shellQuote, sshNativeAuthAdmission, sshPrivateAuthState, sshStdinCheckout } from "../src/server.ts";
+import { type Provider, shellQuote, sshStdinCheckout } from "../src/server.ts";
 
 const provider: any = { sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }) };
 describe("SSH stdin checkout", () =>
@@ -204,129 +203,6 @@ test.each(["admin", "root; touch /tmp/forged", "", null])(
   },
 );
 
-test.each(["boat", "modal"] as const)(
-  "private %s auth SSH captures only bounded fixed-path stdout, never argv/files/stderr",
-  async (id) => {
-    const secret =
-      '{"tokens":{"access_token":"synthetic-private-access","refresh_token":"synthetic-private-refresh","account_id":"native"}}';
-    const calls: { args: string[]; stdin?: string; stdio: unknown }[] = [];
-    const writes: unknown[] = [];
-    let removed = false,
-      overflow = false;
-    const fakeSpawn: any = (file: string, args: string[], options: { stdio: unknown }) => {
-      const child: any = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.kill = () => {};
-      const record = { args, stdin: "", stdio: options.stdio };
-      calls.push(record);
-      child.stdin = {
-        on: () => {},
-        end: (input: string) => {
-          record.stdin = input;
-          queueMicrotask(() => {
-            if (file === "ssh") {
-              child.stderr.emit("data", Buffer.from("untrusted-private-stderr"));
-              child.stdout.emit("data", Buffer.from(overflow ? "x".repeat(65537) : secret));
-            }
-            child.emit("close", 0);
-          });
-        },
-      };
-      return child;
-    };
-    const deps = {
-      spawn: fakeSpawn,
-      mkdtemp: (async () => "/private-fixture") as any,
-      rm: async () => {
-        removed = true;
-      },
-      chmod: async () => {},
-      writeFile: (async (...args: unknown[]) => {
-        writes.push(args);
-      }) as any,
-      readPublicKey: async () => "ssh-ed25519 PUBLIC",
-    };
-    const selected = { ...provider, id };
-    expect(await sshPrivateAuthState(selected, "native", deps)).toBe(secret);
-    // The generated remote program is a wire artifact: validate its executable
-    // JavaScript, not only the mocked SSH process's receipt of stdin.
-    const program = calls[1]?.stdin?.split("node <<'ARMADA_PRIVATE_AUTH'\n")[1]?.split("\nARMADA_PRIVATE_AUTH")[0];
-    expect(program).toBeDefined();
-    expect(() => new Script(program!)).not.toThrow();
-    expect(calls[1]?.stdio).toEqual(["pipe", "pipe", "pipe"]);
-    expect(calls[1]?.stdin).toContain(
-      id === "boat" ? "/home/user/.codex/auth.json" : "/home/user/.armada-runtime/codex/auth.json",
-    );
-    expect(JSON.stringify(calls.map((call) => call.args))).not.toContain("synthetic-private");
-    expect(JSON.stringify(writes)).not.toContain("synthetic-private");
-    expect(removed).toBe(true);
-    if (id === "boat") {
-      // Exercise the actual private wire program: missing native auth is safe
-      // only with a private, exact sandbox broker capability receipt.
-      for (const proof of ["matching", "wrong", "missing", "unsafe", "managed"] as const) {
-        const config = "/home/user/.armada/model-access.json";
-        const files = new Map<string, string>();
-        if (proof !== "missing")
-          files.set(
-            config,
-            JSON.stringify({ capability: proof === "wrong" ? "other-capability" : "synthetic-capability" }),
-          );
-        const metadata = (file: string) => ({
-          uid: 1000,
-          nlink: 1,
-          size: Buffer.byteLength(files.get(file) ?? ""),
-          mode: proof === "unsafe" && file === config ? 0o644 : 0o600,
-          isSymbolicLink: () => false,
-          isDirectory: () => !files.has(file),
-          isFile: () => files.has(file),
-        });
-        if (proof === "managed") files.set("/home/user/.codex/.armada-managed-native", "paused");
-        const output: string[] = [];
-        const guest = {
-          env: { ARMADA_GIT_TOKEN: "synthetic-capability" },
-          stdout: { write: (text: string) => output.push(text) },
-          exitCode: 0,
-        };
-        new Script(program!).runInNewContext({
-          Buffer,
-          process: guest,
-          require: () => ({
-            constants: { O_RDONLY: 0, O_NOFOLLOW: 1 },
-            lstatSync: (file: string) => {
-              if (file.endsWith("/.armada-managed-native") && !files.has(file))
-                throw Object.assign(new Error("absent"), { code: "ENOENT" });
-              return metadata(file);
-            },
-            fstatSync: metadata,
-            openSync: (file: string) => {
-              if (!files.has(file)) throw Object.assign(new Error("absent"), { code: "ENOENT" });
-              return file;
-            },
-            readSync: (file: string, bytes: Buffer) => Buffer.from(files.get(file) ?? "").copy(bytes),
-            closeSync: () => {},
-          }),
-        });
-        expect(output.join("")).toBe(proof === "matching" ? "null" : proof === "managed" ? "pending" : "");
-        expect(guest.exitCode).toBe(proof === "matching" || proof === "managed" ? 0 : 1);
-      }
-      await sshPrivateAuthState(selected, "native", deps, false, "synthetic-capability");
-      expect(calls.at(-1)?.stdin).toStartWith("synthetic-capability\n");
-      expect(JSON.stringify(calls.map((call) => call.args))).not.toContain("synthetic-capability");
-      expect(JSON.stringify(writes)).not.toContain("synthetic-capability");
-      await sshNativeAuthAdmission(selected, "native", false, deps);
-      const admission = calls
-        .at(-1)
-        ?.stdin?.split("node <<'ARMADA_NATIVE_ADMISSION'\n")[1]
-        ?.split("\nARMADA_NATIVE_ADMISSION")[0];
-      expect(admission).toBeDefined();
-      expect(() => new Script(admission!)).not.toThrow();
-    }
-    overflow = true;
-    await expect(sshPrivateAuthState(selected, "native", deps)).rejects.toThrow("Private native auth exchange failed.");
-  },
-);
-
 // Fixed protocol records are the only guest metadata admitted to build results.
 test.each(["warning", "integrity", "init", "clone", "helper"])("SSH checkout reports %s", async (mode) => {
   const warnings: string[] = [];
@@ -348,7 +224,7 @@ test.each(["warning", "integrity", "init", "clone", "helper"])("SSH checkout rep
                     ? "ING skillpack unknown\nARMADA_BUILD_FAILURE checkout 128 0\n"
                     : mode === "helper"
                       ? "ING skillpack unknown\nARMADA_BUILD_FAILURE helper 98\n"
-                      : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\n",
+                      : "ING skillpack unknown\nARMADA_BUILD_FAILURE skillpack 98\nARMADA_GITHUB_FAILURE directories\n",
             );
           }
           c.emit("close", file === "ssh" && mode !== "warning" ? 98 : 0);
@@ -489,4 +365,79 @@ test.each([
   expect(failure.safeMessage).toContain(expected);
   expect(failure.safeMessage).toMatch(/(?:Git exited 128|Clone failed \(exit 128\))\./);
   expect(JSON.stringify(failure)).not.toContain("opaque-secret");
+});
+
+function cancellationTransport() {
+  return {
+    chmod: async () => {},
+    writeFile: async () => {},
+    readPublicKey: async () => "ssh-ed25519 PUBLIC",
+    spawn: (() => {
+      const child = new EventEmitter() as ChildProcess;
+      Object.assign(child, {
+        stdin: {
+          end: () => queueMicrotask(() => child.emit("close", 0)),
+        },
+      });
+      return child;
+    }) as typeof spawn,
+  } satisfies NonNullable<Parameters<typeof sshStdinCheckout>[2]>;
+}
+const diagnosticProvider = {
+  id: "boat",
+  sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }),
+} as unknown as Provider;
+
+test("lease cancellation after SSH key registration prevents guest dispatch", async () => {
+  const lease = new AbortController();
+  const deps = cancellationTransport();
+  const guestSshSpawns: string[] = [];
+  const spawnImpl = deps.spawn;
+  const provider = {
+    ...diagnosticProvider,
+    async sshKey() {
+      const connection = await diagnosticProvider.sshKey({ sandboxId: "bx-test", key: "public" });
+      queueMicrotask(() => lease.abort());
+      return connection;
+    },
+  };
+  const input = { sandboxId: "bx-test", token: "private", script: "true", signal: lease.signal };
+  const result = sshStdinCheckout(provider, input, {
+    ...deps,
+    spawn: ((file: string, args: string[], options: object) => {
+      if (file === "ssh") guestSshSpawns.push(file);
+      return spawnImpl(file, args, options);
+    }) as typeof spawn,
+  });
+  await result.catch(() => {});
+  expect(guestSshSpawns).toHaveLength(0);
+  await expect(result).rejects.toBe(lease.signal.reason);
+});
+
+test("lease cancellation kills the active guest SSH process", async () => {
+  const lease = new AbortController();
+  const deps = cancellationTransport();
+  const spawnImpl = deps.spawn;
+  const signals: string[] = [];
+  const input = { sandboxId: "bx-test", token: "private", script: "true", signal: lease.signal };
+  const result = sshStdinCheckout(diagnosticProvider, input, {
+    ...deps,
+    spawn: ((file: string, args: string[], options: object) => {
+      if (file !== "ssh") return spawnImpl(file, args, options);
+      const child = new EventEmitter() as ChildProcess;
+      Object.assign(child, {
+        kill: (signal: string) => signals.push(signal),
+        stdin: {
+          end: () =>
+            queueMicrotask(() => {
+              lease.abort();
+              child.emit("close", signals.length ? null : 0);
+            }),
+        },
+      });
+      return child;
+    }) as typeof spawn,
+  });
+  await expect(result).rejects.toBeInstanceOf(DOMException);
+  expect(signals).toEqual(["SIGKILL"]);
 });

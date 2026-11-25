@@ -9,7 +9,7 @@ import {
   scanGoldenSandbox,
 } from "@armada/core/server";
 import { SandboxLastSnapshotStatusEnum, StopOperationStatusEnum } from "@boatdev/sdk";
-import { BOAT_CAPABILITIES, createBoatProvider } from "../src/provider.ts";
+import { createBoatProvider } from "../src/provider.ts";
 import { errorBody, fakeBoat, KEY, retainedSandbox, sandbox } from "./support.ts";
 
 const ID = "bx_23456789";
@@ -555,8 +555,9 @@ describe("exec", () => {
 });
 
 test("Claude steers natively, Codex by restarting its turn, and neither can ask for approval", () => {
-  expect(BOAT_CAPABILITIES.claude).toMatchObject({ steer: "in-place", approvals: false, resume: true });
-  expect(BOAT_CAPABILITIES.codex).toMatchObject({ steer: "restart", approvals: false, resume: true });
+  const { capabilities } = createBoatProvider({ apiKey: "masked" });
+  expect(capabilities.claude).toMatchObject({ steer: "in-place", approvals: false, resume: true });
+  expect(capabilities.codex).toMatchObject({ steer: "restart", approvals: false, resume: true });
 });
 
 test("Boat supports one independent golden", () => {

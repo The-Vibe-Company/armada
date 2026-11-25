@@ -1,7 +1,6 @@
 export { BoatRetentionUnconfirmed, PROVIDER_ID } from "./errors.ts";
 export { createBoatMachine } from "./machine.ts";
 export {
-  BOAT_CAPABILITIES,
   type BoatProvider,
   type BoatProviderOptions,
   createBoatProvider,

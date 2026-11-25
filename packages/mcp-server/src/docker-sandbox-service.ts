@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   DEFAULT_LAUNCH_TTL_SECONDS,
   HARNESS_KINDS,
@@ -20,10 +19,8 @@ import {
   DockerLimitsRefused,
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-import { createDockerHostStore } from "./docker-host-store.ts";
 import { createDockerMachineGenerationBindings } from "./docker-machine-bindings.ts";
 import { resolveDockerSnapshot } from "./docker-snapshot-data.ts";
-import { scopedRuntimeSql as scopedSql } from "./runtime-enrolment.ts";
 
 type Actor = { userId: string; orgId: string };
 type Reservation = {
@@ -150,11 +147,8 @@ function record(row: Row) {
   };
 }
 
-/** Private, dark reservation boundary. Callers still own model-account policy and resolution.
- * Retained retries require current host/actor authority but not a still-active account:
- * admission is historical, and reconciliation must never allocate a replacement.
- */
-export function createDockerSandboxService(sql: Sql, key: string, options: { enabled?: boolean } = {}) {
+/** Reserve a Docker sandbox inside the normal launch transaction. */
+export function createDockerSandboxService(sql: Sql) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     try {
       if (!sql.transaction) deny();
@@ -192,10 +186,8 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
       selectAccount?: (
         tx: Sql,
       ) => Promise<Pick<Reservation, "credentialId" | "credentialVersion" | "model" | "reasoningEffort">>,
-      machineLaunch = false,
     ) {
       return transaction(async (tx) => {
-        if (options.enabled !== true) deny();
         actorInput(actor);
         let request = normalize(input);
         const hint =
@@ -213,30 +205,18 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
         const present = new Set(members.rows.map((member) => member.user_id));
         if (!present.has(actor.userId) || !present.has(hint.owner_id)) deny();
         await tx.query(`select pg_advisory_xact_lock(hashtextextended($1,0))`, [`docker-reserve:${request.requestId}`]);
-        const existing = (await tx.query<Row>(`select * from public.sandboxes where id=$1`, [request.requestId]))
-          .rows[0];
-        // Revalidate before host/sandbox locks, without consulting account values.
-        if (!existing) {
-          if (selectAccount) request = normalize({ ...input, ...(await selectAccount(tx)) });
-          const credential = await tx.query(
-            `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
-             and status='active' and (expires_at is null or expires_at>now())
-             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
-            [
-              request.credentialId,
-              request.credentialVersion,
-              actor.userId,
-              actor.orgId,
-              HARNESS_KINDS[request.harness],
-            ],
-          );
-          if (!credential.rows.length) deny();
-        }
+        const existing = (await tx.query(`select 1 from public.sandboxes where id=$1`, [request.requestId])).rows[0];
+        if (existing) deny();
+        if (selectAccount) request = normalize({ ...input, ...(await selectAccount(tx)) });
+        const credential = await tx.query(
+          `select id from public.credentials where id=$1 and version=$2 and kind = any($5::public.credential_kind[])
+           and status='active' and (expires_at is null or expires_at>now())
+           and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
+          [request.credentialId, request.credentialVersion, actor.userId, actor.orgId, HARNESS_KINDS[request.harness]],
+        );
+        if (!credential.rows.length) deny();
         await authorize?.(tx);
-        // An existing request only validates the snapshot's identity; a drain must not hide its source.
-        const snapshot = snapshotId
-          ? await resolveDockerSnapshot(tx, actor, snapshotId, { allowDraining: Boolean(existing) })
-          : undefined;
+        const snapshot = snapshotId ? await resolveDockerSnapshot(tx, actor, snapshotId) : undefined;
         if (
           snapshot &&
           (snapshot.host_id !== request.hostId ||
@@ -253,39 +233,6 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
               [request.hostId, actor.orgId, hint.owner_id, hint.installation_id],
             )
           ).rows[0] ?? deny();
-        if (existing) {
-          if (machineLaunch) deny();
-          const row =
-            (await tx.query<Row>(`select * from public.sandboxes where id=$1 for update`, [request.requestId]))
-              .rows[0] ?? deny();
-          if (
-            row.provider !== "docker" ||
-            row.owner_id !== actor.userId ||
-            row.org_id !== actor.orgId ||
-            row.docker_host_id !== request.hostId ||
-            row.docker_installation_id !== host.installation_id ||
-            row.docker_image !== request.image ||
-            (row.docker_snapshot_id ?? null) !== (snapshotId ?? null) ||
-            row.credential_id !== request.credentialId ||
-            row.credential_version !== request.credentialVersion ||
-            row.harness !== request.harness ||
-            row.model !== request.model ||
-            row.reasoning_effort !== request.reasoningEffort ||
-            row.effective_ttl_seconds !== request.ttlSeconds
-          )
-            deny();
-          const managed = await tx.query(
-            `select 1 from public.docker_host_jobs j join public.mcp_actor_epochs e
-             on e.org_id=$3 and e.user_id=$2 and e.epoch=j.bound_actor_epoch
-             where j.request_id=$1 and j.bound_sandbox_id=$1 and j.bound_actor_id=$2
-             and j.host_id=$4 and j.bound_operation='create'`,
-            [row.id, actor.userId, actor.orgId, request.hostId],
-          );
-          if (!managed.rows.length) deny();
-          return record(row);
-        }
-        // A drain refuses new allocation with its own reason, never a permission failure. An
-        // already-admitted request replays above: admission is historical, not current.
         if (host.draining) throw new DockerHostDraining();
         await admitLaunchPlan(
           () => admitLaunchAccount(tx, request, request.requestId, request.model),
@@ -294,12 +241,10 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
             await admitDockerCapacity(tx, request.hostId);
           },
         );
-        const generation = machineLaunch
-          ? await createDockerMachineGenerationBindings(tx, {
-              hostId: request.hostId,
-              installationId: host.installation_id,
-            }).bind({ sandboxId: request.requestId, generation: 1 })
-          : randomUUID();
+        const generation = await createDockerMachineGenerationBindings(tx, {
+          hostId: request.hostId,
+          installationId: host.installation_id,
+        }).bind({ sandboxId: request.requestId, generation: 1 });
         const physical = `armada-${host.installation_id}-${request.hostId}-${request.requestId}-${generation}`;
         const row =
           (
@@ -330,11 +275,6 @@ export function createDockerSandboxService(sql: Sql, key: string, options: { ena
               ],
             )
           ).rows[0] ?? deny();
-        if (!machineLaunch)
-          await createDockerHostStore(scopedSql(tx), key).enqueueSandbox(actor, row.id, {
-            requestId: row.id,
-            operation: "create",
-          });
         return record(row);
       });
     },
