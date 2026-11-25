@@ -50,6 +50,7 @@ const jobsLane: LaneFactory = ({
   control,
   modal,
   modalLaunchJob,
+  resumeJob,
   launchCleanupJob,
   dockerLaunch,
   accountTurns,
@@ -107,6 +108,7 @@ const jobsLane: LaneFactory = ({
         : {}),
       ...(config.encryptionKey
         ? {
+            resume: resumeJob,
             stop: createStopJob(
               sql,
               config.encryptionKey,

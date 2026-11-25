@@ -141,6 +141,29 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
       );
       if (!result.rows.length) throw refusal("conflict", "Modal stop journal changed.");
     },
+    async saveResume(tx, row, sourceGeneration, image) {
+      await authorize(tx);
+      const updated = await tx.query(
+        `update public.modal_machines set record=$5::jsonb
+          where scope=$1 and id=$2 and org_id=$3 and owner_id=$4
+            and record->>'recoveryImageId'=$6
+            and (record#>>'{runtimeCheckpoint,generation}')::bigint=$7
+            and ((record->>'generation')::bigint=$7 and record->>'phase'='stopped'
+              or (record->>'generation')::bigint=$7+1 and record->>'runtimeResumeGeneration'=$8)
+            and coalesce(lease_until < clock_timestamp(), true) returning id`,
+        [
+          key,
+          row.info.id,
+          scope.orgId,
+          scope.userId,
+          JSON.stringify(row),
+          image,
+          sourceGeneration,
+          row.runtimeResumeGeneration,
+        ],
+      );
+      if (!updated.rows.length) throw refusal("conflict", "Modal resume journal changed.");
+    },
     async image(name) {
       await authorize();
       const result = await sql.query<{ record: SavedImage }>(

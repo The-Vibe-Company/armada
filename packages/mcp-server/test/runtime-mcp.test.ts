@@ -3,13 +3,18 @@ import { createHash } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
 import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlMcpLeasePort, createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import type { ModalProvider } from "@armada/provider-modal";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { createResumeJob } from "../src/jobs/resume.ts";
+import { createJobsRunner } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
@@ -19,7 +24,7 @@ import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeSelfFinish } from "../src/sandbox-finish.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
-import { ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -249,73 +254,155 @@ describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (p
   });
 });
 
-test.each(["boat", "modal"] as const)(
-  "checkpoint durably revokes MCP leases; a fresh epoch explicitly reauthorizes the same fixed selection (%s)",
-  async (provider) => {
-    const x = await fixture(provider),
-      { f } = x;
-    try {
-      await x.send(f.caller, f.input());
-      const old = x.configuration();
-      const cp = await createRuntimeCheckpoint(
-        f.sql,
-        ENCRYPTION_KEY,
-        f.bridge,
-      )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
-      expect(
-        (
-          await f.db.query<{ revoked: boolean }>(
-            "select revoked_at is not null as revoked from mcp_leases where hash=$1",
-            [old.hash],
-          )
-        ).rows[0]?.revoked,
-      ).toBe(true);
-      expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
-      await expect(x.service.prepare(f.caller, f.row.id)).rejects.toThrow();
-      await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
-      await f.db.query("update sandboxes set status='stopped',stop_requested_at=null,stopped_at=now() where id=$1", [
-        f.row.id,
-      ]);
-      const resume = createRuntimeResume(
-        f.sql,
-        ENCRYPTION_KEY,
-        f.bridge,
-        async () => ({
-          start: async (_signal, restore) => f.reboot(restore),
-          async checkDispatchCoverage() {},
-          stop: async () => {
-            throw Error("Healthy resume must not stop");
-          },
-        }),
-        x.service.prepare,
-      );
-      const refreshed = await resume(f.caller, {
-        id: f.row.id,
-        request_id: crypto.randomUUID(),
-        runtimeVersion: 1,
-        prompt: "first resumed MCP turn",
-      });
-      const next = x.configuration();
-      expect(refreshed.sourceCheckpoint.watermark).toBe(cp.checkpoint.watermark);
-      expect(refreshed.runtime.epoch).toBe("2");
-      expect(next.hash === old.hash).toBe(false);
-      expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
-      expect(await createSqlMcpLeasePort(f.sql).validate(next.hash, "tools")).not.toBeNull();
-      await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
-      expect(await createSqlMcpLeasePort(f.sql).validate(next.hash, "tools")).toBeNull();
-      expect(
-        (
-          await f.db.query<{ revoked: boolean }>(
-            "select revoked_at is not null as revoked from mcp_leases where hash=$1",
-            [next.hash],
-          )
-        ).rows[0]?.revoked,
-      ).toBe(true);
-    } finally {
-      await f.close();
-    }
-  },
-);
+async function resumeWithModalJob(
+  { f, service }: Awaited<ReturnType<typeof fixture>>,
+  request: Parameters<ReturnType<typeof createRuntimeResume>>[1],
+) {
+  const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+  const resumeJob = createResumeJob({
+    turns,
+    sql: f.sql,
+    key: ENCRYPTION_KEY,
+    commands: f.bridge,
+    async provider() {
+      const machine: Pick<ModalProvider, "get" | "runtimeResumeMachine"> = {
+        async get(id) {
+          return {
+            id,
+            name: "replacement",
+            state: "ready",
+            providerState: "ready",
+            labels: {},
+            expiresAt: new Date(Date.now() + 86_400_000),
+          };
+        },
+        async runtimeResumeMachine({ sandboxId, generation, checkpoint, ticket }) {
+          return {
+            predecessor: { sandboxId, generation: generation - 1, kind: "image", ref: "retained" },
+            async resume() {
+              return { sandboxId, generation, machineId: "replacement" };
+            },
+            async bootstrap(identity) {
+              const descriptor = await ticket(identity);
+              if (!descriptor) throw Error("Expected a fresh runtime bootstrap ticket.");
+              await f.reboot(
+                { ...checkpoint, conversationId: f.first.conversationId! },
+                true,
+                descriptor.enrolmentToken,
+              );
+            },
+          };
+        },
+      };
+      return machine as ModalProvider;
+    },
+    async prepare() {
+      return {
+        serverUrl: PUBLIC_URL,
+        artifact: { sha256: "b".repeat(64), bytes: 5 },
+        cacheDir: "/tmp/runtime",
+        configuration: {},
+      };
+    },
+    prepareMcp: service.prepare,
+    async restoreScopedAccess() {},
+  });
+  const resume = createRuntimeResume(
+    f.sql,
+    ENCRYPTION_KEY,
+    f.bridge,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    resumeJob.resume,
+  );
+  const send = createRuntimeFollowup(
+    f.sql,
+    ENCRYPTION_KEY,
+    f.bridge,
+    service.prepare,
+    resume,
+    undefined,
+    resumeJob.wake,
+  );
+  turns.setDispatch((caller, input, claim) => send(caller, input, claim, { fromQueue: true }));
+  const signal = new AbortController().signal;
+  const runner = createJobsRunner(createJobsStore(f.sql, ENCRYPTION_KEY), { resume: resumeJob.handler });
+  expect(await turns.accept(f.caller, request)).toMatchObject({ status: "queued" });
+  expect(await turns.reconcileOne(signal)).toBe(true);
+  await turns.drain();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(await turns.reconcileOne(signal)).toBe(true);
+  await turns.drain();
+  return resume(f.caller, request);
+}
+
+describe.each(["boat", "modal"] as const)("checkpoint and resume (%s)", (provider) => {
+  const prepared = scopedRuntimeFixture(() => fixture(provider));
+  test("checkpoint durably revokes MCP leases; a fresh epoch explicitly reauthorizes the same fixed selection", async () => {
+    const x = await prepared();
+    const { f } = x;
+    await x.send(f.caller, f.input());
+    const old = x.configuration();
+    const cp = await createRuntimeCheckpoint(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+    )(f.caller, { id: f.row.id, request_id: crypto.randomUUID(), runtimeVersion: 1 });
+    expect(
+      (
+        await f.db.query<{ revoked: boolean }>(
+          "select revoked_at is not null as revoked from mcp_leases where hash=$1",
+          [old.hash],
+        )
+      ).rows[0]?.revoked,
+    ).toBe(true);
+    expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
+    await expect(x.service.prepare(f.caller, f.row.id)).rejects.toThrow();
+    await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
+    await f.db.query("update sandboxes set status='stopped',stop_requested_at=null,stopped_at=now() where id=$1", [
+      f.row.id,
+    ]);
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      async () => ({
+        start: async (_signal, restore) => f.reboot(restore),
+        async checkDispatchCoverage() {},
+        stop: async () => {
+          throw Error("Healthy resume must not stop");
+        },
+      }),
+      x.service.prepare,
+    );
+    const request = {
+      id: f.row.id,
+      request_id: crypto.randomUUID(),
+      runtimeVersion: 1 as const,
+      prompt: "first resumed MCP turn",
+    };
+    const refreshed = provider === "modal" ? await resumeWithModalJob(x, request) : await resume(f.caller, request);
+    const next = x.configuration();
+    expect(refreshed.sourceCheckpoint.watermark).toBe(cp.checkpoint.watermark);
+    expect(refreshed.runtime.epoch).toBe("2");
+    expect(next.hash === old.hash).toBe(false);
+    expect(await createSqlMcpLeasePort(f.sql).validate(old.hash, "tools")).toBeNull();
+    expect(await createSqlMcpLeasePort(f.sql).validate(next.hash, "tools")).not.toBeNull();
+    await f.db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [f.row.id]);
+    expect(await createSqlMcpLeasePort(f.sql).validate(next.hash, "tools")).toBeNull();
+    expect(
+      (
+        await f.db.query<{ revoked: boolean }>(
+          "select revoked_at is not null as revoked from mcp_leases where hash=$1",
+          [next.hash],
+        )
+      ).rows[0]?.revoked,
+    ).toBe(true);
+  });
+});
 
 test.each(["boat", "modal"] as const)(
   "a refused MCP configuration on send records runtime outcomes under the HTTP request ID (%s)",

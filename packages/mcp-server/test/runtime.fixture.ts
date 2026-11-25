@@ -334,11 +334,16 @@ export async function runtimeFixture(
     send,
     context,
     input,
-    async reboot(restore: { epoch: string; watermark: number; conversationId: string | null }, attest = true) {
+    async reboot(
+      restore: { epoch: string; watermark: number; conversationId: string | null },
+      attest = true,
+      enrolmentToken?: string,
+    ) {
       await runner.flushOutbox().catch(() => {});
       journal.close();
       active = await authority.enrol(
-        (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
+        enrolmentToken ??
+          (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
       );
       journal = new Journal(join(root, "journal"), (value) => value);
       const next = {

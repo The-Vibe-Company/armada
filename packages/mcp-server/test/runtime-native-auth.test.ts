@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { CodexDriver, type DriverEvent } from "@armada/agent-runtime";
 import { encryptSecret, type GoldenActor, type Provider, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
-import { createModalResumePolicy } from "../src/modal-runtime-resume.ts";
+import { createModalRuntimePolicy } from "../src/modal-runtime-policy.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
@@ -487,7 +487,7 @@ test("Modal subscription launch enrols only access-broker selection and replaces
         throw Error("intentional_bootstrap_abort");
       },
     } as unknown as Provider;
-    const policy = createModalResumePolicy({
+    const policy = createModalRuntimePolicy({
       sql: f.sql,
       encryptionKey: ENCRYPTION_KEY,
       serverUrl: "https://armada.example",

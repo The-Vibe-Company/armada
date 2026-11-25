@@ -42,6 +42,7 @@ import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
 import { boatLaunchJobs } from "./jobs/boat-launch.ts";
 import { admitModalLaunch, modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
+import { createResumeJob } from "./jobs/resume.ts";
 import type { JobKind } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
@@ -51,7 +52,7 @@ import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalArtifactCache } from "./modal-artifact-cache.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createModalLaunchAdmission } from "./modal-launch-admission.ts";
-import { createModalResumePolicy, modalRuntimeResume } from "./modal-runtime-resume.ts";
+import { createModalRuntimePolicy } from "./modal-runtime-policy.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import { createObservedBoatProvider, withBoatManagementIdentity } from "./observed-boat.ts";
@@ -254,7 +255,7 @@ export async function createServerServices(env: Record<string, string | undefine
   }
   const { manifest, artifactDir } = modalRuntime;
   const warmModalArtifacts = createModalArtifactCache(manifest, artifactDir);
-  const modalRuntimePolicy = createModalResumePolicy({
+  const modalRuntimePolicy = createModalRuntimePolicy({
     sql,
     encryptionKey: config.encryptionKey,
     serverUrl: config.publicUrl,
@@ -394,28 +395,28 @@ export async function createServerServices(env: Record<string, string | undefine
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;
-  const modalResume = modalRuntimeResume({
+  const accountTurns = createAccountTurnQueue(sql, config.encryptionKey);
+  const resume = createResumeJob({
+    turns: accountTurns,
     sql,
-    vault: store,
     key: config.encryptionKey,
-    policy: modalRuntimePolicy,
-    modelAuth,
-    hostFor: modalRuntimeHostFor,
+    commands: runtimeCommands,
+    provider: (caller, sandbox) => modalRuntimeHostFor(sandbox, caller),
+    prepare: prepareLaunchTicket,
+    prepareMcp: runtimeMcp.prepare,
+    ...(runtimeGitHub ? { prepareGitHub: runtimeGitHub.prepareLaunch } : {}),
+    restoreScopedAccess: sandboxArmadaAccess.restoreEnrolled,
   });
   const runtimeResume = createRuntimeResume(
     sql,
     config.encryptionKey,
     runtimeCommands,
-    (caller, sandbox) => {
-      const prepare = { boat: boatResume, modal: modalResume }[sandbox.provider];
-      if (!prepare) throw new VaultError("unavailable", "Runtime resume policy unavailable.");
-      return prepare(caller, sandbox);
-    },
+    boatResume,
     runtimeMcp.prepare,
     runtimeGitHub?.prepareLaunch,
     sandboxArmadaAccess.restoreEnrolled,
+    resume.resume,
   );
-  const accountTurns = createAccountTurnQueue(sql, config.encryptionKey);
   const runtimeSend = createRuntimeFollowup(
     sql,
     config.encryptionKey,
@@ -423,6 +424,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeMcp.prepare,
     runtimeResume,
     sandboxArmadaAccess.restoreEnrolled,
+    resume.wake,
   );
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"
@@ -641,6 +643,7 @@ export async function createServerServices(env: Record<string, string | undefine
     modelAuth,
     modal,
     modalLaunchJob,
+    resumeJob: resume.handler,
     launchCleanupJob,
     modalArtifactCache: warmModalArtifacts,
     mcp,
