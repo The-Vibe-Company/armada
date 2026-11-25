@@ -82,6 +82,10 @@ Usage:
                                            Start a turn or redirect a running turn
   armada exec [sandbox-id] [--cwd PATH] [--timeout SECONDS] [--org UUID] [--json] -- COMMAND
                                            Run a shell command
+  armada shell [sandbox-id] [--cwd PATH] [--org UUID]
+                                           Open an interactive PTY shell
+  armada port-forward [sandbox-id] <remote-port> [local-port] [--org UUID]
+                                           Forward 127.0.0.1:<local-port> to sandbox TCP port
   armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]
                                            Read agent events
   armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]

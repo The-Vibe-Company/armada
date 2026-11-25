@@ -186,7 +186,10 @@ logs. If a send times out ambiguously, use `armada info SANDBOX --live` and
 `armada events SANDBOX -f` to follow until settled, or `armada events SANDBOX --tail N`
 for bounded diagnostics. Piped output is JSON
 Lines, with one event per line. Use `armada exec SANDBOX -- "git status --short"`
-to run a shell command inside the sandbox. Use `armada outputs --id SANDBOX` to
+to run a shell command inside the sandbox. For an interactive PTY shell over the relay,
+run `armada shell SANDBOX --cwd /home/user` (or omit `SANDBOX` to use `ARMADA_SANDBOX` / `.armada/sandbox`).
+To tunnel a sandbox TCP port to loopback `127.0.0.1`, run `armada port-forward SANDBOX 3000 8080`
+(local port defaults to remote port). Use `armada outputs --id SANDBOX` to
 list stored outputs and `armada outputs NAME --id SANDBOX -o DIR` to download one.
 
 For a viewer grant, subscribe to `GET /api/v1/events?sandbox=<UUID>` with

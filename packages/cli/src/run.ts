@@ -37,6 +37,7 @@ import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
+import type { RelayDeps } from "./relay-session.ts";
 import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
@@ -57,6 +58,7 @@ export interface Deps {
   readStdin?: () => Promise<string>;
   localHost?: LocalHostIo;
   auth?: AuthIo;
+  relay?: RelayDeps;
 }
 
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
