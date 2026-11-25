@@ -1,4 +1,4 @@
-export { BoatRetentionUnconfirmed, PROVIDER_ID } from "./errors.ts";
+export { PROVIDER_ID } from "./errors.ts";
 export { createBoatMachine } from "./machine.ts";
 export {
   type BoatProvider,
