@@ -21,8 +21,15 @@ public enum ArmadaError: Error, Sendable, Equatable, LocalizedError {
     }
 }
 
+public enum ArmadaStreamEvent: Sendable { case response(HTTPURLResponse), data(Data) }
+
 public protocol ArmadaTransport: Sendable {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
+    func stream(_ request: URLRequest) -> AsyncThrowingStream<ArmadaStreamEvent, Error>
+}
+
+public extension ArmadaTransport {
+    func stream(_ request: URLRequest) -> AsyncThrowingStream<ArmadaStreamEvent, Error> { AsyncThrowingStream { $0.finish(throwing: ArmadaError.unavailable) } }
 }
 
 /// Ephemeral session: no cookies, credential cache or response cache. Never follows redirects
@@ -54,6 +61,27 @@ public final class URLSessionTransport: ArmadaTransport, Sendable {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ArmadaError.invalidResponse }
         return (data, http)
+    }
+
+    public func stream(_ request: URLRequest) -> AsyncThrowingStream<ArmadaStreamEvent, Error> {
+        AsyncThrowingStream { c in
+            let task = Task {
+                do {
+                    let (bytes, response) = try await self.session.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else { c.finish(throwing: ArmadaError.invalidResponse); return }
+                    c.yield(.response(http))
+                    guard (200..<300).contains(http.statusCode) else { c.finish(); return }
+                    var chunk: [UInt8] = []; chunk.reserveCapacity(1024)
+                    for try await byte in bytes {
+                        chunk.append(byte)
+                        if byte == 0x0A || chunk.count >= 4096 { c.yield(.data(Data(chunk))); chunk.removeAll(keepingCapacity: true) }
+                    }
+                    if !chunk.isEmpty { c.yield(.data(Data(chunk))) }
+                    c.finish()
+                } catch is CancellationError { c.finish(throwing: CancellationError()) } catch let e as URLError where e.code == .cancelled { c.finish(throwing: CancellationError()) } catch { c.finish(throwing: error) }
+            }
+            c.onTermination = { @Sendable _ in task.cancel() }
+        }
     }
 }
 
