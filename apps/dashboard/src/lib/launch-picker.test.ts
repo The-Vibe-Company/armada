@@ -54,10 +54,23 @@ test("a rebuilt starting point retains the current agent only while it can run i
   expect(launchHarnessForSource("claude", ["codex", "opencode"], false)).toBe("codex");
 });
 
-test("an Antigravity account offers only its catalog default until named models are confirmed", () => {
+test("an Antigravity account offers Account default as default alongside the verified Gemini 4 models", () => {
   const antigravity = { ...account, kind: "antigravity" } satisfies ModelAccount;
   const [group] = launchPickerGroups([antigravity], MODEL_CATALOG, "codex", 0);
-  expect(group?.options).toEqual([
+  expect(group?.options[0]).toEqual(
     expect.objectContaining({ id: "default", label: "Account default", harness: "antigravity", isDefault: true }),
-  ]);
+  );
+  expect(group?.options.map((option) => option.id)).toEqual(MODEL_CATALOG.antigravity.models.map((model) => model.id));
+  expect(group?.options.slice(1).every((option) => option.harness === "antigravity" && !option.isDefault)).toBe(true);
+  expect(group?.options.map((option) => option.id)).toEqual(
+    expect.arrayContaining([
+      "gemini-4-neon-low",
+      "gemini-4-neon-xhigh",
+      "gemini-4-hydrogen-low",
+      "gemini-4-hydrogen-xhigh",
+      "gemini-4-argon-high",
+      "gemini-4-carbon-high",
+    ]),
+  );
+  expect(group?.options.some((option) => option.label.includes("confirm on staging"))).toBe(false);
 });

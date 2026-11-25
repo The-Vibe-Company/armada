@@ -24,8 +24,11 @@ To import a native Google login, use
 The token file contains a `token` object with `access_token`, `refresh_token` and
 optional ISO 8601 `expiry`. Keep key and token values out of command arguments.
 
-Use model `default` to accept the account's selection. The suggested Gemini
-model IDs are pending confirmation on staging. Armada has no prices for them.
+Use model `default` to accept the account's selection, or pick one of the
+verified Antigravity `1.5.13` Gemini 4 model IDs (`gemini-4-neon-{low,medium,high,xhigh}`,
+`gemini-4-hydrogen-{low,medium,high,xhigh}`, `gemini-4-argon-{low,medium,high}`,
+`gemini-4-carbon-{low,medium,high}`) with `reasoningEffort: "default"`. Armada
+has no prices for them.
 Boat refuses Antigravity before provider access. The server seals the selected
 credential for private runtime enrollment. Follow-ups work in a running
 sandbox. Conversation restore after stopping the sandbox is unsupported.
@@ -36,8 +39,7 @@ With a Gemini API-key account and model `default`, repeat on Modal and the
 owner's Docker host. Check the first reply, a follow-up in the same conversation,
 interrupt, and an Armada MCP tool call. The pinned CLI advertises no
 `mcpCapabilities`, so verify delivery with an actual tool call. Confirm the
-account secret is absent from logs, events, and exec output. Record the offered
-model IDs to confirm the picker choices.
+account secret is absent from logs, events, and exec output.
 
 ## Bump the pin
 

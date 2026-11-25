@@ -106,7 +106,6 @@ import {
   usageView,
 } from "@/lib/model-accounts";
 import type { ConnectionTestChoices } from "@/lib/model-connection-check";
-import { dashboardHarnessModels } from "@/lib/model-picker";
 import { modelsPageDefault, modelsPageExhaustion, modelsPageModel, modelsPageStatus } from "@/lib/models-page";
 import { cn } from "@/lib/utils";
 
@@ -2247,9 +2246,7 @@ function PersonalDefaultSentence({
   const resolved = modelsPageDefault(accounts, harness, now, [current]);
   const account = resolved.state === "resolved" || resolved.state === "unusable" ? resolved.account : null;
   const model = account ? (current.model ?? modelsPageModel(account, harness)) : undefined;
-  const catalogModel = dashboardHarnessModels(harness, MODEL_CATALOG[harness]).models.find(
-    (entry) => entry.id === model,
-  );
+  const catalogModel = MODEL_CATALOG[harness].models.find((entry) => entry.id === model);
   const modelLabel = catalogModel?.label ?? model;
   const id = useId();
   const save = async (next: AgentDefault, restoring = false) => {
