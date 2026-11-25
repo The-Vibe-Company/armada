@@ -88,7 +88,7 @@ export class AntigravityDriver implements Driver {
     root: string;
     cwd: string;
     credential: AntigravityCredential;
-    githubToolsRoot?: string;
+    githubTools?: { root: string; home: string };
     readableVariables?: Record<string, string>;
     journal: Pick<Journal, "registerApplicationSecrets">;
   }) {
@@ -106,7 +106,12 @@ export class AntigravityDriver implements Driver {
       AGY_CLI_DISABLE_AUTO_UPDATE: "1",
       AGY_ACP_FORCE_FILE_STORAGE: "1",
       TMPDIR: tmp,
-      ...(options.githubToolsRoot ? githubRuntimeEnvironment({}, options.githubToolsRoot) : {}),
+      ...(options.githubTools
+        ? {
+            ...githubRuntimeEnvironment({}, options.githubTools.root),
+            GIT_CONFIG_GLOBAL: join(options.githubTools.home, ".gitconfig"),
+          }
+        : {}),
     };
     const caBundle = caBundles.find((path) => existsSync(path));
     if (caBundle) env.SSL_CERT_FILE = caBundle;

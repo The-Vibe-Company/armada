@@ -254,7 +254,7 @@ function antigravityFixture(credential: ConstructorParameters<typeof Antigravity
         root,
         cwd: root,
         credential,
-        githubToolsRoot: join(root, "github-generation"),
+        githubTools: { root: join(root, "github-generation"), home: root },
         journal: {
           registerApplicationSecrets: (values) => {
             registered.push(...values);
@@ -386,6 +386,7 @@ antigravityTest("Antigravity passes the Gemini key only in a private child envir
       gitHubTools: {
         firstPath: join(f.root, "github-generation", "bin"),
         bashEnv: join(f.root, "github-generation", "shell-env.sh"),
+        gitConfig: join(f.root, ".gitconfig"),
       },
     });
     expect(f.registered).toEqual([apiKey]);
