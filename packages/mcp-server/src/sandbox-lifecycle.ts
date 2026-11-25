@@ -580,12 +580,12 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   });
 }
 
-export async function enqueueModalStop(
-  tx: Sql,
-  sandboxId: string,
-  generation: string | number,
-  lease?: { kind: "activity" | "reconcile"; token: string },
-) {
+export function unresolvedModalStop(sandbox: string) {
+  return `(${sandbox}.provider='modal' and exists(select 1 from public.jobs j where j.sandbox_id=${sandbox}.id
+    and j.generation=${sandbox}.lifecycle_generation and j.kind='stop' and j.state in ('queued','leased')))`;
+}
+
+export async function enqueueModalStop(tx: Sql, sandboxId: string, generation: string | number, lease?: string) {
   const {
     rows: [target],
   } = await tx.query<{ org_id: string }>(
@@ -608,27 +608,29 @@ export async function enqueueModalStop(
     tx,
   );
   if (lease) {
-    const columns =
-      lease.kind === "activity"
-        ? { id: "activity_lease_id", until: "activity_until" }
-        : { id: "reconcile_lease", until: "reconcile_lease_until" };
     const result = await tx.query(
-      `update public.sandboxes set ${columns.id}=null,${columns.until}=null
-       where id=$1 and lifecycle_generation=$2 and ${columns.id}=$3 returning id`,
-      [sandboxId, generation, lease.token],
+      `update public.sandboxes set activity_lease_id=null,activity_until=null,reconcile_lease=null,reconcile_lease_until=null
+       where id=$1 and lifecycle_generation=$2 and $3::uuid in (activity_lease_id,reconcile_lease) returning id`,
+      [sandboxId, generation, lease],
     );
     if (!result.rows.length) throw new Error("Modal stop admission lost its lease handoff.");
   }
   return true;
 }
 
-export async function settleModalStop(tx: Sql, sandboxId: string, generation: string, status: "stopping" | "failed") {
+export async function settleModalStop(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  status: "stopping" | "failed",
+  retentionLost: boolean,
+) {
   if (status === "stopping") {
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
       fromStates: ["stopping"],
-      toState: "stopped",
+      toState: retentionLost ? "failed" : "stopped",
       actor: "lifecycle_runner",
       code: "owner_stop_settled",
       effects: [],
@@ -636,9 +638,10 @@ export async function settleModalStop(tx: Sql, sandboxId: string, generation: st
     if (result.kind === "conflict") throw new Error("Modal stop settlement changed generation.");
   }
   const applied = await tx.query(
-    `update public.sandboxes set stopped_at=coalesce(stopped_at,clock_timestamp()),stop_requested_at=null
+    `update public.sandboxes set stopped_at=coalesce(stopped_at,clock_timestamp()),stop_requested_at=null,
+      status_reason=case when $3::boolean then 'modal_stop_retention_unconfirmed' else status_reason end
     where id=$1 and lifecycle_generation=$2 and status in ('failed','stopped') returning id`,
-    [sandboxId, generation],
+    [sandboxId, generation, status === "stopping" && retentionLost],
   );
   if (!applied.rows.length) throw new Error("Modal stop exit lost its generation.");
 }
@@ -1403,9 +1406,7 @@ export function createSandboxLifecycle(
                 and r.receipt is null and r.activated_at is not null
             )) as modal_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
-          and not exists(select 1 from public.jobs j where j.sandbox_id=candidate.id
-            and j.generation=candidate.lifecycle_generation and j.kind='stop'
-            and candidate.provider='modal' and j.state in ('queued','leased','failed'))
+          and not ${unresolvedModalStop("candidate")}
           -- The launch job owns recovery across retries and worker replacement.
           and not ${unresolvedModalLaunch("candidate")}
           -- This transition and the cleanup job commit together.
@@ -1845,8 +1846,7 @@ export function createSandboxLifecycle(
                 if (result.kind === "conflict") throw stopConflict;
               }
               if (modal) {
-                if (!(await enqueueModalStop(tx, row.id, row.lifecycle_generation, { kind: "reconcile", token })))
-                  throw stopConflict;
+                if (!(await enqueueModalStop(tx, row.id, row.lifecycle_generation, token))) throw stopConflict;
                 return false;
               }
               return true;

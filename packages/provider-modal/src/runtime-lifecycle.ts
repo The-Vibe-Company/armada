@@ -2,19 +2,25 @@ import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo, Sql } from "@armada/core";
 import type { Machine as MachineContract, MachineIdentity } from "@armada/core/server";
 import type { Sandbox } from "modal";
+import { withModalStopSignal } from "./client.ts";
 import { ModalOperationError, refusal } from "./errors.ts";
 import { observeModalCompute, stopModalCompute, terminateModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
 import { bootstrapModalRuntime, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
+type PhysicalTarget = Pick<MachineIdentity, "machineId" | "generation">;
+
 export type ModalRuntimeStop = (binding: {
   recordId: string;
+  sandboxId: string;
+  generation: number;
+  physical?: PhysicalTarget | undefined;
   checkpoint: { epoch: string; watermark: number } | null;
   write(work: (tx: Sql) => Promise<void>): Promise<void>;
   reconcileOnly?: boolean;
 }) => Promise<{
-  target: Pick<MachineIdentity, "machineId" | "generation">;
+  physical: PhysicalTarget;
   machine: Pick<MachineContract, "stop">;
   stopped: boolean;
 }>;
@@ -75,71 +81,105 @@ export function createRuntimeLifecycle({
         );
       });
     },
-    async runtimeStopMachine({ recordId, checkpoint, write, reconcileOnly }: Parameters<ModalRuntimeStop>[0]) {
+    async runtimeStopMachine({
+      recordId,
+      sandboxId: logicalId,
+      generation,
+      physical: savedTarget,
+      checkpoint,
+      write,
+      reconcileOnly,
+    }: Parameters<ModalRuntimeStop>[0]) {
       const pinned = await store.get(recordId);
       if (!pinned.physicalId) throw refusal("conflict", "No current Modal physical incarnation.");
+      const target = savedTarget ?? { machineId: pinned.physicalId, generation: pinned.generation };
       return {
         stopped: pinned.phase === "stopped",
-        target: { machineId: pinned.physicalId, generation: pinned.generation },
+        physical: target,
         machine: {
-          async stop(request) {
-            const { generation, machineId, sandboxId, retain, signal } = request;
-            if (
-              retain &&
-              (!checkpoint ||
-                !/^[1-9][0-9]{0,18}$/.test(checkpoint.epoch) ||
-                !Number.isSafeInteger(checkpoint.watermark) ||
-                checkpoint.watermark < 0)
-            )
-              throw refusal("invalid_request", "A durable common checkpoint is required.");
-            signal?.throwIfAborted();
-            const row = await store.get(recordId);
-            assertMachineSource(row);
-            if (!row.commonRuntime || row.golden || row.physicalId !== machineId || row.generation !== generation)
-              throw refusal("conflict", "Stop requires the exact enrolled physical incarnation.");
-            const save = () => write((tx) => store.saveStop(tx, row));
-            const expected = retain && checkpoint ? { ...checkpoint, generation, physicalId: machineId } : null;
-            const prior = row.runtimeCheckpoint;
-            if (
-              prior &&
-              prior.generation === generation &&
-              (!expected ||
-                prior.epoch !== expected.epoch ||
-                prior.watermark !== expected.watermark ||
-                prior.physicalId !== machineId)
-            )
-              throw refusal("conflict", "Retained stop belongs to another checkpoint.");
-            const retained = () => {
-              if (!retain) return null;
-              if (!row.recoveryImageId || !row.runtimeCheckpoint || row.runtimeCheckpoint.generation !== generation)
-                throw refusal("conflict", "No retained common checkpoint exists.");
-              return { sandboxId, generation, kind: "image" as const, ref: row.recoveryImageId };
-            };
-            try {
-              if (row.phase === "stopped") return retained();
-              const livePhases: Machine["phase"][] = expected
-                ? ["active", "checkpoint"]
-                : ["active", "booting", "creating"];
-              if (row.phase !== "terminate" && !livePhases.includes(row.phase))
-                throw refusal("conflict", "Stop outcome is unknown; retain the physical source for reconciliation.");
-              if (reconcileOnly && row.phase !== "terminate")
-                throw refusal("unavailable", "There is no durable Modal termination intent.");
-              const sb = await physical(row, signal);
-              if (row.phase === "terminate" && retain && (!row.recoveryImageId || !prior || !row.quiesced))
-                throw refusal("conflict", "Termination lacks a retained common checkpoint.");
-              if (!retain && row.phase !== "terminate") {
+          stop: (request) =>
+            withModalStopSignal(request.signal, async () => {
+              const { machineId, sandboxId, retain, signal } = request;
+              if (sandboxId !== logicalId || request.generation !== generation || machineId !== target.machineId)
+                throw refusal("conflict", "The stop job incarnation changed.");
+              if (
+                retain &&
+                !reconcileOnly &&
+                (!checkpoint ||
+                  !/^[1-9][0-9]{0,18}$/.test(checkpoint.epoch) ||
+                  !Number.isSafeInteger(checkpoint.watermark) ||
+                  checkpoint.watermark < 0)
+              )
+                throw refusal("invalid_request", "A durable common checkpoint is required.");
+              signal?.throwIfAborted();
+              const row = await store.get(recordId);
+              assertMachineSource(row);
+              if (
+                !row.commonRuntime ||
+                row.golden ||
+                row.physicalId !== machineId ||
+                row.generation !== target.generation
+              )
+                throw refusal("conflict", "Stop requires the exact enrolled physical incarnation.");
+              const save = () => write((tx) => store.saveStop(tx, row));
+              const expected =
+                retain && checkpoint ? { ...checkpoint, generation: target.generation, physicalId: machineId } : null;
+              const prior = row.runtimeCheckpoint;
+              if (
+                !reconcileOnly &&
+                row.phase !== "stopped" &&
+                prior &&
+                prior.generation === target.generation &&
+                (!expected ||
+                  prior.epoch !== expected.epoch ||
+                  prior.watermark !== expected.watermark ||
+                  prior.physicalId !== machineId)
+              )
+                throw refusal("conflict", "Retained stop belongs to another checkpoint.");
+              const retained = () =>
+                retain &&
+                expected &&
+                row.recoveryImageId &&
+                row.runtimeCheckpoint?.generation === target.generation &&
+                row.runtimeCheckpoint.physicalId === machineId &&
+                row.runtimeCheckpoint.epoch === expected.epoch &&
+                row.runtimeCheckpoint.watermark === expected.watermark
+                  ? { sandboxId, generation, kind: "image" as const, ref: row.recoveryImageId }
+                  : null;
+              const forgetRecovery = () => {
                 if (row.recoveryImageId)
                   row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
                 delete row.recoveryImageId;
                 delete row.runtimeCheckpoint;
-                row.phase = "terminate";
-                row.info.state = "stopping";
+              };
+              const settle = async (receipt: ReturnType<typeof retained>) => {
+                if (!receipt) forgetRecovery();
+                row.phase = "stopped";
+                row.info.state = "stopped";
+                row.info.providerState = "stopped";
+                row.info.stoppedAt = new Date();
                 await save();
-              }
-              if (reconcileOnly) {
-                if ((await sb.poll()) === null)
-                  throw refusal("unavailable", "The Modal machine still runs after the stop deadline.");
-              } else
+                return receipt;
+              };
+              try {
+                if (row.phase === "stopped") return retained();
+                const sb = await physical(row, signal);
+                if ((await sb.poll()) !== null) return settle(row.phase === "terminate" ? retained() : null);
+                if (reconcileOnly)
+                  throw refusal("unavailable", "The Modal machine still runs; observation will retry.");
+                const livePhases: Machine["phase"][] = expected
+                  ? ["active", "checkpoint"]
+                  : ["active", "booting", "creating"];
+                if (row.phase !== "terminate" && !livePhases.includes(row.phase))
+                  throw refusal("conflict", "Stop outcome is unknown; retain the physical source for reconciliation.");
+                if (row.phase === "terminate" && retain && (!retained() || !row.quiesced))
+                  throw refusal("conflict", "Termination lacks a retained common checkpoint.");
+                if (!retain && row.phase !== "terminate") {
+                  forgetRecovery();
+                  row.phase = "terminate";
+                  row.info.state = "stopping";
+                  await save();
+                }
                 await stopModalCompute(sb, {
                   wait: false,
                   signal,
@@ -174,16 +214,11 @@ export function createRuntimeLifecycle({
                       },
                     }),
                 });
-              row.phase = "stopped";
-              row.info.state = "stopped";
-              row.info.providerState = "stopped";
-              row.info.stoppedAt = new Date();
-              await save();
-              return retained();
-            } catch (error) {
-              throw new ModalOperationError(error, await resourceReceipt(row));
-            }
-          },
+                return settle(retained());
+              } catch (error) {
+                throw new ModalOperationError(error, await resourceReceipt(row));
+              }
+            }),
         },
       } satisfies Awaited<ReturnType<ModalRuntimeStop>>;
     },

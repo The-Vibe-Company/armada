@@ -114,14 +114,29 @@ const fixtureSql = createFixtureSql(getDb);
 async function stopRuntime(
   provider: Pick<ReturnType<typeof createModalProvider>["provider"], "runtimeStopMachine">,
   proof: { sandboxId: string; physicalGeneration: string; epoch: string; watermark: number },
+  options?: Pick<
+    Parameters<ReturnType<typeof createModalProvider>["provider"]["runtimeStopMachine"]>[0],
+    "write" | "reconcileOnly"
+  >,
 ) {
   const { sandboxId, physicalGeneration, epoch, watermark } = proof;
-  const { machine, target } = await provider.runtimeStopMachine({
+  const { physical } = await provider.runtimeStopMachine({
     recordId: sandboxId,
+    sandboxId,
+    generation: Number(physicalGeneration),
     checkpoint: { epoch, watermark },
     write: (work) => work(fixtureSql),
   });
-  return machine.stop({ ...target, sandboxId, generation: Number(physicalGeneration), retain: true });
+  const binding = await provider.runtimeStopMachine({
+    recordId: sandboxId,
+    sandboxId,
+    generation: 8,
+    physical: { ...physical, generation: Number(physicalGeneration) },
+    checkpoint: { epoch, watermark },
+    write: (work) => work(fixtureSql),
+    ...options,
+  });
+  return binding.machine.stop({ machineId: physical.machineId, sandboxId, generation: 8, retain: true });
 }
 function fixture(
   accessScope: Scope = scope,
@@ -1178,8 +1193,25 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await expect(
     stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "2", epoch: "7", watermark: 2 }),
   ).rejects.toMatchObject({ code: "conflict" });
-  await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
-  await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
+  const proof = { sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 };
+  await expect(
+    stopRuntime(f.provider, proof, {
+      write: (work) =>
+        work({
+          async query(statement, params) {
+            if (
+              statement.includes("update public.modal_machines") &&
+              JSON.parse(String(params?.[4])).phase === "stopped"
+            )
+              throw Error("lost final Modal receipt write");
+            return fixtureSql.query(statement, params);
+          },
+        }),
+    }),
+  ).rejects.toThrow();
+  expect((await f.store.get(worker.id)).phase).toBe("terminate");
+  await stopRuntime(f.provider, proof, { reconcileOnly: true, write: (work) => work(fixtureSql) });
+  await stopRuntime(f.provider, proof);
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
   await expect(
     f.provider.resumeRuntime({

@@ -1077,7 +1077,7 @@ test("runtime lifecycle stops compute without claiming a checkpoint invalidated 
   await lifecycle.drain();
 });
 
-test.each(["active", "terminate", "booting"] as const)("expired Modal stop from %s", async (phase) => {
+test.each(["active", "terminate", "booting", "failed"] as const)("expired Modal stop from %s", async (phase) => {
   const { db, people } = await sharedDatabase();
   const sql = bunLikeSql(db);
   const golden = (
@@ -1090,8 +1090,8 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
   const id = crypto.randomUUID();
   await db.query(
     `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,runtime_transport,expires_at)
-    values($1,'modal','compute',$2,$3,$4,'codex','running','dialout',now()-interval '1 second')`,
-    [id, golden.id, people.org, people.owner],
+    values($1,'modal','compute',$2,$3,$4,'codex',$5,'dialout',now()-interval '1 second')`,
+    [id, golden.id, people.org, people.owner, phase === "failed" ? "failed" : "running"],
   );
   let stopped = false;
   const provider = {
@@ -1099,15 +1099,15 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
     get: async () => ({
       id: "compute",
       state: stopped ? "stopped" : "running",
-      providerState: phase,
+      providerState: phase === "failed" ? "active" : phase,
       physicalGeneration: "3",
     }),
     captureRuntimeWork: async () => {
-      if (phase !== "active") throw Error("Only active compute can preserve work");
+      if (phase !== "active" && phase !== "failed") throw Error("Only active compute can preserve work");
       return { status: "clean" };
     },
     runtimeStopMachine: async () => ({
-      target: { machineId: "compute", generation: 3 },
+      physical: { machineId: "compute", generation: 3 },
       stopped,
       machine: {
         stop: async () => {
@@ -1129,7 +1129,7 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
                 [id],
               )
             ).rows,
-          ).toEqual([{ captured: phase === "active" }]);
+          ).toEqual([{ captured: phase === "active" || phase === "failed" }]);
           stopped = true;
         },
       },
@@ -1144,10 +1144,18 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
   const worker = createSandboxLifecycle(sql, async () => provider);
   expect(await worker.reconcileOne()).toBe(true);
   expect(stopped).toBe(false);
+  if (phase === "failed") {
+    const { sandboxes } = createSqlData(sql)({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    });
+    await expect(sandboxes.assertDeletionAllowed!(id)).rejects.toThrow("Sandbox exit is unconfirmed.");
+  }
   expect((await runClaimedStop(sql, async () => provider)).result.status).toBe("done");
   expect(stopped).toBe(true);
   expect((await db.query("select status,preservation_note from sandboxes where id=$1", [id])).rows[0]).toMatchObject({
-    status: "stopped",
+    status: phase === "failed" ? "failed" : "stopped",
     preservation_note: null,
   });
   await worker.drain();

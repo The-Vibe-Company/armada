@@ -94,15 +94,16 @@ describe("Modal user stop and wake-on-send", () => {
         },
         async runtimeStopMachine({ checkpoint }: { checkpoint: typeof retained }) {
           return {
-            target: { machineId: f.row.providerSandboxId, generation: 1 },
+            physical: { machineId: f.row.providerSandboxId, generation: 1 },
             machine: {
-              async stop() {
+              async stop({ sandboxId, generation }: { sandboxId: string; generation: number }) {
                 if (needsRetry) {
                   needsRetry = false;
                   throw Error("Worker interrupted after final output capture");
                 }
                 retained = checkpoint;
                 state = "stopped";
+                return { sandboxId, generation, kind: "image", ref: "image" };
               },
             },
           };

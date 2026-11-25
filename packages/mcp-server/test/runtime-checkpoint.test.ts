@@ -298,9 +298,14 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
       {
         async runtimeStopMachine() {
           return {
-            target: { machineId: physicalId, generation: 2 },
+            physical: { machineId: physicalId, generation: 2 },
             stopped,
-            machine: { stop: () => host.stop({ sandboxId: physicalId }) },
+            machine: {
+              async stop({ sandboxId, generation }: { sandboxId: string; generation: number }) {
+                await host.stop({ sandboxId: physicalId });
+                return { sandboxId, generation, kind: "image", ref: "image" };
+              },
+            },
           };
         },
       },

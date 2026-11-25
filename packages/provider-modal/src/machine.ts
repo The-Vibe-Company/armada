@@ -42,7 +42,7 @@ export interface ModalMachineOptions {
   deploymentId: string;
   journal: ModalMachineJournal;
   resolveRuntimeTicket(request: Bootstrap): Promise<RuntimeTicket | null>;
-  prepareCheckpoint(request: Stop, sandbox: Sandbox): Promise<void>;
+  prepareCheckpoint?(request: Stop, sandbox: Sandbox): Promise<void>;
 }
 
 function digest(value: unknown) {
@@ -329,6 +329,7 @@ export function createModalMachine(options: ModalMachineOptions) {
             checkpoint: {
               async prepare() {
                 if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
+                if (!prepareCheckpoint) throw conflict("Modal checkpoint preparation is unavailable.");
                 await prepareCheckpoint(request, sb);
               },
               async recordIntent() {

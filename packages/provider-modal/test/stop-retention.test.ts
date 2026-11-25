@@ -269,12 +269,14 @@ test("a missing Modal image receipt preserves the enrolled source", async () => 
   f.state().golden = false;
   f.state().commonRuntime = true;
   const stop = async () => {
-    const { target, machine } = await f.provider.runtimeStopMachine({
+    const { physical, machine } = await f.provider.runtimeStopMachine({
       recordId: "logical",
+      sandboxId: "logical",
+      generation: 2,
       checkpoint: { epoch: "1", watermark: 1 },
       write: (work) => work({} as never),
     });
-    return machine.stop({ ...target, sandboxId: "logical", retain: true });
+    return machine.stop({ machineId: physical.machineId, generation: 2, sandboxId: "logical", retain: true });
   };
 
   await expect(stop()).rejects.toMatchObject({ code: "unavailable" });

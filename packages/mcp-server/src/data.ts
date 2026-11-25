@@ -61,6 +61,7 @@ import {
   recordObservedProviderState,
   requestStartingModalStop,
   settleRuntimeTurn,
+  unresolvedModalStop,
 } from "./sandbox-lifecycle.ts";
 import { publicSandboxStatusSql } from "./sandbox-readiness.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -546,7 +547,7 @@ export function createSqlData(
         const row = (
           await sql.query<{ status: string; managed: boolean; modal_cleanup_owns_exit: boolean }>(
             `select s.status::text as status,
-             coalesce(s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason=$4 and s.stopped_at is null, false)
+             coalesce(s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason=$4 and s.stopped_at is null, false) or ${unresolvedModalStop("s")}
                as modal_cleanup_owns_exit,
              ${SANDBOX_DELETION_MANAGED} as managed
            from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
@@ -973,6 +974,7 @@ export function createSqlData(
           fence += ` and s.status in ('stopped','failed')
             and not (s.status='failed' and (s.provider='modal' or s.boat_runtime) and s.status_reason is not distinct from $${params.length}::text
               and s.stopped_at is null)
+            and not ${unresolvedModalStop("s")}
             and not ${SANDBOX_DELETION_MANAGED}`;
         }
         // A read-only reconciler may overlap list readiness. Admission can supersede
@@ -1103,8 +1105,7 @@ export function createSqlData(
               });
               if (
                 patch.queueModalStop &&
-                (!patch.activityToken ||
-                  !(await enqueueModalStop(tx, id, row.generation, { kind: "activity", token: patch.activityToken })))
+                (!patch.activityToken || !(await enqueueModalStop(tx, id, row.generation, patch.activityToken)))
               )
                 throw new Error("Modal stop admission lost the exact target.");
             }

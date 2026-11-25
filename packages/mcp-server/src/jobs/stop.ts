@@ -1,4 +1,4 @@
-import type { Provider, Sql } from "@armada/core/server";
+import type { MachineIdentity, Provider, Sql } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { createDockerHostStore, DockerHostDenied } from "../docker-host-store.ts";
 import { DockerMachinePending } from "../docker-machine-adapter.ts";
@@ -68,7 +68,7 @@ export function createStopJob(
       deadline_at: Date;
     }>(
       `select s.org_id,s.provider_sandbox_id,s.status,
-       (s.status_reason in ('idle_paused','work_merged') or exists(
+       (coalesce(s.status_reason in ('idle_paused','work_merged'),false) or exists(
          select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.generation=$2
            and t.code='runtime_retained_stop'
        )) as retention_required,
@@ -86,11 +86,19 @@ export function createStopJob(
       [sandboxId, generation, job.id],
     );
     if (!target) return { status: "fail", reason: "modal_stop_target_changed" };
-    const reconcileOnly = !(await context.canDispatch());
+    const prior = job.outcome as {
+      modal_checkpoint?: typeof target.checkpoint;
+      modal_capture_complete?: boolean;
+      modal_physical?: Pick<MachineIdentity, "machineId" | "generation">;
+      output?: StagedOutput;
+    } | null;
+    const checkpoint = prior?.modal_checkpoint === undefined ? target.checkpoint : prior.modal_checkpoint;
+    const retain = Boolean(checkpoint) || target.retention_required;
+    const reconcileOnly = (retain && !checkpoint) || !(await context.canDispatch());
     const deadline = new Date(target.deadline_at).getTime();
     const write = async (work: (tx: Sql) => Promise<void>) => {
       const written = await withJobLease(sql, job, async (tx) => {
-        if (!reconcileOnly && !(await context.canDispatch(tx))) return false;
+        context.signal.throwIfAborted();
         await work(tx);
         return true;
       });
@@ -99,29 +107,20 @@ export function createStopJob(
     };
     const { signal } = context;
     const retry = { status: "retry", after: new Date(now() + (reconcileOnly ? 30_000 : 1_000)) } satisfies JobResult;
+    let retentionLost = false;
     try {
       const provider = (await resolveModal(sandboxId)) as ModalProvider;
-      const prior = job.outcome as {
-        modal_checkpoint?: typeof target.checkpoint;
-        modal_capture_complete?: boolean;
-        output?: StagedOutput;
-      } | null;
-      const checkpoint = prior?.modal_checkpoint === undefined ? target.checkpoint : prior.modal_checkpoint;
-      if (target.retention_required && !checkpoint) return { status: "fail", reason: "modal_checkpoint_missing" };
-      if (prior?.modal_checkpoint === undefined) {
-        if (reconcileOnly) return { status: "fail", reason: "stop_dispatch_deadline" };
-        await write((tx) => mergeStopOutcome(tx, job.id, { modal_checkpoint: checkpoint }));
-      }
-      const {
-        machine,
-        target: physical,
-        stopped,
-      } = await provider.runtimeStopMachine({
+      const { machine, physical, stopped } = await provider.runtimeStopMachine({
         recordId: target.provider_sandbox_id,
+        sandboxId,
+        generation: Number(generation),
+        physical: prior?.modal_physical,
         checkpoint,
         write,
         reconcileOnly,
       });
+      if (!reconcileOnly && !prior?.modal_physical)
+        await write((tx) => mergeStopOutcome(tx, job.id, { modal_checkpoint: checkpoint, modal_physical: physical }));
       if (!reconcileOnly && !stopped && !prior?.modal_capture_complete && !prior?.output) {
         if (
           (await preserveBeforeStop(sql, provider, sandboxId, target.provider_sandbox_id, "lifecycle_stop", {
@@ -140,7 +139,19 @@ export function createStopJob(
       if (!reconcileOnly && remaining <= 0) return retry;
       const stopSignal = reconcileOnly ? signal : AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
       signal.throwIfAborted();
-      await machine.stop({ ...physical, sandboxId, retain: Boolean(checkpoint), signal: stopSignal });
+      const retained = await machine.stop({
+        machineId: physical.machineId,
+        generation: Number(generation),
+        sandboxId,
+        retain,
+        signal: stopSignal,
+      });
+      retentionLost = retain && retained === null;
+      if (
+        retained &&
+        (retained.kind !== "image" || retained.generation !== Number(generation) || retained.sandboxId !== sandboxId)
+      )
+        return retry;
     } catch {
       signal.throwIfAborted();
       return retry;
@@ -148,7 +159,7 @@ export function createStopJob(
     return {
       status: "done",
       async commit(tx) {
-        await settleModalStop(tx, sandboxId, generation, target.status);
+        await settleModalStop(tx, sandboxId, generation, target.status, retentionLost);
         await enqueueStopOutput(tx, jobs, sandboxId, target.org_id, generation);
       },
     };

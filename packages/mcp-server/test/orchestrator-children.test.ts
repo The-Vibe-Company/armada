@@ -1440,10 +1440,10 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
       },
       async runtimeStopMachine() {
         return {
-          target: { machineId: "physical", generation: 1 },
+          physical: { machineId: "physical", generation: 1 },
           stopped: false,
           machine: {
-            stop: async (request: { retain: boolean }) => {
+            stop: async (request: { retain: boolean; sandboxId: string; generation: number }) => {
               expect(checkpointRequest).toBeDefined();
               expect(request.retain).toBe(true);
               expect(
@@ -1456,6 +1456,7 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
               ).toEqual({ status_reason: "idle_paused", captured: true });
               await fake.provider.stop({ sandboxId: physicalId! });
               if (loseStopReply) throw Error("synthetic lost compute stop response");
+              return { sandboxId: request.sandboxId, generation: request.generation, kind: "image", ref: "image" };
             },
           },
         };

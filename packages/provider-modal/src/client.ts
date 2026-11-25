@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ModalBinding } from "@armada/core";
 import { ModalClient } from "modal";
 import { refusal } from "./errors.ts";
@@ -5,6 +6,10 @@ export interface ModalConnection {
   client?: ModalClient;
   tokenId?: string;
   tokenSecret?: string;
+}
+const stopSignals = new AsyncLocalStorage<AbortSignal>();
+export function withModalStopSignal<T>(signal: AbortSignal | undefined, work: () => Promise<T>) {
+  return signal ? stopSignals.run(signal, work) : work();
 }
 export function modalConnection(options: ModalConnection): ModalClient {
   const supplied = options.tokenId !== undefined || options.tokenSecret !== undefined;
@@ -16,7 +21,19 @@ export function modalConnection(options: ModalConnection): ModalClient {
   if (options.client) return options.client;
   const { tokenId, tokenSecret } = options;
   if (!tokenId || !tokenSecret) throw refusal("provider_routing_unavailable", "Explicit Modal credentials required.");
-  return new ModalClient({ tokenId, tokenSecret });
+  return new ModalClient({
+    tokenId,
+    tokenSecret,
+    grpcMiddleware: [
+      async function* (call, rpc) {
+        const stop = stopSignals.getStore();
+        if (!stop) return yield* call.next(call.request, rpc);
+        stop.throwIfAborted();
+        const signal = rpc.signal ? AbortSignal.any([stop, rpc.signal]) : stop;
+        return yield* call.next(call.request, { ...rpc, signal, retries: 0 });
+      },
+    ],
+  });
 }
 
 export async function boundModalApp(client: Pick<ModalClient, "apps">, appName: string, binding: ModalBinding) {
