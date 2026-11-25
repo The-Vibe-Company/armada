@@ -255,17 +255,6 @@ export const LOGS_OUTPUT = {
     .object({ status: z.string(), statusMessage: z.string().nullable(), prompt: z.unknown(), usage: z.unknown() })
     .optional(),
   runtimeFailure: z.object({ status: z.literal("failed"), reason: z.string() }).optional(),
-  queuedPrompt: z
-    .object({
-      promptId: z.string(),
-      conversationId: z.string().nullable(),
-      state: z.string(),
-      reason: z.string().nullable(),
-    })
-    .optional()
-    .describe(
-      "Docker only: the latest prompt while the runtime has not admitted it (queued behind startup, or failed before admission).",
-    ),
 };
 
 export const sandboxListInput = z.object({

@@ -182,83 +182,7 @@ export function createDockerSandboxControls(
       },
     })(caller, id, request);
   }
-  type QueuedPrompt = {
-    prompt_id: string;
-    request_id: string;
-    status: "queued" | "dispatching" | "admitted" | "failed";
-    native_prompt_id: string | null;
-    native_conversation_id: string | null;
-    conversation_id: string | null;
-    failure_reason: string | null;
-    failure_native_sequence: string | null;
-    command_pending: boolean;
-    command_result_enc: Uint8Array<ArrayBuffer> | null;
-  };
-  // Callers authorize the sandbox before reading retained queue metadata. No input ciphertext is selected.
-  async function queuedPrompts(sandboxId: string): Promise<QueuedPrompt[]> {
-    const rows = (
-      await sql.query<QueuedPrompt>(
-        `select q.prompt_id,q.request_id,q.status,q.native_prompt_id,q.native_conversation_id,q.conversation_id,q.failure_reason,
-       q.failure_native_sequence::text as failure_native_sequence,
-       (c.request_id is not null and c.result_enc is null) as command_pending,c.result_enc as command_result_enc
-       from public.docker_queued_prompts q left join public.runtime_commands c
-       on c.sandbox_id=q.sandbox_id and c.request_id='docker_prompt_'||q.request_id::text
-       where q.sandbox_id=$1 order by q.position`,
-        [sandboxId],
-      )
-    ).rows;
-    for (const row of rows) {
-      if (row.native_prompt_id || !row.command_result_enc) continue;
-      // The native receipt can precede publication of its queue projection. Reconcile only a validated receipt.
-      const reply = JSON.parse(await decryptSecret(row.command_result_enc, key));
-      if (
-        reply?.status === 200 &&
-        reply.requestId === `docker_prompt_${row.request_id}` &&
-        reply.body?.requestId === reply.requestId &&
-        reply.body?.version === 1 &&
-        UUID.test(reply.body?.result?.promptId ?? "") &&
-        UUID.test(reply.body?.result?.conversationId ?? "")
-      ) {
-        row.native_prompt_id = reply.body.result.promptId;
-        row.native_conversation_id = reply.body.result.conversationId;
-      }
-    }
-    return rows;
-  }
-  const aliases = (rows: readonly QueuedPrompt[]) =>
-    new Map(rows.flatMap((row) => (row.native_prompt_id ? [[row.native_prompt_id, row.prompt_id] as const] : [])));
-  const history = async (
-    caller: Caller,
-    id: string,
-    request: Parameters<typeof nativeHistory>[2],
-    snapshot?: { row: Row; queued?: QueuedPrompt[] },
-  ) => {
-    const page = await nativeHistory(caller, id, request, snapshot?.row);
-    const queued = await queuedPrompts(id);
-    if (snapshot) snapshot.queued = queued;
-    // Native journal events may beat the command ACK. Do not advance a forward reader past
-    // an unlinked native prompt: the next read must publish its stable accepted prompt ID.
-    if (queued.some((row) => !row.native_prompt_id && row.command_pending)) {
-      // Neither direction may advance past an unlinked native event, even after cancellation.
-      return {
-        events: [],
-        hasMore: true,
-        ...(page.source ? { source: page.source } : {}),
-        ...(page.runtimeFailure ? { runtimeFailure: page.runtimeFailure } : {}),
-        ...(request.cursor ? { cursor: request.cursor } : {}),
-      };
-    }
-    const ids = aliases(queued);
-    return {
-      ...page,
-      events: page.events.map((event) => {
-        const promptId = ids.get(event.promptId ?? "");
-        return promptId ? { ...event, promptId } : event;
-      }),
-    };
-  };
-  async function admission(sandboxId: string, project = true, queued?: QueuedPrompt[]) {
-    const ids = project ? aliases(queued ?? (await queuedPrompts(sandboxId))) : new Map<string, string>();
+  async function admission(sandboxId: string) {
     const commands = (
       await sql.query<{
         sequence: string;
@@ -302,7 +226,7 @@ export function createDockerSandboxControls(
         sequence,
         known: true,
         receipt: {
-          promptId: ids.get(receipt.promptId) ?? receipt.promptId,
+          promptId: receipt.promptId,
           conversationId: receipt.conversationId,
           status: receipt.status as (typeof PROMPT_STATUSES)[number],
         },
@@ -314,30 +238,10 @@ export function createDockerSandboxControls(
     caller: Caller,
     initial: Row,
     promptId?: string,
-    includeQueue = true,
     includeRepository = true,
-    queueState?: { queued?: QueuedPrompt[]; final?: QueuedPrompt[] },
   ): Promise<DockerSandboxStatus> {
-    const queued = includeQueue ? (queueState?.queued ?? (await queuedPrompts(initial.id))) : [];
-    const latestQueue = queued.at(-1);
-    // A failed server admission remains the latest visible turn until a newer native
-    // command is admitted. Do not let an older queue failure hide later ordinary sends.
-    const latestQueueIsCurrent =
-      latestQueue &&
-      (latestQueue.status === "queued" ||
-        latestQueue.status === "dispatching" ||
-        (latestQueue.status === "failed" &&
-          latestQueue.failure_native_sequence !== null &&
-          BigInt(initial.prompt_sequence) <= BigInt(latestQueue.failure_native_sequence)));
-    const selectedQueue = promptId
-      ? queued.find((row) => row.prompt_id === promptId || row.native_prompt_id === promptId)
-      : latestQueueIsCurrent
-        ? latestQueue
-        : undefined;
-    const admitted = await admission(initial.id, includeQueue, queued);
-    const selectedPrompt = selectedQueue?.prompt_id ?? promptId ?? admitted.receipt?.promptId;
-    const queueOnly = selectedQueue && !selectedQueue.native_prompt_id;
-    const readHistory = includeQueue ? history : nativeHistory;
+    const admitted = await admission(initial.id);
+    const selectedPrompt = promptId ?? admitted.receipt?.promptId;
     // Latest status uses ingest's durable projection. Missing/stale evidence is
     // reported explicitly; reads never rebuild it by decrypting output history.
     const events: AgentEvent[] = [];
@@ -345,19 +249,18 @@ export function createDockerSandboxControls(
     let cursor: string | undefined;
     let complete = false;
     // Explicit historical lookups retain archive search semantics.
-    const historical = promptId && selectedPrompt !== admitted.receipt?.promptId && !queueOnly;
+    const historical = promptId && selectedPrompt !== admitted.receipt?.promptId;
     const pageBudget = historical ? 100 : 0;
     if (!historical) {
       complete = initial.prompt_projection_sequence === initial.journal_sequence || initial.journal_sequence === "0";
       newestCursor = `ar1_${initial.id}_${initial.prompt_projection_sequence ?? "0"}`;
       if (initial.latest_prompt_enc) {
         const projected = JSON.parse(await decryptSecret(initial.latest_prompt_enc, key)) as AgentEvent;
-        const stableId = includeQueue ? aliases(queued).get(projected.promptId ?? "") : undefined;
-        events.push(stableId ? { ...projected, promptId: stableId } : projected);
+        events.push(projected);
       }
     }
     for (let count = 0; count < pageBudget; count++) {
-      const page = await readHistory(caller, initial.id, {
+      const page = await nativeHistory(caller, initial.id, {
         direction: "backward",
         limit: 500,
         ...(cursor ? { cursor } : {}),
@@ -365,7 +268,6 @@ export function createDockerSandboxControls(
       if (count === 0) newestCursor = page.cursor;
       events.unshift(...page.events);
       if (
-        queueOnly ||
         !page.hasMore ||
         page.events.some((event) => event.kind === "prompt" && (!selectedPrompt || event.promptId === selectedPrompt))
       ) {
@@ -408,35 +310,11 @@ export function createDockerSandboxControls(
         reason: state === "failed" ? promptFailureReason() : null,
       };
     }
-    if (queueOnly) {
-      const failed = selectedQueue.status === "failed" || terminal(row) || row.status === "stopping";
-      const uncertainStop = failed && selectedQueue.status === "dispatching" && selectedQueue.command_pending;
-      prompt = {
-        promptId: selectedQueue.prompt_id,
-        conversationId: selectedQueue.conversation_id ?? selectedQueue.native_conversation_id,
-        state: uncertainStop ? "interrupted" : failed ? "failed" : "queued",
-        reason: uncertainStop
-          ? "Docker sandbox stopped before queued prompt admission was confirmed."
-          : failed
-            ? (reason(row) ??
-              selectedQueue.failure_reason ??
-              "Docker sandbox stopped before the queued prompt was admitted.")
-            : null,
-      };
-    }
     if (promptId && !prompt)
       throw failure(complete ? "not_found" : "unavailable", "Docker prompt history is unavailable.");
     // An explicit historical turn does not make a newer, still-running turn idle.
     const latest = events.findLast((event) => event.kind === "prompt");
     const idle = latest?.kind === "prompt" ? !["queued", "running"].includes(latest.status) : row.status === "ready";
-    // Usage may have arrived after the initial queue snapshot. Never publish transient native IDs.
-    const finalQueue = includeQueue ? await queuedPrompts(row.id) : [];
-    if (queueState) queueState.final = finalQueue;
-    const ids = aliases(finalQueue);
-    if (prompt && ids.has(prompt.promptId)) prompt = { ...prompt, promptId: ids.get(prompt.promptId)! };
-    const nativeUsage = finalQueue.some((entry) => !entry.native_prompt_id && entry.command_pending)
-      ? null
-      : withServerCost(usage(row.usage_turns), row.harness);
     const nativeSettled =
       terminal(row) ||
       (complete &&
@@ -494,28 +372,15 @@ export function createDockerSandboxControls(
               : null,
       conversationIds: [...conversations],
       expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
-      usage: nativeUsage
-        ? {
-            ...nativeUsage,
-            turns: nativeUsage.turns.map((turn) => ({ ...turn, promptId: ids.get(turn.promptId) ?? turn.promptId })),
-          }
-        : nativeUsage,
+      usage: withServerCost(usage(row.usage_turns), row.harness),
       prompt,
-      settled:
-        nativeSettled &&
-        !finalQueue.some(
-          (entry) =>
-            (entry.status === "queued" || entry.status === "dispatching") &&
-            !terminal(row) &&
-            row.status !== "stopping",
-        ),
+      settled: nativeSettled,
     };
   }
   async function logs(caller: Caller, row: Row, args: Record<string, unknown>) {
     const parsed = dockerLogsInput.safeParse(args);
     if (!parsed.success || (parsed.data.direction === "backward" && parsed.data.all)) throw invalid();
     const { direction, all, coalesce, limit, since_cursor } = parsed.data;
-    const snapshot: { row: Row; queued?: QueuedPrompt[]; final?: QueuedPrompt[] } = { row };
     const {
       events: rawEvents,
       cursor,
@@ -523,7 +388,7 @@ export function createDockerSandboxControls(
       olderCursor,
     } = await readEventPages(
       (cursor) =>
-        history(
+        nativeHistory(
           caller,
           row.id,
           {
@@ -533,7 +398,7 @@ export function createDockerSandboxControls(
             ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
             ...(coalesce !== undefined ? { coalesce } : {}),
           },
-          snapshot,
+          row,
         ),
       since_cursor,
       all === true,
@@ -541,10 +406,7 @@ export function createDockerSandboxControls(
     const events = new Map<string, AgentEvent>();
     for (const event of rawEvents) if (!isPrivateModelEvent(event)) events.set(event.id, event);
     // Log metadata does not expose repositoryDir; avoid loading/decrypting its launch manifest.
-    const summary = await status(caller, row, undefined, true, false, snapshot);
-    const queueOnly =
-      summary.prompt &&
-      (snapshot.final ?? []).some((q) => q.prompt_id === summary.prompt?.promptId && !q.native_prompt_id);
+    const summary = await status(caller, row, undefined, false);
     return {
       events: [...events.values()],
       cursor,
@@ -558,9 +420,6 @@ export function createDockerSandboxControls(
         usage: summary.usage,
       },
       settled: summary.settled,
-      ...(summary.prompt?.state === "queued" || (summary.prompt?.state === "failed" && queueOnly)
-        ? { queuedPrompt: summary.prompt }
-        : {}),
       ...(summary.status === "failed"
         ? {
             runtimeFailure: {
@@ -774,7 +633,7 @@ export function createDockerSandboxControls(
     };
   }
   async function send(caller: Caller, row: Row, args: Record<string, unknown>, claim?: RuntimeTurnClaim) {
-    const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+    const runtime = createDockerRuntimeLifecycle(sql, key);
     if (!options.sendEnabled) throw failure("unavailable", "Docker send is not enabled.");
     if (row.owner_id !== caller.userId) throw failure("conflict", "Only the Docker sandbox owner can send prompts.");
     if (typeof args.request_id !== "string" || typeof args.prompt !== "string") throw invalid();
@@ -892,7 +751,7 @@ export function createDockerSandboxControls(
           if (name === "report") {
             if (!row.task_prompt_id || args.prompt_id !== row.task_prompt_id)
               throw failure("conflict", "Report only the latest finished turn, using its prompt id.");
-            const summary = await status(caller, row, row.task_prompt_id, false, false);
+            const summary = await status(caller, row, row.task_prompt_id, false);
             if (summary.prompt?.state !== "finished" || !summary.settled)
               throw failure("conflict", "Report only the latest finished turn, using its prompt id.");
             const outcome = args.outcome as TaskOutcome;

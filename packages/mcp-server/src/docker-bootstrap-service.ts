@@ -21,7 +21,6 @@ type Stored = {
   outcome: "completed" | "failed" | null;
 };
 type Options = {
-  enabled?: boolean;
   serverUrl: string;
   manifest: unknown;
   architecture: "x64" | "arm64";
@@ -37,32 +36,25 @@ export class DockerBootstrapDenied extends Error {
 function deny(): never {
   throw new DockerBootstrapDenied();
 }
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-/** Private opt-in composition, not a placement provider or a public launch route. */
 export function createDockerBootstrapService(sql: Sql, key: string, options: Options) {
   requirePublishedRuntimeArchitecture(options.architecture);
   // Freeze trusted launch inputs across asynchronous credential admission.
   const manifest = structuredClone(options.manifest);
   const serverUrl = options.serverUrl;
   const architecture = options.architecture;
-  async function phase(tx: Sql, sandboxId: string, requestId?: string) {
+  async function phase(tx: Sql, sandboxId: string, requestId: string) {
     return (
       await tx.query<Stored>(
         `select request_id,input_enc,outcome from public.docker_host_jobs
-         where bound_sandbox_id=$1 and bound_operation='bootstrap' and ($2::uuid is null or request_id=$2::uuid) order by position limit 1`,
-        [sandboxId, requestId ?? null],
+         where bound_sandbox_id=$1 and bound_operation='bootstrap' and request_id=$2::uuid order by position limit 1`,
+        [sandboxId, requestId],
       )
     ).rows[0];
   }
-  async function bootstrap(
-    actor: Actor,
-    sandboxId: string,
-    requestId: string,
-    machine?: { target: MachineIdentity; context: JobContext },
-  ) {
+  async function bootstrapMachine(actor: Actor, target: MachineIdentity, context: JobContext) {
+    const { sandboxId } = target;
     try {
-      if (options.enabled !== true || !uuid.test(requestId) || !sql.transaction) deny();
+      if (!sql.transaction) deny();
       // This read must precede resolution: an admin may diagnose, but not bootstrap, an owner's sandbox.
       const snapshot = await createDockerSandboxService(sql).get(actor, sandboxId);
       if (snapshot.ownerId !== actor.userId) deny();
@@ -78,8 +70,8 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
       const url = new URL(serverUrl);
       if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
         deny();
-      if (machine) requestId = dockerMachineJobId(snapshot.generation, "bootstrap");
-      const known = await phase(sql, sandboxId, machine ? requestId : undefined);
+      const requestId = dockerMachineJobId(snapshot.generation, "bootstrap");
+      const known = await phase(sql, sandboxId, requestId);
       if (!known) {
         const acknowledged = await sql.query(
           `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='create'
@@ -151,14 +143,14 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         const scoped = scopedRuntimeSql(tx);
         async function requireStableSandbox() {
           const current = await createDockerSandboxService(scoped).get(actor, sandboxId);
-          const enrolledDuringReplay = machine && known && snapshot.status === "starting" && current.status === "ready";
+          const enrolledDuringReplay = known && snapshot.status === "starting" && current.status === "ready";
           const expected = enrolledDuringReplay ? { ...snapshot, status: "ready" } : snapshot;
           if (JSON.stringify(current) !== JSON.stringify(expected)) deny();
           return current;
         }
         await tx.query("select id from public.sandboxes where id=$1 for update", [sandboxId]);
         const current = await requireStableSandbox();
-        if (machine && (!(await machine.context.canDispatch(tx)) || current.stopRequestedAt !== null)) deny();
+        if (!(await context.canDispatch(tx)) || current.stopRequestedAt !== null) deny();
         const original = await tx.query(
           `select 1 from public.docker_host_jobs j join public.mcp_actor_epochs e
              on e.org_id=$3 and e.user_id=$2 and e.epoch=j.bound_actor_epoch
@@ -172,7 +164,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           [sandboxId, requestId],
         );
         if (refused.rows.length) deny();
-        const existing = await phase(tx, sandboxId, machine ? requestId : undefined);
+        const existing = await phase(tx, sandboxId, requestId);
         let descriptor: BootstrapDescriptor;
         if (existing) {
           if (existing.request_id !== requestId) deny();
@@ -203,34 +195,22 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           descriptor = { serverUrl: url.origin, artifact: projected.artifact, enrolmentToken: ticket.enrolmentToken };
         }
         const hostStore = createDockerHostStore(scoped, key);
-        if (machine) {
-          const adapter = hostStore.machine({
-            actor,
-            hostId: current.hostId,
-            installationId: current.installationId,
-            bootstrapDescriptor: descriptor,
-          });
-          try {
-            await adapter.bootstrap({
-              ...machine.target,
-              bindingRef: createHash("sha256").update(descriptor.enrolmentToken).digest("hex"),
-              signal: machine.context.signal,
-            });
-          } catch (error) {
-            if (!(error instanceof DockerMachinePending) || error.outcome !== "pending") throw error;
-          }
-          return { requestId, operation: "bootstrap" as const, state: existing?.outcome ?? "pending" };
-        }
-        await hostStore.enqueueSandbox(actor, sandboxId, {
-          requestId,
-          operation: "bootstrap",
+        const adapter = hostStore.machine({
+          actor,
+          hostId: current.hostId,
+          installationId: current.installationId,
           bootstrapDescriptor: descriptor,
         });
-        return {
-          requestId,
-          operation: "bootstrap" as const,
-          state: existing?.outcome ?? "pending",
-        };
+        try {
+          await adapter.bootstrap({
+            ...target,
+            bindingRef: createHash("sha256").update(descriptor.enrolmentToken).digest("hex"),
+            signal: context.signal,
+          });
+        } catch (error) {
+          if (!(error instanceof DockerMachinePending) || error.outcome !== "pending") throw error;
+        }
+        return { requestId, operation: "bootstrap" as const, state: existing?.outcome ?? "pending" };
       }
 
       return await sql.transaction(async (tx) => {
@@ -249,7 +229,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
   }
   async function prepareResume(actor: Actor, sandboxId: string) {
     const snapshot = await createDockerSandboxService(sql).get(actor, sandboxId);
-    if (!options.enabled || snapshot.ownerId !== actor.userId) deny();
+    if (snapshot.ownerId !== actor.userId) deny();
     const {
       rows: [member],
     } = await sql.query<{ role: GoldenActor["role"] }>(
@@ -275,10 +255,5 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
     return { ...descriptor, serverUrl };
   }
 
-  return {
-    prepareResume,
-    bootstrapMachine: (actor: Actor, target: MachineIdentity, context: JobContext) =>
-      bootstrap(actor, target.sandboxId, target.sandboxId, { target, context }),
-    bootstrap: (actor: Actor, sandboxId: string, requestId: string) => bootstrap(actor, sandboxId, requestId),
-  };
+  return { prepareResume, bootstrapMachine };
 }

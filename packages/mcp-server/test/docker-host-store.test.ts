@@ -8,6 +8,7 @@ import {
   type Sql,
 } from "@armada/core";
 import { decryptSecret, encryptSecret, OutputCollectionError } from "@armada/core/server";
+import { canonicalDockerHostJob, type DockerHostJob } from "../../core/src/docker-host-job.ts";
 import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
 import { DockerMachineError } from "../../core/src/docker-machine.ts";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
@@ -70,29 +71,33 @@ function job() {
     },
   };
 }
+// Model already-persisted daemon work that predates sandbox bindings.
+async function seedUnboundJob(hostId: string, job: DockerHostJob) {
+  await sql.query("insert into public.docker_host_jobs(request_id,host_id,input_enc) values($1,$2,$3)", [
+    job.requestId,
+    hostId,
+    await encryptSecret(canonicalDockerHostJob(job), key),
+  ]);
+}
 async function denied(work: Promise<unknown>) {
   await expect(work).rejects.toBeInstanceOf(DockerHostDenied);
   await expect(work).rejects.toThrow("Docker host denied");
 }
 
 // Each case owns an independent security/durability contract at the actual SQL boundary.
-test("current admin admission rejects members, cross-org access, and malformed job payloads", async () => {
+test("current admin admission rejects members, cross-org access, and malformed requests", async () => {
   const db = database();
   const a = await fixture(),
     b = await fixture();
   await denied(store.issueRegistration({ ...a.actor, userId: a.memberId }));
   await denied(store.revoke(b.actor, a.hostId));
-  await denied(store.enqueue(b.actor, a.hostId, job()));
-  await denied(
-    store.enqueue(a.actor, a.hostId, { ...job(), request: { ...job().request, apiKey: "not-allowed" } } as never),
-  );
   await denied(store.poll("malformed", a.installationId));
   await denied(store.complete(a.hostToken, a.installationId, { requestId: "invalid", outcome: "failed" }));
   await db.query(`update public.members set role='member' where org_id=$1 and user_id=$2`, [
     a.actor.orgId,
     a.actor.userId,
   ]);
-  await denied(store.enqueue(a.actor, a.hostId, job()));
+  await denied(store.revoke(a.actor, a.hostId));
 });
 
 test("registration is single-use, expires, and rechecks the issuing admin", async () => {
@@ -174,7 +179,7 @@ test("host credentials bind installation, owner membership, and revocation", asy
   const db = database();
   const a = await fixture();
   const task = job();
-  await store.enqueue(a.actor, a.hostId, task);
+  await seedUnboundJob(a.hostId, task);
   await denied(store.poll(a.hostToken, randomUUID()));
   await denied(store.complete(a.hostToken, randomUUID(), { requestId: task.requestId, outcome: "completed" }));
   await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [a.actor.orgId, a.actor.userId]);
@@ -189,28 +194,14 @@ test("host credentials bind installation, owner membership, and revocation", asy
   await denied(store.complete(a.hostToken, a.installationId, { requestId: task.requestId, outcome: "completed" }));
 });
 
-test("durable UUID enqueue is idempotent only for the same host and payload", async () => {
-  const a = await fixture(),
-    b = await fixture(),
-    task = job();
-  await store.enqueue(a.actor, a.hostId, task);
-  // Reopen the service to prove identity is durable rather than an in-memory cache.
-  await createDockerHostStore(sql, key).enqueue(a.actor, a.hostId, task);
-  await denied(store.enqueue(a.actor, a.hostId, { ...task, operation: "delete" }));
-  await denied(store.enqueue(a.actor, a.hostId, { ...task, request: { ...task.request, ttlSeconds: 301 } }));
-  await denied(store.enqueue(b.actor, b.hostId, task));
-  expect(await store.poll(a.hostToken, a.installationId)).toEqual(task);
-  expect(await store.poll(b.hostToken, b.installationId)).toBeNull();
-});
-
 test("poll redelivers oldest unfinished job; terminal ACKs are isolated and immutable", async () => {
   const db = database();
   const a = await fixture(),
     b = await fixture(),
     first = job(),
     second = { ...job(), operation: "stop" as const };
-  await store.enqueue(a.actor, a.hostId, first);
-  await store.enqueue(a.actor, a.hostId, second);
+  await seedUnboundJob(a.hostId, first);
+  await seedUnboundJob(a.hostId, second);
   expect(await store.poll(a.hostToken, a.installationId)).toEqual(first);
   expect(await store.poll(a.hostToken, a.installationId)).toEqual(first);
   await denied(store.complete(b.hostToken, b.installationId, { requestId: first.requestId, outcome: "completed" }));
@@ -226,25 +217,15 @@ test("poll redelivers oldest unfinished job; terminal ACKs are isolated and immu
   expect(seen.rows[0]?.last_seen_at).not.toBeNull();
 });
 
-test("SQL persists only token hashes and sealed input and denies user-JWT table/sequence access", async () => {
+test("SQL persists only token hashes and denies user-JWT table/sequence access", async () => {
   const db = database();
-  const a = await fixture(),
-    task = job();
-  await store.enqueue(a.actor, a.hostId, task);
+  const a = await fixture();
   const host = await db.query<{ hash: string; registration_hash: string | null }>(
     `select hash,registration_hash from public.docker_hosts where id=$1`,
     [a.hostId],
   );
   expect(host.rows[0]?.hash).toBe(createHash("sha256").update(a.hostToken).digest("hex"));
   expect(host.rows[0]?.registration_hash).toBeNull();
-  const sealed = await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
-    `select input_enc from public.docker_host_jobs where request_id=$1`,
-    [task.requestId],
-  );
-  const bytes = sealed.rows[0]?.input_enc;
-  if (!bytes) throw new Error("Missing sealed job");
-  expect(Buffer.from(bytes).includes(Buffer.from(task.request.image))).toBe(false);
-  expect(JSON.parse(await decryptSecret(bytes, key))).toEqual({ operation: task.operation, request: task.request });
   for (const role of ["anon", "authenticated"]) {
     await db.transaction(async (tx) => {
       await tx.exec(`set local role ${role}`);
@@ -266,101 +247,6 @@ test("SQL persists only token hashes and sealed input and denies user-JWT table/
       expect(sequence.rows[0]?.allowed).toBe(false);
     });
   }
-});
-
-test("bootstrap tickets are sealed, strictly admitted, immutable and redelivered until terminal acknowledgement", async () => {
-  const db = database();
-  const a = await fixture();
-  const task = {
-    ...job(),
-    operation: "bootstrap" as const,
-    bootstrap: {
-      serverUrl: "https://armada.example/",
-      artifact: { sha256: "b".repeat(64), bytes: 123 },
-      enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
-    },
-  };
-  await store.enqueue(a.actor, a.hostId, task);
-  await createDockerHostStore(sql, key).enqueue(a.actor, a.hostId, task);
-  const normalized = { ...task, bootstrap: { ...task.bootstrap, serverUrl: "https://armada.example" } };
-  await store.enqueue(a.actor, a.hostId, normalized);
-  const row = await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
-    `select input_enc from public.docker_host_jobs where request_id=$1`,
-    [task.requestId],
-  );
-  const bytes = row.rows[0]?.input_enc;
-  if (!bytes) throw new Error("Missing sealed bootstrap");
-  expect(Buffer.from(bytes).includes(Buffer.from(task.bootstrap.enrolmentToken))).toBe(false);
-  expect(JSON.parse(await decryptSecret(bytes, key))).toEqual({
-    operation: "bootstrap",
-    request: task.request,
-    bootstrap: normalized.bootstrap,
-  });
-  await denied(
-    store.enqueue(a.actor, a.hostId, {
-      ...task,
-      bootstrap: { ...task.bootstrap, enrolmentToken: `armada_enrol_${"d".repeat(64)}` },
-    }),
-  );
-  for (const bootstrap of [
-    { ...task.bootstrap, serverUrl: "http://armada.example" },
-    { ...task.bootstrap, serverUrl: "https://user:pass@armada.example" },
-    { ...task.bootstrap, serverUrl: "https://armada.example/path" },
-    { ...task.bootstrap, serverUrl: "https://armada.example/?query=1" },
-    { ...task.bootstrap, serverUrl: "https://armada.example/#fragment" },
-    { ...task.bootstrap, enrolmentToken: "armada_enrol_invalid" },
-    { ...task.bootstrap, artifact: { ...task.bootstrap.artifact, bytes: 0 } },
-    { ...task.bootstrap, artifact: { ...task.bootstrap.artifact, bytes: 512 * 1024 * 1024 + 1 } },
-    { ...task.bootstrap, artifact: { ...task.bootstrap.artifact, sha256: "invalid" } },
-    { ...task.bootstrap, harness: "codex" },
-  ])
-    await denied(store.enqueue(a.actor, a.hostId, { ...task, requestId: randomUUID(), bootstrap } as never));
-  expect(await store.poll(a.hostToken, a.installationId)).toEqual(normalized);
-  expect(await store.poll(a.hostToken, a.installationId)).toEqual(normalized);
-  const result = { requestId: task.requestId, outcome: "completed" as const };
-  await store.complete(a.hostToken, a.installationId, result);
-  await store.complete(a.hostToken, a.installationId, result);
-  await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
-  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
-});
-
-test("frozen machine expiry survives mailbox delivery and cannot change under an admitted request ID", async () => {
-  const db = database();
-  const a = await fixture();
-  const task = job();
-  const absolute = { ...task, request: { ...task.request, expiresAt: 1_700_000_000_000 } };
-  await store.enqueue(a.actor, a.hostId, absolute);
-  expect(await store.poll(a.hostToken, a.installationId)).toEqual(absolute);
-  await denied(
-    store.enqueue(a.actor, a.hostId, {
-      ...absolute,
-      request: { ...absolute.request, expiresAt: absolute.request.expiresAt + 1 },
-    }),
-  );
-  for (const expiresAt of [null, undefined, "1700000000000", 0, -1, 1.5, NaN, Infinity, 8_640_000_000_000_001]) {
-    await denied(
-      store.enqueue(a.actor, a.hostId, {
-        ...task,
-        requestId: randomUUID(),
-        request: { ...task.request, expiresAt },
-      } as never),
-    );
-  }
-  // Unbounded legacy jobs retain their exact persisted identity/bytes.
-  const legacy = job();
-  await store.enqueue(a.actor, a.hostId, legacy);
-  const row = await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
-    "select input_enc from docker_host_jobs where request_id=$1",
-    [legacy.requestId],
-  );
-  const stored = row.rows[0];
-  if (!stored) throw new Error("Missing stored legacy job");
-  expect(await decryptSecret(stored.input_enc, key)).toBe(
-    JSON.stringify({
-      operation: legacy.operation,
-      request: legacy.request,
-    }),
-  );
 });
 
 async function boundFixture(
@@ -2036,7 +1922,7 @@ test("restore work is gated and stays eligible behind an excluded predecessor cl
   expect(await pollRoute("1, 1", [])).toMatchObject({ job: null, pendingStarts: [] });
   expect(await probe(excluded, supportsRestore)).toBe(true);
   const unrelated = job();
-  await store.enqueue(a.actor, a.hostId, unrelated);
+  await seedUnboundJob(a.hostId, unrelated);
   expect(await a.poll(excluded)).toEqual(unrelated);
   await store.complete(a.hostToken, a.installationId, { requestId: unrelated.requestId, outcome: "completed" });
   expect(await pollRoute("1", excluded)).toMatchObject({
@@ -2123,11 +2009,11 @@ test("the daemon recovers pending restores and drains unrelated work with a full
   expect(state.receipts.every(({ outcome }) => !outcome)).toBe(true);
 
   const live = [job(), job(), job()];
-  for (const active of live) await store.enqueue(host.actor, host.hostId, active);
+  for (const active of live) await seedUnboundJob(host.hostId, active);
   const running = new Set(live.map(({ requestId }) => requestId));
   const restoreConflicts = new Map(pairs.map(({ cleanupId, restore }) => [cleanupId, restore.requestId]));
   const unrelated = job();
-  await store.enqueue(host.actor, host.hostId, unrelated);
+  await seedUnboundJob(host.hostId, unrelated);
   const drain = () => tick(ledger, api, executor, false, now, { waitSeconds: 20, running, restoreConflicts });
 
   expect(await drain()).toBe("worked");
@@ -2137,20 +2023,6 @@ test("the daemon recovers pending restores and drains unrelated work with a full
   for (let index = 0; index < pairs.length * 2; index++) expect(await drain()).toBe("worked");
   const expected = [unrelated.requestId, ...pairs.flatMap(({ restore, cleanupId }) => [restore.requestId, cleanupId])];
   expect(completed).toEqual(expected);
-});
-
-test("unbound enqueue cannot bypass restore admission", async () => {
-  const a = await fixture();
-  const target = job();
-  const request = { ...target.request, expiresAt: Date.UTC(2099, 0, 1) };
-  await denied(
-    store.enqueue(a.actor, a.hostId, {
-      requestId: target.requestId,
-      operation: "restore",
-      request,
-      predecessor: { request: { ...request, generation: randomUUID() }, machineId: "a".repeat(64) },
-    }),
-  );
 });
 
 test("the authenticated allocation result route preserves the exact create ID across replay", async () => {
@@ -2284,7 +2156,7 @@ test("a malformed restore intent does not hide unrelated work", async () => {
     await encryptSecret("{", key),
   ]);
   const unrelated = job();
-  await store.enqueue(a.actor, a.hostId, unrelated);
+  await seedUnboundJob(a.hostId, unrelated);
   expect(await a.poll()).toEqual(unrelated);
   expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
   await store.complete(a.hostToken, a.installationId, { requestId: unrelated.requestId, outcome: "completed" });
@@ -2463,7 +2335,6 @@ test("bound member admission derives immutable machine fields and cannot redirec
   const { parseDockerHostJob } = await import("../../core/src/docker-host-job.ts");
   expect(() => parseDockerHostJob({ ...envelope, requestId: a.create.requestId })).toThrow("Invalid host job");
   expect(Object.keys(delivered).sort()).toEqual(["operation", "request", "requestId"]);
-  await denied(store.enqueue(a.actor, a.hostId, delivered));
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...a.create, requestId: randomUUID() }));
 });
 
@@ -2516,53 +2387,7 @@ test("poll retires stale actor grants without starving authorized cleanup; ACK r
   ).toBe("starting");
 });
 
-test("bound bootstrap requires ACKed creation and the exact pending capability, then redelivers after enrolment", async () => {
-  const a = await boundFixture(),
-    b = await boundFixture();
-  const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
-  const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
-  const issue = (f: typeof a) =>
-    authority.issue({ sandboxId: f.sandboxId, ownerId: f.owner.userId, configuration: { marker: "private" } });
-  const ticket = await issue(a),
-    other = await issue(b);
-  const selection = {
-    requestId: randomUUID(),
-    operation: "bootstrap" as const,
-    bootstrapDescriptor: {
-      serverUrl: "https://armada.example",
-      artifact: { sha256: "b".repeat(64), bytes: 123 },
-      enrolmentToken: ticket.enrolmentToken,
-    },
-  };
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, selection));
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, selection));
-  await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
-  await denied(
-    store.enqueueSandbox(a.owner, a.sandboxId, {
-      ...selection,
-      bootstrapDescriptor: { ...selection.bootstrapDescriptor, enrolmentToken: other.enrolmentToken },
-    }),
-  );
-  await store.enqueueSandbox(a.owner, a.sandboxId, selection);
-  const first = await store.poll(a.hostToken, a.installationId);
-  expect(first?.operation).toBe("bootstrap");
-  await authority.enrol(ticket.enrolmentToken);
-  await store.enqueueSandbox(a.owner, a.sandboxId, selection);
-  await denied(
-    store.enqueueSandbox(a.owner, a.sandboxId, {
-      ...selection,
-      bootstrapDescriptor: {
-        ...selection.bootstrapDescriptor,
-        artifact: { ...selection.bootstrapDescriptor.artifact, bytes: 124 },
-      },
-    }),
-  );
-  expect(await store.poll(a.hostToken, a.installationId)).toEqual(first);
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
-});
-
-test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked issuer"] as const)(
+test.each(["launch", "account", "runtime", "revoked runtime", "revoked issuer"] as const)(
   "idle-only stop checks %s work",
   async (queue) => {
     const db = database();
@@ -2587,13 +2412,6 @@ test.each(["launch", "account", "docker", "runtime", "revoked runtime", "revoked
         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
        values($1,$2,$3,$4,$5,1,1,$6,$7,'first')`,
         [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
-      );
-    } else if (queue === "docker") {
-      await db.query(
-        `insert into public.docker_queued_prompts
-        (sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_hash,input_enc)
-       select id,$2,$3,owner_id,1,lifecycle_generation,$4,$5 from public.sandboxes where id=$1`,
-        [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
       );
     }
     if (queue === "runtime" || queue === "revoked runtime" || queue === "revoked issuer") {
@@ -2723,6 +2541,34 @@ test("stop commits runtime revocation once; cleanup retains the create deadline 
   ).toBe("deleted");
 });
 
+async function seedHistoricalBootstrap(a: Awaited<ReturnType<typeof boundFixture>>, enrolmentToken: string) {
+  const create = await sql.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
+    "select input_enc from docker_host_jobs where request_id=$1",
+    [a.create.requestId],
+  );
+  const { job } = JSON.parse(await decryptSecret(create.rows[0]!.input_enc, key));
+  const requestId = randomUUID();
+  const input = {
+    bound: 1,
+    job: {
+      operation: "bootstrap",
+      request: job.request,
+      bootstrap: {
+        serverUrl: "https://armada.example",
+        artifact: { sha256: "b".repeat(64), bytes: 123 },
+        enrolmentToken,
+      },
+    },
+  };
+  await sql.query(
+    `insert into docker_host_jobs(request_id,host_id,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,input_enc)
+     select $2,host_id,bound_sandbox_id,bound_actor_id,bound_actor_epoch,'bootstrap',$3
+     from docker_host_jobs where request_id=$1`,
+    [a.create.requestId, requestId, await encryptSecret(JSON.stringify(input), key)],
+  );
+  return requestId;
+}
+
 async function boundStartup(operation: "create" | "bootstrap") {
   const a = await boundFixture();
   const { createRuntimeEnrolments } = await import("../src/runtime-enrolment.ts");
@@ -2732,16 +2578,7 @@ async function boundStartup(operation: "create" | "bootstrap") {
   let startup = a.create as { requestId: string; operation: "create" | "bootstrap" };
   if (operation === "bootstrap") {
     await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
-    startup = { requestId: randomUUID(), operation };
-    await store.enqueueSandbox(a.owner, a.sandboxId, {
-      ...startup,
-      operation,
-      bootstrapDescriptor: {
-        serverUrl: "https://armada.example",
-        artifact: { sha256: "b".repeat(64), bytes: 123 },
-        enrolmentToken: ticket.enrolmentToken,
-      },
-    });
+    startup = { requestId: await seedHistoricalBootstrap(a, ticket.enrolmentToken), operation };
   }
   const runtime = await authority.enrol(ticket.enrolmentToken);
   return { ...a, startup, authority, runtime };
@@ -2984,7 +2821,7 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
   await denied(store.expired(a.hostToken, randomUUID(), { requestId: a.create.requestId }));
   await denied(store.expired(a.hostToken, a.installationId, { requestId: randomUUID() }));
   const legacy = job();
-  await store.enqueue(a.actor, a.hostId, legacy);
+  await seedUnboundJob(a.hostId, legacy);
   await denied(store.expired(a.hostToken, a.installationId, { requestId: legacy.requestId }));
   const stop = { requestId: randomUUID(), operation: "stop" as const };
   await queueMailboxStop(sql, key, a.actor, a.sandboxId, stop.requestId);
@@ -3861,15 +3698,7 @@ test("poll reports every generation with pending start intent, and per-generatio
       allowDockerIssue: true,
     })
     .issue({ sandboxId: second.sandboxId, ownerId: second.owner.userId, configuration: {} });
-  await store.enqueueSandbox(a.owner, second.sandboxId, {
-    requestId: randomUUID(),
-    operation: "bootstrap",
-    bootstrapDescriptor: {
-      serverUrl: "https://armada.example",
-      artifact: { sha256: "b".repeat(64), bytes: 123 },
-      enrolmentToken: ticket.enrolmentToken,
-    },
-  });
+  await seedHistoricalBootstrap(second, ticket.enrolmentToken);
   // Cleanup is served first, but the resume behind it is still reported as pending intent.
   expect((await store.poll(a.hostToken, a.installationId))?.operation).toBe("stop");
   expect(await store.pendingStartsForHost(a.hostToken, a.installationId)).toEqual([

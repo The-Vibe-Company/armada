@@ -829,7 +829,6 @@ test("physical-only mailbox delivery requires the capability on the current poll
     machineId: "a".repeat(64),
     request: created.request,
   };
-  await expect(store.enqueue(actor, host.hostId, job)).rejects.toThrow("Docker host denied");
   await store.enqueueSandbox(actor, sandboxId, {
     requestId: job.requestId,
     operation: job.operation,
@@ -852,21 +851,11 @@ test("physical-only mailbox delivery requires the capability on the current poll
 });
 
 test("a held host poll returns a locally enqueued job with the clock frozen", async () => {
-  const { userId, orgId, store, authenticate, post } = await fixture();
+  const { db, sql, userId, orgId, store, authenticate, post } = await fixture();
   const actor = { userId, orgId };
   const ticket = await store.issueRegistration(actor);
   const installationId = randomUUID();
   const host = await store.exchangeRegistration(ticket.registrationToken, installationId);
-  const job = {
-    requestId: randomUUID(),
-    operation: "create" as const,
-    request: {
-      sandboxId: randomUUID(),
-      generation: randomUUID(),
-      image: `example/worker@sha256:${"a".repeat(64)}`,
-      ttlSeconds: 300,
-    },
-  };
   const waiting = Promise.withResolvers<AbortSignal>();
   const delay = Promise.withResolvers<void>();
   const held = createDockerHostRoutes(store, authenticate, {
@@ -892,14 +881,28 @@ test("a held host poll returns a locally enqueued job with the clock frozen", as
       throw new Error("Host poll returned before waiting");
     }),
   ]);
+  let jobId: string;
   try {
-    await store.enqueue(actor, host.hostId, job);
+    const credentialId = randomUUID();
+    await db.query("insert into credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)", [
+      credentialId,
+      userId,
+      new Uint8Array([1]),
+    ]);
+    const sandbox = await queueMailboxCreate(sql, Buffer.alloc(32, 8).toString("base64"), actor, {
+      requestId: randomUUID(),
+      hostId: host.hostId,
+      image: `worker@sha256:${"a".repeat(64)}`,
+      credentialId,
+      credentialVersion: 1,
+    });
+    jobId = sandbox.id;
     expect(signal.aborted).toBe(true);
   } finally {
     if (!signal.aborted) delay.reject(new Error("Host poll received no enqueue wake"));
   }
   const response = await poll;
-  expect(await response.json()).toMatchObject({ held: true, job });
+  expect(await response.json()).toMatchObject({ held: true, job: { requestId: jobId, operation: "create" } });
 });
 
 test("a held host poll answers as soon as work appears and never beyond its hold", async () => {

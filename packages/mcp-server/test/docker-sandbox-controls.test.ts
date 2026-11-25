@@ -33,7 +33,12 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxBillingAccount } from "../src/sandbox-billing-account.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { queueMailboxCreate } from "./docker-create.fixture.ts";
+import {
+  fixtureMachineId,
+  pollMachineBootstrap,
+  queueMachineCreate,
+  queueMailboxCreate,
+} from "./docker-create.fixture.ts";
 import { bindDockerStopFixture, queueMailboxStop, runDockerStop, stopFixtureMachineId } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
@@ -45,12 +50,11 @@ const sql: Sql = {
 };
 const controls = createDockerSandboxControls(sql, Buffer.alloc(32, 13).toString("base64"));
 const key = Buffer.alloc(32, 13).toString("base64");
-const service = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+const service = createDockerRuntimeLifecycle(sql, key);
 const hosts = createDockerHostStore(sql, key);
 const authority = createRuntimeEnrolments(sql, key);
 const commands = createRuntimeCommands(authority, key);
 const bootstrap = createDockerBootstrapService(sql, key, {
-  enabled: true,
   serverUrl: "https://armada.example",
   architecture: "x64",
   manifest: {
@@ -86,14 +90,24 @@ async function fixture() {
     userId,
     await encryptSecret(`offline-lifecycle-${randomUUID()}`, key),
   ]);
-  const sandbox = await queueMailboxCreate(sql, key, actor, {
-    requestId: randomUUID(),
-    hostId: host.hostId,
-    image: `worker@sha256:${"a".repeat(64)}`,
-    credentialId,
-    credentialVersion: 1,
+  const { sandbox, target, context } = await queueMachineCreate(
+    sql,
+    key,
+    actor,
+    {
+      requestId: randomUUID(),
+      hostId: host.hostId,
+      image: `worker@sha256:${"a".repeat(64)}`,
+      credentialId,
+      credentialVersion: 1,
+    },
+    installationId,
+  );
+  await hosts.complete(host.hostToken, installationId, {
+    requestId: sandbox.generation,
+    outcome: "completed",
+    machineId: fixtureMachineId,
   });
-  await hosts.complete(host.hostToken, installationId, { requestId: sandbox.id, outcome: "completed" });
   await createSqlSandboxStore(sql, { turnModels: true }).recordUsagePricingContext?.(
     sandbox.id,
     createUsagePricingContext({
@@ -104,8 +118,8 @@ async function fixture() {
       credentialVersion: sandbox.credentialVersion,
     }),
   );
-  await bootstrap.bootstrap(actor, sandbox.id, randomUUID());
-  const job = await hosts.poll(host.hostToken, installationId);
+  await bootstrap.bootstrapMachine(actor, target, context);
+  const job = await pollMachineBootstrap(hosts, host.hostToken, installationId);
   if (job?.operation !== "bootstrap") throw Error("missing bootstrap");
   await hosts.complete(host.hostToken, installationId, { requestId: job.requestId, outcome: "completed" });
   const enrol = () => authority.enrol(job.bootstrap.enrolmentToken);
@@ -445,11 +459,11 @@ test("owner stop waits for the shared job and concurrent requests reuse its inte
   expect(
     (await sql.query("select id from jobs where sandbox_id=$1 and kind='stop'", [f.sandbox.id])).rows,
   ).toHaveLength(1);
-  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(await pollMachineBootstrap(hosts, f.hostToken, f.installationId)).toBeNull();
   await ready(f);
   await bindDockerStopFixture(sql, f.sandbox.id);
   expect((await runDockerStop(sql, key, f.sandbox.id)).status).toBe("retry");
-  const stop = await hosts.poll(f.hostToken, f.installationId);
+  const stop = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
   expect(stop?.operation).toBe("stop");
   await hosts.complete(f.hostToken, f.installationId, {
     requestId: stop!.requestId,
@@ -458,7 +472,7 @@ test("owner stop waits for the shared job and concurrent requests reuse its inte
   });
   expect((await runDockerStop(sql, key, f.sandbox.id)).status).toBe("done");
   expect(await invoke(who, "stop", { id: f.sandbox.id })).toEqual({ id: f.sandbox.id, status: "stopped" });
-  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(await pollMachineBootstrap(hosts, f.hostToken, f.installationId)).toBeNull();
 });
 
 test("failed/expired cleanup preserves failure facts and unfinished prompt outcome, with confirmed stop of failed compute", async () => {
@@ -492,7 +506,7 @@ test("failed/expired cleanup preserves failure facts and unfinished prompt outco
           await sql.query("select 1 from sandboxes where id=$1 and stopped_at is not null", [f.sandbox.id])
         ).rows.length;
         if (stopping) await runDockerStop(sql, key, f.sandbox.id);
-        const job = await hosts.poll(f.hostToken, f.installationId);
+        const job = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
         if (!job) throw Error("missing cleanup");
         await hosts.complete(f.hostToken, f.installationId, {
           requestId: job.requestId,
@@ -576,7 +590,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
         now += ms;
         if (!acknowledgeCleanup) return;
         if (stopPending) await runDockerStop(sql, key, f.sandbox.id);
-        const job = await hosts.poll(f.hostToken, f.installationId);
+        const job = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
         if (!job || !["stop", "delete"].includes(job.operation)) throw Error("Expected bound cleanup job");
         await hosts.complete(f.hostToken, f.installationId, {
           requestId: job.requestId,
@@ -750,7 +764,7 @@ test("Docker child deletion requires permanent delegated parent deletion before 
     clock: {
       now: () => now,
       async wait(ms) {
-        const job = await hosts.poll(f.hostToken, f.installationId);
+        const job = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
         if (!job || job.operation !== "delete") throw Error("Expected authorized delete job");
         await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
         now += ms;
@@ -960,7 +974,7 @@ test("cancelled account dispatch cannot admit a Docker prompt or resume", async 
   const stopId = randomUUID();
   await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(await pollMachineBootstrap(hosts, f.hostToken, f.installationId)).toBeNull();
 });
 
 test("Docker status preserves safe native prompt diagnoses instead of replacing them", async () => {

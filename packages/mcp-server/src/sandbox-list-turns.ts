@@ -19,9 +19,7 @@ export function createSandboxListTurns(sql: Sql, key: string) {
         (exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id
            and ((q.state='queued' and (s.status<>'stopped' or s.lifecycle_generation=q.queued_generation))
              or (q.state='dispatching' and (s.lifecycle_generation=q.dispatch_generation
-               or (s.status<>'stopped' and s.lifecycle_generation=q.dispatch_generation+1)))))
-         or exists(select 1 from public.docker_queued_prompts q where q.sandbox_id=s.id
-           and q.lifecycle_generation=s.lifecycle_generation and q.status in ('queued','dispatching'))) as queued,
+               or (s.status<>'stopped' and s.lifecycle_generation=q.dispatch_generation+1)))))) as queued,
         (s.status in ('ready','running') and current_turn.id is not null
           and not coalesce(t.settled,false) and f.terminal_status is null
           and (s.boat_runtime or s.runtime_transport='dialout' or s.provider='docker' or s.status='running')) as active,

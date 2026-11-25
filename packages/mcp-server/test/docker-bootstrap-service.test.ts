@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { DOCKER_HOST_PROTOCOL, type Harness, type Sql } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import { dockerMachineJobId } from "../../core/src/docker-host-job.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
@@ -13,7 +14,7 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
-import { queueMailboxCreate } from "./docker-create.fixture.ts";
+import { fixtureMachineId, pollMachineBootstrap, queueMachineCreate } from "./docker-create.fixture.ts";
 import { bindDockerStopFixture, queueMailboxStop, runDockerStop, stopFixtureMachineId } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
@@ -33,7 +34,6 @@ const manifest = {
 };
 const credentials = launchCredentials(createSqlVaultStore(sql), key);
 const options = {
-  enabled: true,
   serverUrl: "https://armada.example",
   manifest,
   architecture: "x64" as const,
@@ -69,16 +69,38 @@ async function fixture(ack = true, harness: Harness = "codex") {
     await encryptSecret(secret, key),
     harness === "claude" ? "anthropic" : harness === "opencode" ? "opencode" : "openai",
   ]);
-  const sandbox = await queueMailboxCreate(sql, key, actor, {
-    requestId: randomUUID(),
-    hostId: host.hostId,
-    image: `worker@sha256:${"a".repeat(64)}`,
+  const { sandbox, target, context } = await queueMachineCreate(
+    sql,
+    key,
+    actor,
+    {
+      requestId: randomUUID(),
+      hostId: host.hostId,
+      image: `worker@sha256:${"a".repeat(64)}`,
+      credentialId,
+      credentialVersion: 1,
+      harness,
+    },
+    installationId,
+  );
+  if (ack)
+    await hosts.complete(host.hostToken, installationId, {
+      requestId: sandbox.generation,
+      outcome: "completed",
+      machineId: fixtureMachineId,
+    });
+  return {
+    actor,
+    admin,
+    secret,
     credentialId,
-    credentialVersion: 1,
-    harness,
-  });
-  if (ack) await hosts.complete(host.hostToken, installationId, { requestId: sandbox.id, outcome: "completed" });
-  return { actor, admin, secret, credentialId, sandbox, installationId, ...host, requestId: randomUUID() };
+    sandbox,
+    installationId,
+    ...host,
+    target,
+    context,
+    requestId: dockerMachineJobId(sandbox.generation, "bootstrap"),
+  };
 }
 async function denied(work: Promise<unknown>) {
   await expect(work).rejects.toBeInstanceOf(DockerBootstrapDenied);
@@ -100,36 +122,7 @@ async function pending(sandboxId: string) {
 }
 
 // Service composition owns admission ordering and atomic delivery. Auth selection itself is tested elsewhere.
-test("bootstrap is literal opt-in, owner-only and waits for create ACK before resolving credentials", async () => {
-  const db = database();
-  const acknowledged = await fixture();
-  let disabledResolutions = 0;
-  const disabledTracked = {
-    ...credentials,
-    resolve: async (...args: Parameters<typeof credentials.resolve>) => {
-      disabledResolutions++;
-      return credentials.resolve(...args);
-    },
-  };
-  for (const enabled of [undefined, false, "true", 1]) {
-    await denied(
-      createDockerBootstrapService(sql, key, { ...options, enabled, credentials: disabledTracked } as never).bootstrap(
-        acknowledged.actor,
-        acknowledged.sandbox.id,
-        acknowledged.requestId,
-      ),
-    );
-  }
-  expect(disabledResolutions).toBe(0);
-  expect(await pending(acknowledged.sandbox.id)).toBeUndefined();
-  expect(
-    (
-      await db.query(
-        `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='bootstrap'`,
-        [acknowledged.sandbox.id],
-      )
-    ).rows,
-  ).toHaveLength(0);
+test("bootstrap is owner-only and waits for create ACK before resolving credentials", async () => {
   const f = await fixture(false);
   let resolutions = 0;
   const tracked = {
@@ -140,12 +133,16 @@ test("bootstrap is literal opt-in, owner-only and waits for create ACK before re
     },
   };
   const guarded = createDockerBootstrapService(sql, key, { ...options, credentials: tracked });
-  await denied(guarded.bootstrap(f.admin, f.sandbox.id, f.requestId));
-  await denied(guarded.bootstrap(f.actor, f.sandbox.id, f.requestId));
+  await denied(guarded.bootstrapMachine(f.admin, f.target, f.context));
+  await denied(guarded.bootstrapMachine(f.actor, f.target, f.context));
   expect(resolutions).toBe(0);
   expect(await pending(f.sandbox.id)).toBeUndefined();
-  await hosts.complete(f.hostToken, f.installationId, { requestId: f.sandbox.id, outcome: "completed" });
-  expect(await guarded.bootstrap(f.actor, f.sandbox.id, f.requestId)).toEqual({
+  await hosts.complete(f.hostToken, f.installationId, {
+    requestId: f.sandbox.generation,
+    outcome: "completed",
+    machineId: fixtureMachineId,
+  });
+  expect(await guarded.bootstrapMachine(f.actor, f.target, f.context)).toEqual({
     requestId: f.requestId,
     operation: "bootstrap",
     state: "pending",
@@ -155,14 +152,14 @@ test("bootstrap is literal opt-in, owner-only and waits for create ACK before re
 
 test("sealed account configuration is delivered only by enrolment, host ACK leaves readiness to enrolment", async () => {
   const f = await fixture();
-  const result = await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  const result = await service.bootstrapMachine(f.actor, f.target, f.context);
   expect(Object.keys(result).sort()).toEqual(["operation", "requestId", "state"]);
   const stored = await pending(f.sandbox.id);
   if (!stored?.configuration_enc) throw Error("missing sealed configuration");
   expect(Buffer.from(stored.configuration_enc).includes(Buffer.from(f.secret))).toBe(false);
   const configuration = JSON.parse(await decryptSecret(stored.configuration_enc, key));
   expect(configuration.codexEnv.OPENAI_API_KEY).toBe(f.secret);
-  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  const delivery = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
   if (delivery?.operation !== "bootstrap") throw Error("missing bootstrap delivery");
   expect(delivery.bootstrap).toEqual({
     serverUrl: options.serverUrl,
@@ -189,8 +186,8 @@ test("sealed account configuration is delivered only by enrolment, host ACK leav
 
 test("a conflicting Docker readiness CAS rolls back ticket consumption and leaves enrolment retryable", async () => {
   const f = await fixture();
-  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
-  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  await service.bootstrapMachine(f.actor, f.target, f.context);
+  const delivery = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
   if (delivery?.operation !== "bootstrap") throw Error("missing bootstrap delivery");
   const ticket = delivery.bootstrap.enrolmentToken;
   const before = await pending(f.sandbox.id);
@@ -220,8 +217,8 @@ test("bootstrap on a draining host name the uninstall, not a permission failure"
   const db = database();
   const f = await fixture();
   await db.query(`update public.docker_hosts set draining_at=now() where id=$1`, [f.hostId]);
-  await expect(service.bootstrap(f.actor, f.sandbox.id, f.requestId)).rejects.toBeInstanceOf(DockerHostDraining);
-  await expect(service.bootstrap(f.actor, f.sandbox.id, f.requestId)).rejects.toThrow("draining for uninstall");
+  await expect(service.bootstrapMachine(f.actor, f.target, f.context)).rejects.toBeInstanceOf(DockerHostDraining);
+  await expect(service.bootstrapMachine(f.actor, f.target, f.context)).rejects.toThrow("draining for uninstall");
   await db.query(`update public.sandboxes set status='stopped',stopped_at=now() where id=$1`, [f.sandbox.id]);
   expect(await pending(f.sandbox.id)).toBeUndefined();
 });
@@ -246,7 +243,7 @@ test("lost commit response retries retain original encrypted job and do not rota
     createDockerBootstrapService(lostResponse, key, {
       ...options,
       serverUrl: "https://ARMADA.example:443/",
-    }).bootstrap(f.actor, f.sandbox.id, f.requestId),
+    }).bootstrapMachine(f.actor, f.target, f.context),
   );
   const ciphertext = (
     await db.query<{ input_enc: Uint8Array<ArrayBuffer> }>(
@@ -254,7 +251,7 @@ test("lost commit response retries retain original encrypted job and do not rota
       [f.requestId],
     )
   ).rows[0]?.input_enc;
-  const delivery = await hosts.poll(f.hostToken, f.installationId);
+  const delivery = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
   if (delivery?.operation !== "bootstrap") throw Error("missing delivery");
   const enrolled = await createRuntimeEnrolments(sql, key).enrol(delivery.bootstrap.enrolmentToken);
   await db.query(`update public.credentials set status='revoked' where id=$1`, [f.credentialId]);
@@ -268,7 +265,7 @@ test("lost commit response retries retain original encrypted job and do not rota
       },
     },
   });
-  expect(await historical.bootstrap(f.actor, f.sandbox.id, f.requestId)).toMatchObject({ state: "pending" });
+  expect(await historical.bootstrapMachine(f.actor, f.target, f.context)).toMatchObject({ state: "pending" });
   expect(await pending(f.sandbox.id)).toMatchObject({
     enrolment_hash: null,
     runtime_hash: expect.any(String),
@@ -283,19 +280,18 @@ test("lost commit response retries retain original encrypted job and do not rota
       )
     ).rows[0]?.input_enc,
   ).toEqual(ciphertext);
-  await denied(historical.bootstrap(f.actor, f.sandbox.id, randomUUID()));
   await denied(
-    createDockerBootstrapService(sql, key, { ...options, serverUrl: "https://changed.example" }).bootstrap(
+    createDockerBootstrapService(sql, key, { ...options, serverUrl: "https://changed.example" }).bootstrapMachine(
       f.actor,
-      f.sandbox.id,
-      f.requestId,
+      f.target,
+      f.context,
     ),
   );
   await denied(
     createDockerBootstrapService(sql, key, {
       ...options,
       manifest: { ...manifest, runtime: { ...manifest.runtime, sha256: "c".repeat(64) } },
-    }).bootstrap(f.actor, f.sandbox.id, f.requestId),
+    }).bootstrapMachine(f.actor, f.target, f.context),
   );
   expect((await pending(f.sandbox.id))?.epoch).toBe(enrolled.epoch);
   expect(historicalResolutions).toBe(0);
@@ -308,7 +304,7 @@ test("queue failure rolls back runtime ticket issuance and redacts private depen
     begin if new.bound_operation='bootstrap' then raise exception 'private queue detail'; end if; return new; end $$;
     create trigger reject_bootstrap_job before insert on public.docker_host_jobs for each row execute function public.reject_bootstrap_job();`);
   try {
-    await denied(service.bootstrap(f.actor, f.sandbox.id, f.requestId));
+    await denied(service.bootstrapMachine(f.actor, f.target, f.context));
   } finally {
     await db.exec(
       `drop trigger reject_bootstrap_job on public.docker_host_jobs; drop function public.reject_bootstrap_job();`,
@@ -326,9 +322,9 @@ test("queue failure rolls back runtime ticket issuance and redacts private depen
       },
     },
   });
-  await denied(broken.bootstrap(f.actor, f.sandbox.id, f.requestId));
+  await denied(broken.bootstrapMachine(f.actor, f.target, f.context));
   expect(await pending(f.sandbox.id)).toBeUndefined();
-  expect(await service.bootstrap(f.actor, f.sandbox.id, f.requestId)).toMatchObject({ state: "pending" });
+  expect(await service.bootstrapMachine(f.actor, f.target, f.context)).toMatchObject({ state: "pending" });
 });
 
 test("new issuance rechecks current pin, lifecycle, host authority and original reservation actor epoch without replacing unknown grants", async () => {
@@ -357,10 +353,10 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
         },
       };
     await denied(
-      createDockerBootstrapService(sql, key, { ...options, credentials: resolver }).bootstrap(
+      createDockerBootstrapService(sql, key, { ...options, credentials: resolver }).bootstrapMachine(
         f.actor,
-        f.sandbox.id,
-        f.requestId,
+        f.target,
+        f.context,
       ),
     );
     expect(await pending(f.sandbox.id)).toBeUndefined();
@@ -372,7 +368,7 @@ test("new issuance rechecks current pin, lifecycle, host authority and original 
     configuration: { existing: "grant" },
   });
   const original = await pending(occupied.sandbox.id);
-  await denied(service.bootstrap(occupied.actor, occupied.sandbox.id, occupied.requestId));
+  await denied(service.bootstrapMachine(occupied.actor, occupied.target, occupied.context));
   expect(await pending(occupied.sandbox.id)).toEqual(original);
 });
 
@@ -401,7 +397,7 @@ test.each(["replacement ticket", "issuer role change"])("Docker idle-stop proof 
     ]);
   await expect(hosts.enqueueStop(f.actor, f.sandbox.id, requestId, { checkpoint: requestId })).rejects.toThrow();
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
-  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+  expect(await pollMachineBootstrap(hosts, f.hostToken, f.installationId)).toBeNull();
 });
 
 const dockerIdleCases = ["idle", "checkpointed", "merged", "opted out"];
@@ -410,8 +406,8 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
   const db = database();
   const f = await fixture();
   const authority = createRuntimeEnrolments(sql, key);
-  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
-  const boot = await hosts.poll(f.hostToken, f.installationId);
+  await service.bootstrapMachine(f.actor, f.target, f.context);
+  const boot = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
   if (boot?.operation !== "bootstrap") throw Error("missing bootstrap");
   const session = await authority.enrol(boot.bootstrap.enrolmentToken);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
@@ -419,7 +415,7 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
   const conversationId = randomUUID(),
     promptId = randomUUID(),
     turnId = randomUUID();
-  const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+  const runtime = createDockerRuntimeLifecycle(sql, key);
   const commands = createRuntimeCommands(authority, key);
   const turn = { requestId: turnId, text: "remember token", conversationId };
   await db.query("update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1", [
@@ -528,11 +524,11 @@ test.each(dockerIdleCases)("Docker idle sweep with %s work", async (scenario) =>
     clock += 60_000;
     await idle.reconcileOne(new AbortController().signal);
     expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
-    expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+    expect(await pollMachineBootstrap(hosts, f.hostToken, f.installationId)).toBeNull();
     return;
   }
   await runDockerStop(sql, key, f.sandbox.id);
-  const stop = await hosts.poll(f.hostToken, f.installationId);
+  const stop = await pollMachineBootstrap(hosts, f.hostToken, f.installationId);
   if (stop?.operation !== "stop") throw Error("missing idle stop");
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopping");
   await hosts.complete(f.hostToken, f.installationId, {

@@ -54,9 +54,7 @@ export function initialLaunchPending(sandbox: string, requestId = "null") {
       select 1 from public.account_turn_queue initial
       where initial.sandbox_id=${sandbox}.id and initial.request_id=setup.id
         and initial.state in ('queued','dispatching'))))
-    or ${deferredDockerLaunch(sandbox, true)}
-    or exists(select 1 from public.docker_queued_prompts pending
-      where pending.sandbox_id=${sandbox}.id and pending.status in ('queued','dispatching')))`;
+    or ${deferredDockerLaunch(sandbox, true)})`;
 }
 
 export function initialLaunchFailed(sandbox: string) {

@@ -140,7 +140,6 @@ type Selection = { requestId: string } & (
   | (Omit<RestoreJob, "requestId"> & { lifecycleGeneration: number; runnerJobId: string })
   | { operation: "deletePhysical"; machineId: string; lifecycleGeneration: number }
   | { operation: "stop" }
-  | { operation: "bootstrap"; bootstrapDescriptor: BootstrapDescriptor }
 );
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const tokenPattern = /^[0-9a-f]{64}$/;
@@ -336,7 +335,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     tx: Sql,
     hostId: string,
     job: Job,
-    bound?: Bound,
+    bound: Bound,
     lifecycleGeneration?: string,
     runnerJobId?: string,
     machineRetain?: boolean,
@@ -353,26 +352,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
       deny();
     // Deliberately incompatible with old strict mailbox readers: a mixed-version
     // server must fail closed, never deliver bound work without actor admission.
-    const serialized = bound
-      ? JSON.stringify({
-          bound: 1,
-          job: JSON.parse(canonical),
-          lifecycleGeneration,
-          runnerJobId,
-          machineRetain,
-          machinePhysicalDelete,
-          retryAfter,
-        })
-      : canonical;
-    const metadata: Bound = {
-      snapshot_id: null,
-      ...(bound ?? {
-        bound_sandbox_id: null,
-        bound_actor_id: null,
-        bound_actor_epoch: null,
-        bound_operation: null,
-      }),
-    };
+    const serialized = JSON.stringify({
+      bound: 1,
+      job: JSON.parse(canonical),
+      lifecycleGeneration,
+      runnerJobId,
+      machineRetain,
+      machinePhysicalDelete,
+      retryAfter,
+    });
+    const metadata: Bound = { snapshot_id: null, ...bound };
     const inserted = await tx.query(
       `insert into public.docker_host_jobs(request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,snapshot_id)
        values($1,$2,$3,$4,$5,$6,$7,$8) on conflict do nothing returning request_id`,
@@ -502,7 +491,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function sandbox(tx: Sql, sandboxId: string, host: Host, installationId: string) {
     const row = (await tx.query<Sandbox>(`select * from public.sandboxes where id=$1 for update`, [sandboxId])).rows[0];
     if (
-      row?.provider !== "docker" ||
+      !row ||
       row.org_id !== host.org_id ||
       row.docker_host_id !== host.id ||
       row.docker_installation_id !== installationId ||
@@ -515,7 +504,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     tx: Sql,
     actor: Actor,
     sandboxId: string,
-    operation: Selection["operation"],
+    operation: Selection["operation"] | "bootstrap",
     scope?: MachineHost,
   ) {
     exact(actor, ["userId", "orgId"]);
@@ -599,8 +588,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
       `select 1 from public.docker_launch_manifests where sandbox_id=$1 and result_enc is null
              union all
              select 1 from public.account_turn_queue where sandbox_id=$1 and state in ('queued','dispatching')
-             union all
-             select 1 from public.docker_queued_prompts where sandbox_id=$1 and status in ('queued','dispatching')
              union all
              ${unsettledRuntimeCommands("$1", "$2", "$3")}
              union all select 1 from public.runtime_commands where sandbox_id=$1
@@ -1683,14 +1670,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query(`update public.docker_hosts set revoked_at=now(),registration_hash=null where id=$1`, [hostId]);
       });
     },
-    enqueue(actor: Actor, hostId: string, job: Job) {
-      return transaction(async (tx) => {
-        if (generationFenced(job.operation)) deny();
-        input(job);
-        await owned(tx, actor, hostId);
-        return insert(tx, hostId, job);
-      });
-    },
     enqueueSnapshot(actor: Actor, hostId: string, job: Extract<Job, { operation: "buildSnapshot" }>) {
       return transaction(async (tx) => {
         exact(actor, ["userId", "orgId"]);
@@ -2240,15 +2219,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
         exact(selection, [
           "requestId",
           "operation",
-          ...(selection.operation === "bootstrap" ? ["bootstrapDescriptor"] : []),
           ...(selection.operation === "deletePhysical" ? ["machineId", "lifecycleGeneration"] : []),
           ...(selection.operation === "restore"
             ? ["request", "predecessor", "lifecycleGeneration", "runnerJobId"]
             : []),
         ]);
         id(selection.requestId);
-        if (!["create", "bootstrap", "stop", "delete", "deletePhysical", "restore"].includes(selection.operation))
-          deny();
+        if (!["create", "stop", "delete", "deletePhysical", "restore"].includes(selection.operation)) deny();
         const admission = await lockSandboxAdmission(tx, actor, sandboxId, selection.operation);
         const { host } = admission;
         let { row } = admission;
@@ -2267,20 +2244,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const known =
           (await tx.query(`select 1 from public.docker_host_jobs where request_id=$1`, [selection.requestId])).rows
             .length > 0;
-        if (
-          !known &&
-          selection.operation === "bootstrap" &&
-          (
-            await tx.query(
-              `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='bootstrap' limit 1`,
-              [sandboxId],
-            )
-          ).rows.length
-        )
-          deny();
         // A drain refuses new optional work. Keep replay of already-admitted requests
         // under their original binding so a lost enqueue response is recoverable.
-        if (!known && (selection.operation === "bootstrap" || generationFenced(selection.operation))) {
+        if (!known && generationFenced(selection.operation)) {
           await refuseDraining(tx, host.id);
         }
         const bound = {
@@ -2289,8 +2255,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           bound_actor_epoch: epoch,
           bound_operation: selection.operation,
         };
-        if (!known && ["create", "bootstrap", "restore"].includes(selection.operation))
-          await fenceFreshStartup(tx, row);
+        if (!known && ["create", "restore"].includes(selection.operation)) await fenceFreshStartup(tx, row);
         if (selection.operation === "restore") {
           const { lifecycleGeneration: _, runnerJobId, ...job } = selection;
           if (!known) await requireRestoreRunner(tx, runnerJobId, row);
@@ -2301,9 +2266,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const target = { requestId: selection.requestId, request };
         let job: Job;
         switch (selection.operation) {
-          case "bootstrap":
-            job = { ...target, operation: selection.operation, bootstrap: selection.bootstrapDescriptor };
-            break;
           case "deletePhysical":
             job = { ...target, operation: selection.operation, machineId: selection.machineId };
             break;
@@ -2320,26 +2282,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
             selection.operation === "deletePhysical" ? String(selection.lifecycleGeneration) : undefined,
           );
         if (known) return enqueue();
-        if (selection.operation === "bootstrap") {
-          // This lookup takes no source locks. Reject a foreign capability before
-          // the validator can acquire any of that sandbox's membership locks.
-          const ticket = (
-            await tx.query<{ sandbox_id: string }>(
-              `select sandbox_id from public.runtime_enrolments where enrolment_hash=$1`,
-              [createHash("sha256").update(selection.bootstrapDescriptor.enrolmentToken).digest("hex")],
-            )
-          ).rows[0];
-          if (ticket?.sandbox_id !== sandboxId) deny();
-          // All source members, host and sandbox are exclusively prelocked. Reuse the
-          // existing capability validator in this very transaction, never a nested one.
-          return createRuntimeEnrolments(scopedRuntimeSql(tx), key).withBootstrap(
-            selection.bootstrapDescriptor.enrolmentToken,
-            async (_tx, scope) => {
-              if (scope.sandboxId !== sandboxId) deny();
-              return enqueue();
-            },
-          );
-        }
         if (host.draining && selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
           requireGenerationHeadroom(row.lifecycle_generation, 2);
           const result = await transitionSandbox(tx, {

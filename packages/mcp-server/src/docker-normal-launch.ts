@@ -165,7 +165,6 @@ type Row = {
 };
 type Clock = { now(): number; wait(ms: number): Promise<void> };
 type Options = {
-  enabled?: boolean;
   /** Trusted server release configuration, never accepted from a caller. */
   officialImage?: string;
   github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "preflightRepositories">;
@@ -320,7 +319,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     now: Date.now,
     wait: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   };
-  const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+  const runtime = createDockerRuntimeLifecycle(sql, key);
   const templates = createTemplateService(sql, key);
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     if (!sql.transaction) throw failure("unavailable");
@@ -555,7 +554,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (state.row && state.receipt)
         return { ...plan, kind: "retained" as const, row: state.row, receipt: state.receipt };
       reason = "runtime_configuration";
-      if (options.enabled !== true || !options.bootstrap) throw failure("unavailable");
+      if (!options.bootstrap) throw failure("unavailable");
       if (state.manifest) return { ...plan, kind: "active" as const, fresh: null };
       const snapshotRepositories = source?.config.repos;
       // Prepare credentials before reservation so the transaction only evaluates frozen candidate revisions.
@@ -661,6 +660,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               harness: request.harness,
               credentialId: binding.credentialId,
               credentialVersion: manifest.credentialVersion,
+              ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
               model: choice.model,
               reasoningEffort: choice.reasoningEffort,
               ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
@@ -680,11 +680,6 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
                 }
               : undefined,
           );
-          if (request.externalRef !== undefined)
-            await tx.query("update public.sandboxes set external_ref=$2 where id=$1", [
-              request.requestId,
-              request.externalRef,
-            ]);
           if (resolved.usagePricing)
             await createSqlSandboxStore(scopedRuntimeSql(tx), { turnModels: true }).recordUsagePricingContext?.(
               request.requestId,
