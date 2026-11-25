@@ -728,30 +728,22 @@ server functionality requires a newer daemon. Old daemons can still poll
 and run existing workloads. New snapshot builds require a daemon that
 verifies and reports the developer baseline.
 
-The self-update follow-up will use these states: idle, draining, staged,
-health check, and applied or rolled back. The daemon will stop claiming
-work, wait for active builds and launches to finish and report their
-results, then restart and reconcile. Running containers and their volumes
-stay in Docker. A daemon restart only replaces the daemon process.
+Automatic updates use the registered HTTPS origin's `/api/docker-host/install.json`.
+Its version must match the newer release offered on the authenticated poll. The
+daemon verifies the platform's SHA-256 pin against `/api/runtime/artifacts/<sha256>`.
+It drains active launches and builds without stopping containers or taking new
+jobs. It records the pending attempt in `managed.json`, saves the verified
+executable as `.previous` beside the active binary, swaps atomically and unlocks.
 
-A Linux systemd user service will supervise the update independently of
-the candidate daemon so a binary that fails before its first poll can
-still be rolled back. The previous executable will be kept next to the
-managed binary, with the candidate version and outcome recorded in the
-instance's private state. The updater will verify a fresh authenticated
-poll from the candidate before discarding the previous binary, restore
-it atomically on failure, and persist the failed target so a restart
-cannot retry it in a loop. Each named instance owns its own files and
-lock. The design uses the existing unprivileged account and Docker
-access. Managed installation currently supports Linux systemd user
-services. macOS launchd is outside this rollout.
-
-The intended update channel is the same HTTPS release manifest and
-SHA-256-addressed Linux artifact used by the installer. The poll supplies
-version numbers. The updater will use fixed installer endpoints, require
-an exact manifest version and verify the artifact before execution.
-The updater can execute release code as the Docker service account.
-Detached signing and staged rollout are follow-ups.
+On systemd 246 or newer, the user service restarts the daemon. A pre-start hook
+records the candidate's first start. The candidate uses the existing registration
+and journal, checks Docker, and completes an authenticated poll. If it exits or
+misses the two-minute readiness deadline, the hook restores the previous
+executable on the next start. The daemon reports the result on its normal poll.
+Each version gets one attempt, with an hour before trying a different target.
+Unmanaged hosts and unsupported service managers skip updates. Per-host controls
+and owner-facing results are Part C. Detached signing and staged rollout are
+follow-ups. The updater runs release code as the installation owner.
 
 The managed manual upgrade runs from the verified downloaded executable with
 the saved registration. It stops the user service before taking the exclusive
@@ -1371,7 +1363,7 @@ Source audit of tag `v2.46.0` against the incident report:
 
 Part 1 left deletion policy unchanged. Part 2 below builds on the durable
 resume fencing merged in #2534 and bounds default retention by expiry.
-A host upgrade is explicit operator work; there is no automatic daemon update.
+An older daemon must be upgraded once to a release with self-update support.
 
 Stopped workspace usage is an approximate, read-only observation of writable
 container layers plus attached named volumes for this installation's
