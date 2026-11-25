@@ -35,6 +35,7 @@ import { OpenCodeDriver } from "./opencode.ts";
 import { configureOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { prepareOpenCode } from "./opencode-install.ts";
 import type { ExecEnvironment } from "./protocol.ts";
+import { createRuntimeRelay } from "./relay-client.ts";
 import { createRedactor, HarnessState } from "./state.ts";
 
 let startupReason: import("../../core/src/runtime-startup-failure.ts").RuntimeStartupFailure = "runtime_configuration";
@@ -456,6 +457,10 @@ async function main(dialout = false) {
           cacheDir: `${config.root}/.harness-cache`,
         })
       : (config.opencodeExecutable ?? "/usr/local/bin/opencode");
+  const runtimeExecEnv = {
+    ...(fenced ? {} : execEnv),
+    PATH: `${githubBin}:${execEnv.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
+  };
   const runner = new Runner(
     journal,
     config.grant,
@@ -559,7 +564,7 @@ async function main(dialout = false) {
         throw Error("model_connection_test_denied");
       },
       readableVariables: fenced ? {} : readableVariables,
-      execEnv: { ...(fenced ? {} : execEnv), PATH: `${githubBin}:${execEnv.PATH ?? "/usr/local/bin:/usr/bin:/bin"}` },
+      execEnv: runtimeExecEnv,
       refreshNativeSecrets,
       publishNativeAuth,
       exclusiveNativeAuth: config.nativeAuthRevision !== undefined,
@@ -612,9 +617,15 @@ async function main(dialout = false) {
     const shutdown = () => stop.abort();
     let closing: Promise<void> | undefined;
     const requests = new Set<Promise<Response>>();
+    const relay = createRuntimeRelay(input.serverUrl, enrolled, {
+      cwd: config.cwd,
+      execEnv: runtimeExecEnv,
+      credentialFreeBuilder: config.credentialFreeBuilder,
+    });
     const closeNative = () => {
       closing ??= Promise.resolve().then(async () => {
         stop.abort();
+        relay?.close();
         github.configure(null);
         try {
           await closeBroker();
@@ -627,6 +638,7 @@ async function main(dialout = false) {
     };
     process.once("SIGTERM", shutdown);
     process.once("SIGINT", shutdown);
+    const relayRun = relay?.run(stop.signal).catch(() => {});
     try {
       await channel.run(
         (request) => {
@@ -655,6 +667,7 @@ async function main(dialout = false) {
       process.removeListener("SIGTERM", shutdown);
       process.removeListener("SIGINT", shutdown);
       await closeNative();
+      await relayRun;
       // Keep WAL available until pending native completion/auth callbacks drain.
       // SQLite closes naturally when this listener-free process exits.
     }
