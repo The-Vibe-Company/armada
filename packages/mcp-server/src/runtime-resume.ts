@@ -235,7 +235,10 @@ export function createRuntimeResume(
         current.lifecycleGeneration === undefined
       )
         throw new VaultError("conflict", "Resume requires a confirmed retained stop and no unresolved admission.");
-      if (current.provider === "modal" && (await pendingModalStopOutput(tx, found.id, current.lifecycleGeneration)))
+      if (
+        current.modalTransport === "dialout" &&
+        (await pendingModalStopOutput(tx, found.id, current.lifecycleGeneration))
+      )
         throw new VaultError("conflict", "Final stop outputs are awaiting publication. Retry after stop settlement.");
       const proof = (
         await tx.query<{ watermark: string }>(

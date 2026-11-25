@@ -1850,11 +1850,11 @@ export function createSandboxLifecycle(
                 ],
               );
               if (!current) return false;
-              const modal = providerId === "modal" && row.runtime_transport === "dialout";
+              const queuedStop = row.runtime_transport === "dialout";
               if (
                 current.status === "ready" ||
                 current.status === "running" ||
-                (modal && current.status === "starting")
+                (queuedStop && current.status === "starting")
               ) {
                 const result = await transitionSandbox(tx, {
                   sandboxId: row.id,
@@ -1873,7 +1873,7 @@ export function createSandboxLifecycle(
                 });
                 if (result.kind === "conflict") throw stopConflict;
               }
-              if (modal) {
+              if (queuedStop) {
                 if (!(await enqueueModalStop(tx, row.id, row.lifecycle_generation, token))) throw stopConflict;
                 return false;
               }

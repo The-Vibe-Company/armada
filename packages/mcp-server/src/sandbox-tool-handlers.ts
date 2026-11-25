@@ -7,6 +7,7 @@ import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts"
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import {
+  modalDialoutPlacement,
   requiresMissingMachineObservation,
   retainsDiskOnStop,
   runtimeBridgeTarget,
@@ -265,7 +266,7 @@ export function configureTools(
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
-      if (found.provider === "modal" && found.modalTransport === "dialout") {
+      if (modalDialoutPlacement(found)) {
         if (found.lifecycleGeneration === undefined)
           throw new VaultError("conflict", "Modal generation is unavailable.");
         const status: SandboxStatus = found.status === "failed" ? "failed" : "stopping";

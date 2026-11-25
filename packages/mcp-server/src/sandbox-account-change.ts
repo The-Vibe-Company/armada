@@ -158,7 +158,10 @@ export function createSandboxAccountChange(
           "credential_binding_unsafe",
           "The sandbox is stopping to change accounts. Wait until it is stopped, then retry.",
         );
-      if (current.provider === "modal" && (await pendingModalStopOutput(tx, current.id, current.lifecycle_generation)))
+      if (
+        current.runtime_transport === "dialout" &&
+        (await pendingModalStopOutput(tx, current.id, current.lifecycle_generation))
+      )
         throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
       if (current.credential_id !== before.credential_id || current.credential_version !== before.credential_version)
         throw new VaultError("conflict", "Another account change won. Refresh the sandbox before trying again.");
