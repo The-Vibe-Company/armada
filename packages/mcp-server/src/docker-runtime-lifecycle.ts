@@ -1,4 +1,4 @@
-import type { AgentEvent, Sql } from "@armada/core";
+import type { Sql } from "@armada/core";
 import { HARNESS_KINDS, isRecord as object } from "@armada/core";
 import { decryptSecret } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
@@ -66,7 +66,7 @@ export async function projectDockerPromptReceipt(
 }
 
 /** One native conversation per allocation. No provider projection or network/waiting in this service. */
-export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { enabled?: boolean } = {}) {
+export function createDockerRuntimeLifecycle(sql: Sql, key: string) {
   async function transaction<T>(work: (tx: Sql) => Promise<T>): Promise<T> {
     try {
       if (!sql.transaction) deny();
@@ -91,7 +91,6 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     assertClaim?: (tx: Sql) => Promise<void>,
   ) {
     return transaction(async (tx) => {
-      if (options.enabled !== true) deny();
       identity(actor, sandboxId);
       const scoped = scopedRuntimeSql(tx);
       const authority = createRuntimeEnrolments(scoped, key);
@@ -237,33 +236,6 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
             )
               deny();
           }
-          const reserved = (
-            await tx.query<{
-              input_enc: Uint8Array<ArrayBuffer>;
-              conversation_id: string | null;
-              previous_command: boolean;
-              valid: boolean;
-            }>(
-              `select q.input_enc,q.conversation_id,
-             exists(select 1 from public.runtime_commands c where c.sandbox_id=q.sandbox_id and c.request_id='docker_prompt_'||q.request_id::text) as previous_command,(q.status='dispatching' and q.owner_id=s.owner_id and q.actor_epoch=e.epoch and q.lifecycle_generation=s.lifecycle_generation) as valid
-          from public.docker_queued_prompts q join public.sandboxes s on s.id=q.sandbox_id
-          join public.mcp_actor_epochs e on e.user_id=q.owner_id and e.org_id=s.org_id
-          where q.sandbox_id=$1 and q.request_id=$2`,
-              [sandboxId, input.requestId],
-            )
-          ).rows[0];
-          if (reserved) {
-            const payload = JSON.parse(await decryptSecret(reserved.input_enc, key));
-            if (
-              !reserved.valid ||
-              payload.prompt !== input.text ||
-              (!reserved.previous_command &&
-                reserved.conversation_id !== null &&
-                reserved.conversation_id !== input.conversationId) ||
-              (payload.conversationId !== null && payload.conversationId !== input.conversationId)
-            )
-              deny();
-          }
           const id = `docker_prompt_${input.requestId}`;
           // Exact retries keep their original canonical payload, including the first
           // request's absent conversationId, even after its receipt is reconciled.
@@ -352,59 +324,6 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         undefined,
         assertClaim,
       );
-    },
-    journal(actor: Actor, sandboxId: string, input: { cursor?: string; limit?: number } = {}) {
-      return transaction(async (tx) => {
-        identity(actor, sandboxId);
-        const cursor = input.cursor ?? "0",
-          limit = input.limit ?? 100;
-        if (
-          !object(input) ||
-          Object.keys(input).some((k) => !["cursor", "limit"].includes(k)) ||
-          !/^(0|[1-9][0-9]{0,18})$/.test(cursor) ||
-          BigInt(cursor) > 9223372036854775807n ||
-          !Number.isInteger(limit) ||
-          limit < 1 ||
-          limit > 100
-        )
-          deny();
-        // Retained archive authorization deliberately does not require a live host,
-        // epoch, account or enabled launch flag, including after stop/delete.
-        const member = await tx.query(`select user_id from public.members where org_id=$1 and user_id=$2 for share`, [
-          actor.orgId,
-          actor.userId,
-        ]);
-        if (!member.rows.length) deny();
-        const row =
-          (
-            await tx.query<{ usage: unknown }>(
-              `select usage_turns as usage from public.sandboxes where id=$1 and org_id=$2 and owner_id=$3
-           and provider='docker' for share`,
-              [sandboxId, actor.orgId, actor.userId],
-            )
-          ).rows[0] ?? deny();
-        const rows = (
-          await tx.query<{ sequence: string; event_enc: Uint8Array<ArrayBuffer> }>(
-            `select sequence::text,event_enc from public.runtime_events where sandbox_id=$1 and sequence>$2::bigint
-           order by sequence limit $3`,
-            [sandboxId, cursor, limit + 1],
-          )
-        ).rows;
-        const events: { sequence: string; event: AgentEvent }[] = [];
-        // Saved usage is a service-owned projection, not a guest/native blob.
-        const usage = row.usage;
-        let bytes = Buffer.byteLength(JSON.stringify({ usage, events: [], cursor, hasMore: true }));
-        if (bytes > 1048576) deny();
-        for (const row of rows.slice(0, limit)) {
-          const event = JSON.parse(await decryptSecret(row.event_enc, key)) as AgentEvent;
-          const item = { sequence: row.sequence, event };
-          const size = Buffer.byteLength(JSON.stringify(item)) + 1;
-          if (bytes + size > 1048500) break;
-          events.push(item);
-          bytes += size;
-        }
-        return { events, cursor: events.at(-1)?.sequence ?? cursor, hasMore: rows.length > events.length, usage };
-      });
     },
   };
 }

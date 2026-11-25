@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
-import type { AgentEvent, Sql } from "@armada/core";
+import type { Sql } from "@armada/core";
 import { createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { createQueuedSandboxDispatch } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -15,7 +15,7 @@ import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
-import { queueMailboxCreate } from "./docker-create.fixture.ts";
+import { fixtureMachineId, pollMachineBootstrap, queueMachineCreate } from "./docker-create.fixture.ts";
 import { queueMailboxStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
@@ -25,13 +25,12 @@ const sql: Sql = {
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
 const key = Buffer.alloc(32, 13).toString("base64");
-const service = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+const service = createDockerRuntimeLifecycle(sql, key);
 const hosts = createDockerHostStore(sql, key);
 const reservations = createDockerSandboxService(sql);
 const authority = createRuntimeEnrolments(sql, key);
 const commands = createRuntimeCommands(authority, key);
 const bootstrap = createDockerBootstrapService(sql, key, {
-  enabled: true,
   serverUrl: "https://armada.example",
   architecture: "x64",
   manifest: {
@@ -67,16 +66,26 @@ async function fixture() {
     userId,
     await encryptSecret(`offline-lifecycle-${randomUUID()}`, key),
   ]);
-  const sandbox = await queueMailboxCreate(sql, key, actor, {
-    requestId: randomUUID(),
-    hostId: host.hostId,
-    image: `worker@sha256:${"a".repeat(64)}`,
-    credentialId,
-    credentialVersion: 1,
+  const { sandbox, target, context } = await queueMachineCreate(
+    sql,
+    key,
+    actor,
+    {
+      requestId: randomUUID(),
+      hostId: host.hostId,
+      image: `worker@sha256:${"a".repeat(64)}`,
+      credentialId,
+      credentialVersion: 1,
+    },
+    installationId,
+  );
+  await hosts.complete(host.hostToken, installationId, {
+    requestId: sandbox.generation,
+    outcome: "completed",
+    machineId: fixtureMachineId,
   });
-  await hosts.complete(host.hostToken, installationId, { requestId: sandbox.id, outcome: "completed" });
-  await bootstrap.bootstrap(actor, sandbox.id, randomUUID());
-  const job = await hosts.poll(host.hostToken, installationId);
+  await bootstrap.bootstrapMachine(actor, target, context);
+  const job = await pollMachineBootstrap(hosts, host.hostToken, installationId);
   if (job?.operation !== "bootstrap") throw Error("missing bootstrap");
   await hosts.complete(host.hostToken, installationId, { requestId: job.requestId, outcome: "completed" });
   const enrol = () => authority.enrol(job.bootstrap.enrolmentToken);
@@ -412,7 +421,7 @@ test("one durable conversation survives lost responses and admits only exact ret
       return result;
     },
   };
-  await denied(createDockerRuntimeLifecycle(lostSql, key, { enabled: true }).prompt(f.actor, f.sandbox.id, input));
+  await denied(createDockerRuntimeLifecycle(lostSql, key).prompt(f.actor, f.sandbox.id, input));
   expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" as const };
@@ -646,14 +655,13 @@ test("prompt receipts cannot replace the allocation conversation and invalid rep
   ).toEqual([receipt.conversationId]);
 });
 
-test("new ready/prompt operations fail closed on current account, membership, issuer, host and lifecycle authority", async () => {
-  const db = database();
-  for (const change of ["flag", "admin", "pin", "credential", "owner", "issuer", "rejoin", "host", "stop"] as const) {
+test.each(["admin", "pin", "credential", "owner", "issuer", "rejoin", "host", "stop"] as const)(
+  "new ready/prompt operations fail closed after authority change: %s",
+  async (change) => {
+    const db = database();
     const f = await fixture();
     await ready(f);
-    let actor = f.actor,
-      current = service;
-    if (change === "flag") current = createDockerRuntimeLifecycle(sql, key, { enabled: "true" as never });
+    let actor = f.actor;
     if (change === "admin") actor = f.admin;
     if (change === "pin")
       await db.query(`update public.credentials set value_enc=$2 where id=$1`, [
@@ -675,72 +683,7 @@ test("new ready/prompt operations fail closed on current account, membership, is
     }
     if (change === "host") await hosts.revoke(f.admin, f.hostId);
     if (change === "stop") await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
-    await denied(current.ready(actor, f.sandbox.id, randomUUID()));
-    await denied(current.prompt(actor, f.sandbox.id, { requestId: randomUUID(), text: "Never admitted" }));
-  }
-});
-
-test("journal reads acknowledged encrypted events plus saved usage after stop/delete/host revoke and flag off, but remains owner/member only", async () => {
-  const db = database();
-  const f = await fixture(),
-    session = await ready(f),
-    promptId = randomUUID();
-  const entries: { sequence: number; event: AgentEvent }[] = [
-    {
-      sequence: 1,
-      event: { id: "first", at: 1, kind: "prompt", promptId, text: "archive marker", status: "finished" },
-    },
-    {
-      sequence: 2,
-      event: {
-        id: "usage",
-        at: 2,
-        kind: "other",
-        promptId,
-        type: "armada/turnUsage",
-        data: { model: f.sandbox.model, inputTokens: 50, outputTokens: 8, cachedTokens: 5 },
-      },
-    },
-  ];
-  const response = await createRuntimeEvents(authority, key).route(
-    new Request("https://armada.example/api/runtime/events", {
-      method: "POST",
-      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
-      body: JSON.stringify({ sandboxId: f.sandbox.id, generation: session.epoch, events: entries }),
-    }),
-  );
-  expect(response?.status).toBe(200);
-  expect(await response?.json()).toEqual({ acknowledgedSequence: 2 });
-  const ciphertext = (
-    await db.query<{ event_enc: Uint8Array<ArrayBuffer> }>(
-      `select event_enc from public.runtime_events where sandbox_id=$1 and sequence=1`,
-      [f.sandbox.id],
-    )
-  ).rows[0]?.event_enc;
-  expect(Buffer.from(ciphertext ?? []).includes(Buffer.from("archive marker"))).toBe(false);
-  const disabled = createDockerRuntimeLifecycle(sql, key);
-  const stopId = randomUUID(),
-    deleteId = randomUUID();
-  await queueMailboxStop(sql, key, f.actor, f.sandbox.id, stopId);
-  await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
-  await hosts.enqueueSandbox(f.actor, f.sandbox.id, { operation: "delete", requestId: deleteId });
-  await hosts.complete(f.hostToken, f.installationId, { requestId: deleteId, outcome: "completed" });
-  await hosts.revoke(f.admin, f.hostId);
-  const first = await disabled.journal(f.actor, f.sandbox.id, { limit: 1 });
-  expect(first).toMatchObject({
-    events: [{ sequence: "1", event: entries[0]?.event }],
-    cursor: "1",
-    hasMore: true,
-    usage: { turnCount: 1, turns: [{ promptId, inputTokens: 50, outputTokens: 8, cachedTokens: 5 }] },
-  });
-  expect(await disabled.journal(f.actor, f.sandbox.id, { cursor: first.cursor, limit: 1 })).toMatchObject({
-    events: [{ sequence: "2", event: entries[1]?.event }],
-    cursor: "2",
-    hasMore: false,
-  });
-  for (const input of [{ limit: 101 }, { cursor: "-1" }, { cursor: "9223372036854775808" }])
-    await denied(disabled.journal(f.actor, f.sandbox.id, input));
-  await denied(disabled.journal(f.admin, f.sandbox.id));
-  await db.query(`delete from public.members where org_id=$1 and user_id=$2`, [f.actor.orgId, f.actor.userId]);
-  await denied(disabled.journal(f.actor, f.sandbox.id));
-});
+    await denied(service.ready(actor, f.sandbox.id, randomUUID()));
+    await denied(service.prompt(actor, f.sandbox.id, { requestId: randomUUID(), text: "Never admitted" }));
+  },
+);

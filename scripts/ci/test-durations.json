@@ -227,7 +227,7 @@
     "packages/mcp-server/test/docker-host-store.test.ts": 4.283,
     "packages/mcp-server/test/docker-normal-launch.test.ts": 27.51,
     "packages/mcp-server/test/docker-runtime-lifecycle.test.ts": 5.336,
-    "packages/mcp-server/test/docker-sandbox-controls.test.ts": 5.764,
+    "packages/mcp-server/test/docker-sandbox-controls.test.ts": 5.75,
     "packages/mcp-server/test/exec-selected-org-api.test.ts": 2.969,
     "packages/mcp-server/test/github-account-api.test.ts": 2.497,
     "packages/mcp-server/test/github-legacy.test.ts": 1.932,

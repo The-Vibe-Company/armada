@@ -47,6 +47,8 @@ export type LogsInputContract = Assert<
   Equal<Extract<"conversationId" | "conversation_id", keyof Parameters<Armada["logs"]>[0]>, never>
 >;
 
+export type LogsOutputContract = Assert<Equal<Awaited<ReturnType<Armada["logs"]>>["queuedPrompt"], unknown>>;
+
 export type SendInputContract = Assert<Equal<Extract<"conversationId" | "conversation_id", keyof SendInput>, never>>;
 
 type FullLaunchResult = Exclude<LaunchResult, ModalLaunchReceipt>;

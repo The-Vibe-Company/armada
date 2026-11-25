@@ -83,7 +83,6 @@ const hosts = createDockerHostStore(sql, key);
 const authority = createRuntimeEnrolments(sql, key);
 const credentials = launchCredentials(createSqlVaultStore(sql), key);
 const bootstrapOptions = {
-  enabled: true,
   serverUrl: "https://armada.example",
   architecture: "x64",
   manifest: {
@@ -464,12 +463,11 @@ async function fixture(
     bootstrapService = bootstrap,
   ) {
     const launch = createDockerNormalLaunch(target, key, {
-      enabled,
       get officialImage() {
         return typeof releaseImage === "function" ? releaseImage() : (releaseImage ?? officialSandboxImage());
       },
       credentials: resolver,
-      bootstrap: bootstrapService,
+      ...(enabled ? { bootstrap: bootstrapService } : {}),
       clock,
       timeoutMs,
       github,
@@ -1373,7 +1371,7 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
     expect(await post("sandbox/launch", body)).toEqual(launched);
   } else {
     await f.seedRunningSandbox();
-    const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
+    const runtime = createDockerRuntimeLifecycle(sql, key);
     const prompt = {
       requestId: randomUUID(),
       text: f.body.prompt,
@@ -1436,7 +1434,7 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
   expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
   const busyRequest = randomUUID();
   expect(
-    await createDockerRuntimeLifecycle(sql, key, { enabled: true }).prompt(f.actor, f.body.requestId, {
+    await createDockerRuntimeLifecycle(sql, key).prompt(f.actor, f.body.requestId, {
       requestId: busyRequest,
       text: "Competing prompt",
       conversationId: f.receipt.conversationId,
@@ -2098,7 +2096,7 @@ for (const checkoutExitCode of [0, 1])
       retained.request_id,
       await encryptSecret(JSON.stringify(previous), key),
     ]);
-    const replay = await createDockerRuntimeLifecycle(sql, key, { enabled: true }).prompt(
+    const replay = await createDockerRuntimeLifecycle(sql, key).prompt(
       { userId: f.caller.userId, orgId: body.org },
       body.requestId,
       {

@@ -70,7 +70,7 @@ The checked-in [OpenAPI 3.1 description](../packages/mcp-server/openapi.json) pr
 
 `sandbox/send` publishes the shared send input and a Docker variant that adds the rules from `packages/mcp-server/src/docker-send-request-schema.ts`. The server selects the variant based on the sandbox’s provider. `sandbox/launch` publishes golden and explicit runtime variants, plus Docker host and snapshot variants that require an idempotency key. The HTTP launch receipt contains `sandbox.id`. Template launch returns a receipt with `requestId` or a pre-admission refusal. REST `launch/options` and MCP `launch_options` share the launch catalog response schema from `@armada/core/contract`.
 
-`Armada.logs({ id })` pages sandbox history by ID. The REST and MCP logs operations share an output that includes `queuedPrompt` for a prompt the Docker runtime has yet to admit. Status and wait expose the same condition as `prompt.state: "queued"`. The SDK types request bodies and responses from the operation schemas. In particular, `logs.settled` is optional.
+`Armada.logs({ id })` pages sandbox history by ID. Status and wait report pending prompt admission as `prompt.state: "queued"`. The SDK types request bodies and responses from the operation schemas. In particular, `logs.settled` is optional.
 
 Run `bun scripts/generate-openapi.ts` after contract changes. The generator reads the operation schemas and uses the HTTP field names for launch and logs. The drift test compares the checked-in artifact with the generated document.
 

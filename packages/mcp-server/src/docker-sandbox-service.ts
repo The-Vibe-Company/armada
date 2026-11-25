@@ -34,6 +34,7 @@ type Reservation = {
   reasoningEffort?: string;
   ttlSeconds?: number;
   stopWhenWorkMerged?: boolean;
+  externalRef?: string;
 };
 type Row = {
   id: string;
@@ -99,6 +100,7 @@ function normalize(input: Reservation) {
           "reasoningEffort",
           "ttlSeconds",
           "stopWhenWorkMerged",
+          "externalRef",
         ].includes(key),
     )
   )
@@ -110,6 +112,7 @@ function normalize(input: Reservation) {
     !isDockerImageReference(input.image) ||
     !Number.isSafeInteger(input.credentialVersion) ||
     input.credentialVersion < 1 ||
+    (input.externalRef !== undefined && typeof input.externalRef !== "string") ||
     (input.model !== undefined && typeof input.model !== "string") ||
     (input.reasoningEffort !== undefined && typeof input.reasoningEffort !== "string")
   )
@@ -257,9 +260,9 @@ export function createDockerSandboxService(sql: Sql) {
             await tx.query<Row>(
               `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,visibility,access_owner_id,
            docker_host_id,docker_installation_id,docker_generation,docker_image,model,reasoning_effort,
-           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds,docker_snapshot_id,stop_when_work_merged)
+           credential_id,credential_version,effective_ttl_seconds,expires_at,requested_ttl_seconds,docker_snapshot_id,stop_when_work_merged,external_ref)
            values($1,$2,$3,'docker',$4,$15,'starting','private',$3,$5,$6,$7,$8,$9,$10,$11,$12,$13,
-           now()+$13::integer*interval '1 second',$14,$16,$17) returning *`,
+           now()+$13::integer*interval '1 second',$14,$16,$17,$18) returning *`,
               [
                 request.requestId,
                 actor.orgId,
@@ -278,6 +281,7 @@ export function createDockerSandboxService(sql: Sql) {
                 request.harness,
                 snapshotId ?? null,
                 request.stopWhenWorkMerged ?? true,
+                request.externalRef ?? null,
               ],
             )
           ).rows[0] ?? deny();

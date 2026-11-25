@@ -334,7 +334,6 @@ export async function createServerServices(env: Record<string, string | undefine
   if (dockerManifest) {
     dockerArtifactSet = createRuntimeArtifactSetRoute(dockerManifest);
     dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
-      enabled: true,
       serverUrl: config.publicUrl,
       manifest: dockerManifest,
       architecture: dockerManifest.architecture,
@@ -456,15 +455,14 @@ export async function createServerServices(env: Record<string, string | undefine
           prepareMcp: runtimeMcp.prepare,
           ...(runtimeGitHub ? { prepareSnapshotGitHub: runtimeGitHub.prepareLaunch, github: runtimeGitHub } : {}),
           ...(dockerBootstrap ? { resume: resume.resumeDocker, wakeResume: resume.wake } : {}),
-          sendEnabled: dockerEnabled && Boolean(dockerBootstrap),
+          sendEnabled: dockerEnabled,
         })
       : undefined;
-  const dockerLaunchEnabled = dockerEnabled && Boolean(dockerBootstrap);
+  const dockerLaunchEnabled = dockerEnabled;
   const dockerLaunch =
     env.ARMADA_DOCKER_HOSTS === "1"
       ? createDockerNormalLaunch(sql, config.encryptionKey, {
           mcp: runtimeMcp,
-          enabled: dockerLaunchEnabled,
           ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
           credentials: dockerCredentials,
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),

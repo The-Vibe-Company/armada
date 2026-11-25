@@ -7,7 +7,6 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 for (const selection of ["implicit", "native", "historical"] as const) {
   test(`Docker status bounds latest reads and retains archive lookup: ${selection}`, async () => {
     const id = randomUUID();
-    const publicId = randomUUID();
     const historicalId = randomUUID();
     const nativeId = randomUUID();
     const conversationId = randomUUID();
@@ -64,8 +63,6 @@ for (const selection of ["implicit", "native", "historical"] as const) {
               journal_sequence: "50000",
             },
           ];
-        if (query.includes("from public.docker_queued_prompts"))
-          rows = [{ prompt_id: publicId, native_prompt_id: nativeId, status: "admitted", command_pending: false }];
         if (query.includes("select sequence::text,request_id,epoch::text,result_enc"))
           rows = [{ sequence: "1", epoch: "1", request_id: requestId, result_enc }];
         if (query.includes("select sequence::text,event_enc")) {
@@ -96,7 +93,7 @@ for (const selection of ["implicit", "native", "historical"] as const) {
       });
     expect(pages).toBe(selection === "historical" ? 2 : 0);
     if (selection === "native")
-      expect(result).toMatchObject({ result: { prompt: { promptId: publicId, state: "running" } } });
+      expect(result).toMatchObject({ result: { prompt: { promptId: nativeId, state: "running" } } });
     if (selection !== "implicit") return;
     status = "stopped";
     pages = 0;
