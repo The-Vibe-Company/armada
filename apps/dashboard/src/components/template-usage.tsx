@@ -1,23 +1,38 @@
-import type { ComponentProps } from "react";
+import { type ComponentProps, Suspense } from "react";
 import { IngredientLink } from "@/components/ingredient-link";
 import { PanelSection } from "@/components/state-cell";
-import type { TemplateList } from "@/lib/data/templates";
+import { listSelectedTemplates } from "@/lib/data/templates";
 import type { TemplateDefinition } from "@/lib/templates";
 
+type Props = ComponentProps<"section"> & {
+  uses: (definition: TemplateDefinition) => boolean;
+  empty?: string;
+  note?: string;
+};
+
 /** Caller-visible current revisions, including blocked launches; missing reads never become zero usage. */
-export function TemplateUsage({
-  list,
+export function TemplateUsage(props: Props) {
+  return (
+    <Suspense
+      fallback={
+        <p role="status" className="text-xs text-muted-foreground">
+          Loading template usage…
+        </p>
+      }
+    >
+      <Usage {...props} />
+    </Suspense>
+  );
+}
+
+async function Usage({
   uses,
   title = "Templates",
   empty = "No visible templates use this resource.",
   note,
   ...props
-}: ComponentProps<"section"> & {
-  list: TemplateList;
-  uses: (definition: TemplateDefinition) => boolean;
-  empty?: string;
-  note?: string;
-}) {
+}: Props) {
+  const list = await listSelectedTemplates();
   if (list.state !== "ready")
     return (
       <PanelSection title={title} {...props}>

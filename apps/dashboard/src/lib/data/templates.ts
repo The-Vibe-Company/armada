@@ -1,4 +1,5 @@
 import { isSandboxProvider } from "@armada/core";
+import { cache } from "react";
 import { ControlError, createTemplateControl } from "@/lib/control";
 import { mcpUrl } from "@/lib/env";
 import { createClient } from "@/lib/supabase/server";
@@ -32,7 +33,7 @@ export type TemplateList =
  * choices at a glance. The revisions are read in parallel; one that cannot be read leaves its row without details
  * instead of failing the page.
  */
-export async function listSelectedTemplates(): Promise<TemplateList> {
+export const listSelectedTemplates = cache(async (): Promise<TemplateList> => {
   const [viewer, selected] = await Promise.all([requireViewer(), selectedOrganization()]);
   if (!selected) return { state: "no-org" };
   const control = await viewerTemplates();
@@ -58,7 +59,7 @@ export async function listSelectedTemplates(): Promise<TemplateList> {
       return { state: "unsupported", message: error.message };
     return { state: "error", message: error.message };
   }
-}
+});
 
 /**
  * What templates refer to, as the viewer sees it now: the org's environments, tools and readable variables. A list

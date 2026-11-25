@@ -12,7 +12,6 @@ import { redirect } from "next/navigation";
 import { type ComponentProps, cache, Fragment, Suspense } from "react";
 import { setGoldenVisibility } from "@/app/actions/goldens";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { CatalogBrowser } from "@/components/catalog-browser";
 import { CopyButton } from "@/components/copy-button";
 import { Disclosure } from "@/components/disclosure";
 import { DockerLaunchLimitList } from "@/components/docker-launch-limit-list";
@@ -25,9 +24,9 @@ import { LaunchDialogContent } from "@/components/launch-surface";
 import { Empty } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { RemoveGolden } from "@/components/remove-golden";
-import { type ResourceRow, SelectItem } from "@/components/resource-browser";
+import { ResourceBrowser, type ResourceRow, SelectItem } from "@/components/resource-browser";
 import { SizeDefaults } from "@/components/size-defaults";
-import { PanelSection, RowTag, StateCell } from "@/components/state-cell";
+import { PanelSection, StateCell } from "@/components/state-cell";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -379,7 +378,8 @@ export default async function GoldensPage({ searchParams }: Props) {
         name: "Empty machine",
         search: name,
         meta: "No snapshot needed",
-        state: <p className="text-sm text-muted-foreground">{blocker ?? "No repository, nothing installed by you"}</p>,
+        state: <StateCell tone={blocker ? "warning" : "success"} label={blocker ? "Unavailable" : "Ready"} />,
+        fact: blocker ?? "No repository, nothing installed by you",
         action,
         detail: (
           <div className="space-y-3">
@@ -402,7 +402,15 @@ export default async function GoldensPage({ searchParams }: Props) {
     );
   }
   return (
-    <CatalogBrowser
+    <ResourceBrowser
+      variant="grid"
+      catalogFilters={[
+        { key: "all", label: "All" },
+        { key: "boat", label: "Boat" },
+        { key: "modal", label: "Modal" },
+        ...(rows.some((row) => row.catalog?.group === "docker") ? [{ key: "docker", label: "Docker" }] : []),
+        { key: "attention", label: "Needs attention" },
+      ]}
       title="Snapshots"
       description=""
       label="Snapshots"
@@ -431,19 +439,14 @@ async function readSnapshotConnections(): Promise<LaunchConnections> {
 }
 
 const readSnapshotAccounts = cache(async () => launchAccounts(await listSelectedAccounts(), Date.now()));
-const readSnapshotTemplates = cache(() => listSelectedTemplates());
 const readSnapshotTemplateChoices = cache(async (goldens: GoldenRow[]) => {
   const [list, connections, vault] = await Promise.all([
-    readSnapshotTemplates(),
+    listSelectedTemplates(),
     listSelectedConnections(),
     listSelectedVault(),
   ]);
   return launchTemplates(list, goldens, lookupsFrom(goldens, connections, vault));
 });
-
-async function SnapshotEnvironmentTemplates(props: Omit<ComponentProps<typeof EnvironmentTemplates>, "list">) {
-  return <EnvironmentTemplates {...props} list={await readSnapshotTemplates()} />;
-}
 
 async function EmptyHostLaunchStart(
   props: Omit<Extract<ComponentProps<typeof LaunchStart>, { hostId: string }>, "accounts">,
@@ -668,9 +671,7 @@ function environmentRow(golden: GoldenRow, context: RowContext, now: number): En
           </AlertDescription>
         </Alert>
       ))}
-      <Suspense fallback={<p role="status">Loading templates…</p>}>
-        <SnapshotEnvironmentTemplates goldenId={golden.id} provider={golden.provider} />
-      </Suspense>
+      <EnvironmentTemplates goldenId={golden.id} provider={golden.provider} />
       <PanelSection title="Repositories">
         {repos.length === 0 ? (
           <p className="text-sm text-muted-foreground">No repository recorded in this snapshot.</p>
@@ -784,7 +785,9 @@ function environmentRow(golden: GoldenRow, context: RowContext, now: number): En
     catalog: {
       group: golden.provider,
       attention: state.bucket !== "ready",
-      footer: age ? `Created ${age}` : state.label,
+      footer: [golden.visibility === "private" ? "Only you" : "Organization", age && `created ${age}`]
+        .filter(Boolean)
+        .join(" · "),
     },
     key: golden.id,
     name: golden.name,
@@ -806,30 +809,28 @@ function environmentRow(golden: GoldenRow, context: RowContext, now: number): En
     meta,
     subtitle: meta,
     state: (
-      <div className="space-y-1">
-        <StateCell
-          tone={state.tone}
-          label={state.label}
-          {...(readiness.kind === "ready" ? {} : { "data-launch-paused": readiness.kind })}
-        />
-        <p className="text-xs text-muted-foreground">
+      <StateCell
+        tone={state.tone}
+        label={state.label}
+        {...(readiness.kind === "ready" ? {} : { "data-launch-paused": readiness.kind })}
+      />
+    ),
+    fact: (
+      <>
+        <p>
           {readiness.kind === "ready"
             ? "Ready to launch"
             : state.action === "snapshot"
               ? "Build it once; launches then start from it."
               : state.detail}
         </p>
-      </div>
-    ),
-    fact: (
-      <div className="flex flex-wrap gap-1.5">
-        {repos.map((repo) => (
-          <RowTag key={repo.url}>
-            {repo.slug ?? repo.url}
-            {repo.branch ? `@${repo.branch}` : ""}
-          </RowTag>
-        ))}
-      </div>
+        {repos.length > 0 && (
+          <p className="truncate" title={repos.map((repo) => repo.slug ?? repo.url).join(", ")}>
+            {repos[0]?.slug ?? repos[0]?.url}
+            {repos.length > 1 ? ` +${repos.length - 1} more` : ""}
+          </p>
+        )}
+      </>
     ),
     action,
     detail,
@@ -927,7 +928,7 @@ function dockerSnapshotRow(
     catalog: {
       group: "docker",
       attention: state.bucket !== "ready",
-      footer: snapshot.status === "ready" && age ? `Built ${age}` : detailText,
+      footer: snapshot.visibility === "private" ? "Only you" : "Organization",
     },
     key: snapshot.id,
     name: snapshot.name,
@@ -941,21 +942,17 @@ function dockerSnapshotRow(
     ),
     meta,
     subtitle: meta,
-    state: (
-      <div className="space-y-1">
-        <StateCell tone={state.tone} label={state.label} />
-        {snapshot.status === "failed" && <p className="text-xs text-muted-foreground">{detailText}</p>}
-        {snapshot.baselineWarning && <p className="text-xs text-muted-foreground">Developer baseline outdated</p>}
-        {canRebuild && (
-          <p className="text-xs text-muted-foreground">A newer Armada version is available. Open it to rebuild.</p>
-        )}
-      </div>
-    ),
+    state: <StateCell tone={state.tone} label={state.label} />,
     fact: (
-      <span className="text-xs text-muted-foreground">
-        {repoSummary}
-        {snapshot.status === "ready" && age ? ` · built ${age}` : ""}
-      </span>
+      <>
+        <p>
+          {repoSummary}
+          {snapshot.status === "ready" && age ? ` · built ${age}` : ""}
+        </p>
+        {snapshot.status === "failed" && <p>{detailText}</p>}
+        {snapshot.baselineWarning && <p>Developer baseline outdated</p>}
+        {canRebuild && <p>A newer Armada version is available. Open it to rebuild.</p>}
+      </>
     ),
     action,
     detail: (

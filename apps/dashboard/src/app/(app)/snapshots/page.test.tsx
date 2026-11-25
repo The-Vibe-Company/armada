@@ -99,20 +99,16 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
   }
   /* oxlint-enable landmines-testing/no-test-doubles */
   try {
-    const settledReadsDrained = new Promise<null>((resolve) => setImmediate(() => resolve(null)));
-    const rendering = GoldensPage({ searchParams: Promise.resolve({}) }).then((element) =>
-      renderToReadableStream(
-        <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>,
-      ),
+    const element = await GoldensPage({ searchParams: Promise.resolve({}) });
+    const stream = await renderToReadableStream(
+      <AppRouterContext.Provider value={{} as AppRouterInstance}>{element}</AppRouterContext.Provider>,
     );
-    const stream = await Promise.race([rendering, settledReadsDrained]);
-    if (!stream) throw new Error("Snapshot inventory shell stalled on deferred reads.");
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let html = "";
     while (!html.includes("Docker snapshot")) {
-      const chunk = await Promise.race([reader.read(), settledReadsDrained]);
-      if (!chunk || chunk.done) break;
+      const chunk = await reader.read();
+      if (chunk.done) break;
       html += decoder.decode(chunk.value, { stream: true });
     }
     expect(html).toContain("Cloud snapshot");
@@ -128,4 +124,4 @@ test("cloud and Docker snapshots render while dialog reads are pending", async (
     deferred.resolve();
     mock.restore();
   }
-});
+}, 1000);

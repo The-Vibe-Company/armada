@@ -314,33 +314,3 @@
     }
   }
 }
-
-/* Keep variable names and actions readable at the width available beside the sidebar. */
-[data-variable-table] {
-  container-type: inline-size;
-}
-[data-variable-table] table {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-[data-variable-table] th:last-child {
-  width: 36%;
-}
-[data-variable-table] [data-select-item] span {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-@container (width < 48rem) {
-  /* Kind, scope and date remain available in the item's details. */
-  [data-variable-table] :is(th, td):nth-child(n + 3):nth-child(-n + 5) {
-    display: none;
-  }
-  [data-variable-table] :is(th, td) {
-    padding-inline: 0.5rem;
-    vertical-align: top;
-  }
-  [data-variable-table] th:last-child {
-    width: 45%;
-  }
-}
