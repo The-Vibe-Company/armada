@@ -22,7 +22,7 @@ import {
 import { archivedBoat, runBoatStop } from "../../test/boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "../../test/support.ts";
-import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
+import { admitClaimedAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import { createQueuedSandboxDispatch } from "../control.ts";
@@ -1976,25 +1976,24 @@ test.each([
   await expect(anotherLaunch()).rejects.toThrow(refusal);
 
   const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
-  const setup = await modalFirstTurnLane(f, {
-    async acceptInitialLaunch(...args) {
-      const accepted = await queue.acceptInitialLaunch(...args);
-      const {
-        rows: [turn],
-      } = await f.sql.query<Parameters<typeof admitAccountTurn>[1]>(
-        "select * from account_turn_queue where sandbox_id=$1 and request_id=$2",
-        [id, args[1].request_id],
-      );
-      if (!accepted || !turn || !(await admitAccountTurn(f.sql, turn))) throw Error("First turn was not admitted.");
-      return accepted;
-    },
-  });
+  const setup = await modalFirstTurnLane(f, queue);
   expect(await setup.reconcileOne(signal)).toBe(true);
   await setup.drain();
   expect(
     (await f.db.query("select state from jobs where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN])).rows,
   ).toEqual([{ state: "done" }]);
 
+  if (prompted) {
+    const owner = crypto.randomUUID();
+    const store = createJobsStore(f.sql, launchEncryptionKey);
+    const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+    expect(
+      await admitClaimedAccountTurn(f.sql, {
+        job,
+        canDispatch: async (tx) => (await store.inspect(job, owner, tx)) === "dispatch",
+      }),
+    ).not.toBeNull();
+  }
   if (prompted) await expect(anotherLaunch()).rejects.toThrow(refusal);
   else expect((await anotherLaunch()).sandbox.status).toBe("starting");
 });
@@ -2245,14 +2244,21 @@ test("the Modal launch prompt dispatches its own receipt through the account wor
     },
     runtimeSend,
   });
-  queue.setDispatch(async (...args) => {
-    await expect(runtimeSend(caller, { id, request_id, prompt: "Unrelated prompt" })).rejects.toMatchObject({
-      reason: "modal_launch_prompt_pending",
-    });
-    return dispatch(...args);
-  });
-  expect(await queue.reconcileOne(signal)).toBe(true);
-  await queue.drain();
+  const turns = createJobsRunner(
+    createJobsStore(f.sql, launchEncryptionKey),
+    {
+      turn_dispatch: createTurnDispatchJob(f.sql, launchEncryptionKey, async (...args) => {
+        await expect(runtimeSend(caller, { id, request_id, prompt: "Unrelated prompt" })).rejects.toMatchObject({
+          reason: "modal_launch_prompt_pending",
+        });
+        return dispatch(...args);
+      }),
+    },
+    () => {},
+    () => () => {},
+  );
+  expect(await turns.reconcileOne(signal)).toBe(true);
+  await turns.drain();
   expect(await receipt()).toEqual({ request_id, state: "admitted" });
   expect(await queue.status(caller, id, request_id)).toEqual({ nativePromptId: "initial-prompt" });
 });
@@ -4537,6 +4543,39 @@ test("shared turn admission defers without spending an attempt during model repa
   expect(sent).toEqual([id]);
 });
 
+test("an exhausted dispatch job leaves a live receipt available to its sender", async () => {
+  const f = await turnFixture();
+  const id = await sandbox(f, true);
+  const request = await f.accept(id);
+  await f.db.query("update jobs set attempts=max_attempts where sandbox_id=$1", [id]);
+  const store = {
+    ...f.store,
+    async complete(...args: Parameters<typeof f.store.complete>) {
+      await f.db.query(
+        `update account_turn_queue set state='dispatching', dispatch_generation=queued_generation,
+         dispatch_until=clock_timestamp()+interval '15 minutes' where sandbox_id=$1 and state='queued'`,
+        [id],
+      );
+      return f.store.complete(...args);
+    },
+  };
+  const runner = f.runnerFor(async () => {
+    throw new Error("The shared runner must not dispatch an exhausted job.");
+  }, store);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(
+    (
+      await f.db.query(
+        `select j.state as job, q.state as receipt, j.attempts=j.max_attempts as exhausted,
+              j.run_after=q.dispatch_until as deferred
+       from jobs j join account_turn_queue q using(sandbox_id) where q.request_id=$1`,
+        [request],
+      )
+    ).rows,
+  ).toEqual([{ job: "queued", receipt: "dispatching", exhausted: true, deferred: true }]);
+});
+
 test.each(["deadline", "attempts"] as const)(
   "the turn handler settles receipts after exhausting %s",
   async (budget) => {
@@ -4793,52 +4832,6 @@ test("a generation change before turn admission retargets the job without chargi
   await runner.drain();
   expect(sent).toEqual([id]);
   expect(await f.queue.status(f.caller, id, request)).toEqual({ nativePromptId: request });
-});
-
-test("the legacy dispatch sweep settles only queued jobs whose matching receipt is no longer live", async () => {
-  const f = await fixture();
-  const sandboxId = await sandbox(f);
-  const enqueue = async (receipt: "queued" | "dispatching" | "failed" | "missing", leased = false) => {
-    const requestId = crypto.randomUUID();
-    if (receipt !== "missing") {
-      await seedTurn(f, sandboxId, requestId);
-      await f.db.query("update account_turn_queue set state=$1 where request_id=$2", [receipt, requestId]);
-    }
-    const id = await f.store.enqueue(
-      "turn_dispatch",
-      sandboxId,
-      2,
-      requestId,
-      { requestId },
-      {
-        orgId: f.people.org,
-        maxAttempts: 2,
-      },
-    );
-    if (leased) {
-      await f.db.query("update jobs set state='leased', lease_owner=$2, lease_until='infinity' where id=$1", [
-        id,
-        crypto.randomUUID(),
-      ]);
-    }
-    return id;
-  };
-  const queued = await enqueue("queued");
-  const dispatching = await enqueue("dispatching");
-  const failed = await enqueue("failed");
-  const missing = await enqueue("missing");
-  const leased = await enqueue("missing", true);
-  await f.db.query("update jobs set generation=3 where id=$1", [dispatching]);
-
-  await f.store.settleTurnDispatchMirrors();
-  const { rows } = await f.db.query<{ id: string; state: string }>("select id,state from jobs");
-  expect(Object.fromEntries(rows.map(({ id, state }) => [id, state]))).toEqual({
-    [queued]: "queued",
-    [dispatching]: "queued",
-    [failed]: "done",
-    [missing]: "done",
-    [leased]: "leased",
-  });
 });
 
 test.each([

@@ -437,7 +437,6 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
         await f.sql.query("update public.jobs set deadline_at=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
         expect(await take()).toBe("fail");
         expect(await receipt).toMatchObject({ error: { code: "conflict" } });
-        await turns.drain();
         expect((await jobs.claim("stop", owner, 30, 8))?.generation).toBe(String(firstGeneration + 1));
         expect(f.starts).toEqual([undefined]);
         return;
@@ -477,7 +476,6 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
       await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       expect(await take()).toBe("done");
       expect(f.starts).toEqual([undefined]);
-      await turns.drain();
       f.lose();
       await runTurn();
       await f.sql.query(

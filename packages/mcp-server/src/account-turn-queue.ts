@@ -10,22 +10,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import {
-  admitAccountTurn,
-  DISPATCHING_TURN_CANCELLED,
-  type DispatchTurn,
-  dispatchAccountTurn,
-  IDLE_STOP_PENDING,
-  LAUNCH_PENDING,
-  NATIVE_DISPATCH_UNCERTAIN,
-  QUEUED_DISPATCH_EVIDENCE,
-  QUEUED_TURN_CANCELLED,
-  TURN_FIFO_ELIGIBLE,
-  TURN_LIFECYCLE_WAITING,
-  TURN_RECOVERY_ELIGIBLE,
-  UNCERTAIN_DISPATCH_MESSAGE,
-  UNSETTLED_TASK,
-} from "./account-turn-dispatch.ts";
+import { IDLE_STOP_PENDING, LAUNCH_PENDING, TURN_LIFECYCLE_WAITING, UNSETTLED_TASK } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import { assertModalLaunchSetup } from "./jobs/modal-launch-setup.ts";
@@ -60,7 +45,6 @@ type Entry = {
   conversation_id: string;
 };
 type DispatchJobEntry = Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">;
-const DISPATCH_JOB_BACKFILL_BATCH = 20;
 
 function normalizedTurnInput(input: RuntimeFollowupInput & { request_id: string }) {
   return {
@@ -84,11 +68,7 @@ export function accountTurnInputDigest(input: RuntimeFollowupInput & { request_i
  * An uncertain dispatch retains its slot until lifecycle evidence or an owner stop resolves it. */
 export function createAccountTurnQueue(sql: Sql, key: string) {
   const jobs = createJobsStore(sql, key);
-  const pending = new Set<Promise<unknown>>();
-  let scanAfter = "0";
-  let backfillRange: { after: string; through: string | null } = { after: "0", through: null };
-  let dispatch: DispatchTurn | undefined;
-  function enqueueDispatchJob(entry: DispatchJobEntry, tx?: Sql) {
+  function enqueueDispatchJob(entry: DispatchJobEntry, tx: Sql) {
     return jobs.enqueue(
       "turn_dispatch",
       entry.sandbox_id,
@@ -99,35 +79,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       tx,
     );
   }
-  async function backfillDispatchJobs(signal: AbortSignal) {
-    // WARNING: Match the producer's compact key with queued_generation, since the job generation can advance.
-    const { rows } = await sql.query<DispatchJobEntry & { sequence: string; through: string; missing_job: boolean }>(
-      `with sweep as (
-         select coalesce($3::bigint,(select max(sequence) from public.account_turn_queue)) as through
-       )
-       select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text,q.sequence::text,sweep.through::text,
-       case when q.state in ('queued','dispatching') then not exists (
-         select 1 from public.jobs j where j.idem_key =
-           format('["internal","%s","turn_dispatch","%s",%s,"%s"]',q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
-       ) else false end as missing_job
-       from sweep cross join lateral (
-         select sandbox_id,request_id,org_id,queued_generation,sequence,state
-         from public.account_turn_queue where sequence>$1::bigint and sequence<=sweep.through
-         order by sequence limit $2
-       ) q order by q.sequence`,
-      [backfillRange.after, DISPATCH_JOB_BACKFILL_BATCH, backfillRange.through],
-    );
-    const last = rows.at(-1);
-    backfillRange =
-      last && rows.length === DISPATCH_JOB_BACKFILL_BATCH && last.sequence !== last.through
-        ? { after: last.sequence, through: last.through }
-        : { after: "0", through: null };
-    for (const entry of rows) {
-      if (signal.aborted) return;
-      if (entry.missing_job) await enqueueDispatchJob(entry);
-    }
-  }
-
   async function waitingMessage(accountId: string, sandboxId: string, requestId: string) {
     const row = (
       await sql.query<{
@@ -519,59 +470,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               ? "Prompt dispatch is pending; inspect status before sending another request."
               : await waitingMessage(row.account_id, row.sandbox_id, row.request_id),
       };
-    },
-    setDispatch(value: NonNullable<typeof dispatch>) {
-      dispatch = value;
-    },
-    backfillDispatchJobs,
-    async drain() {
-      await Promise.allSettled([...pending]);
-    },
-    async reconcileOne(signal: AbortSignal) {
-      if (!dispatch || pending.size >= 32 || signal.aborted) return false;
-      if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
-      const picked = await (async () => {
-        // Older replicas could leave a queued receipt after publishing its request.
-        // Never replay it (especially on native providers without idempotency).
-        await sql.query(`update public.account_turn_queue q set state='failed',
-          failure_reason='Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
-          from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
-          and ${QUEUED_DISPATCH_EVIDENCE}`);
-        await sql.query(`update public.account_turn_queue q set state='failed',
-          failure_reason='Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.'
-          from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
-          and ${QUEUED_TURN_CANCELLED}`);
-        await sql.query(`update public.account_turn_queue q set state='failed',failure_reason='Dispatch cancelled by confirmed stop.'
-          from public.sandboxes s where q.sandbox_id=s.id and q.state='dispatching'
-          and ${DISPATCHING_TURN_CANCELLED}`);
-        // Native admission advances the generation before calling the provider. An expired
-        // changed-generation claim is uncertain, never safe to replay or leave dispatching.
-        await sql.query(`update public.account_turn_queue q set state='failed',dispatch_until=null,
-          failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}'
-          from public.sandboxes s where s.id=q.sandbox_id and q.state='dispatching'
-          and q.dispatch_until<=now() and ${NATIVE_DISPATCH_UNCERTAIN}`);
-        const candidates = (
-          await sql.query<Entry>(
-            `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
-             where (q.state='queued' or (q.state='dispatching' and ${TURN_RECOVERY_ELIGIBLE}))
-           and (q.state<>'queued' or not ${TURN_LIFECYCLE_WAITING})
-           and ${TURN_FIFO_ELIGIBLE}
-           order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
-            [scanAfter],
-          )
-        ).rows;
-        for (const candidate of candidates) {
-          scanAfter = String(candidate.sequence);
-          const admitted = await admitAccountTurn(sql, candidate);
-          if (admitted) return admitted;
-        }
-        return null;
-      })();
-      if (!picked) return false;
-      const work = dispatchAccountTurn(sql, key, picked.entry, picked.caller, dispatch);
-      pending.add(work);
-      void work.finally(() => pending.delete(work));
-      return true;
     },
   };
 }

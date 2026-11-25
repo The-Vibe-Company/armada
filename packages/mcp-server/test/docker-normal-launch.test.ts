@@ -34,6 +34,7 @@ import {
 import { dockerLaunchBody } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import { httpApi } from "../../docker-host/src/host.ts";
 import { Armada, ArmadaError, type SendInput } from "../../sdk/src/index.ts";
+import { createTurnDispatchJob } from "../src/account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
@@ -56,6 +57,7 @@ import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { createLaunchJob } from "../src/jobs/launch.ts";
 import { createResumeJob } from "../src/jobs/resume.ts";
+import { createJobsRunner } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -1137,7 +1139,9 @@ test("Docker sends through the production-wired account queue key a legacy body,
   const accountTurns = createAccountTurnQueue(sql, key);
   const dockerControls = createDockerSandboxControls(sql, key, { clock: f.clock, sendEnabled: true });
   const { options, bearer, post } = restControl(f, { dockerControls, accountTurns });
-  accountTurns.setDispatch(createQueuedSandboxDispatch(options));
+  const runner = createJobsRunner(createJobsStore(sql, key), {
+    turn_dispatch: createTurnDispatchJob(sql, key, createQueuedSandboxDispatch(options)),
+  });
   const sdk = new Armada({
     token: bearer,
     url: "https://armada.example",
@@ -1171,7 +1175,10 @@ test("Docker sends through the production-wired account queue key a legacy body,
   expect(await post("sandbox/send", legacy)).toMatchObject({ requestId: expect.any(String), status: "queued" });
   const generated = await rows();
   expect(generated).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
-  expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(false);
+  const dispatchedWhileBusy = f.native.length;
+  expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+  await runner.drain();
+  expect(f.native).toHaveLength(dispatchedWhileBusy);
   const keyed: SendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
   const receipt = await sdk.send(keyed);
   expect(receipt).toMatchObject({ requestId: keyed.request_id, status: "queued" });
@@ -1184,8 +1191,12 @@ test("Docker sends through the production-wired account queue key a legacy body,
     "insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) select id,task_prompt_id,true from public.sandboxes where id=$1",
     [ref.id],
   );
-  expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
-  await accountTurns.drain();
+  await sql.query(
+    "update jobs set run_after='-infinity' where sandbox_id=$1 and kind='turn_dispatch' and idem_key::jsonb->>5=$2",
+    [ref.id, generated[0]],
+  );
+  expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+  await runner.drain();
   // The oldest queued row, the legacy send, dispatches under its server-generated key.
   expect(f.native.slice(dispatched)).toEqual([
     expect.objectContaining({
@@ -1219,8 +1230,15 @@ test.each(["rejects", "returns"] as const)(
         },
       });
       const { options } = restControl(f, { accountTurns, dockerControls });
-      accountTurns.setDispatch(createQueuedSandboxDispatch(options));
-      return { accountTurns, entered, release };
+      const runner = createJobsRunner(
+        createJobsStore(sql, key),
+        {
+          turn_dispatch: createTurnDispatchJob(sql, key, createQueuedSandboxDispatch(options)),
+        },
+        undefined,
+        () => () => {},
+      );
+      return { accountTurns, runner, entered, release };
     };
     const a = makeWorker();
     const b = makeWorker();
@@ -1228,19 +1246,23 @@ test.each(["rejects", "returns"] as const)(
     const requestId = randomUUID();
     const signal = new AbortController().signal;
     await a.accountTurns.accept(f.caller, { id, request_id: requestId, prompt: "Follow up" });
-    expect(await a.accountTurns.reconcileOne(signal)).toBe(true);
+    expect(await a.runner.reconcileOne(signal)).toBe(true);
     await a.entered.promise;
     await sql.query(
       `update public.account_turn_queue set dispatch_until=clock_timestamp()-interval '1 second'
      where sandbox_id=$1 and request_id=$2`,
       [id, requestId],
     );
-    expect(await b.accountTurns.reconcileOne(signal)).toBe(true);
+    await sql.query(
+      "update jobs set lease_until='-infinity' where sandbox_id=$1 and kind='turn_dispatch' and state='leased'",
+      [id],
+    );
+    expect(await b.runner.reconcileOne(signal)).toBe(true);
     await b.entered.promise;
     try {
       if (outcome === "rejects") a.release.reject(new Error("Preparation failed after this worker lost the receipt"));
       else a.release.resolve();
-      await a.accountTurns.drain();
+      await a.runner.drain();
       const { rows } = await sql.query(
         "select state from public.account_turn_queue where sandbox_id=$1 and request_id=$2",
         [id, requestId],
@@ -1248,7 +1270,7 @@ test.each(["rejects", "returns"] as const)(
       expect(rows).toEqual([{ state: "dispatching" }]);
     } finally {
       b.release.resolve();
-      await b.accountTurns.drain();
+      await b.runner.drain();
     }
     expect(
       (

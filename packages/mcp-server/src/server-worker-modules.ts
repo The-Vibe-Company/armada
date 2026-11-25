@@ -1,3 +1,5 @@
+import { createTurnDispatchJob } from "./account-turn-dispatch.ts";
+import { createQueuedSandboxDispatch } from "./control.ts";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { createGoldenBuildJob } from "./golden-worker.ts";
@@ -107,6 +109,7 @@ const jobsLane: LaneFactory = ({
               runtimeGitHub,
               control.sandboxArmadaAccess?.restoreEnrolled,
             ),
+            turn_dispatch: createTurnDispatchJob(sql, config.encryptionKey, createQueuedSandboxDispatch(control)),
           }
         : {}),
       golden_build: createGoldenBuildJob(goldenBuilds),
@@ -139,14 +142,6 @@ const jobsLane: LaneFactory = ({
         await outputs.enqueueCaptures(jobs, signal);
       } catch {
         (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
-      }
-      if (config.encryptionKey && !signal.aborted) {
-        try {
-          await accountTurns.backfillDispatchJobs(signal);
-          if (!signal.aborted) await jobs.settleTurnDispatchMirrors();
-        } catch {
-          (options.logError ?? console.error)("armada: queued turn job backfill unavailable.");
-        }
       }
       return runner.reconcileOne(signal);
     },
@@ -205,7 +200,6 @@ export const dockerModule: ServerModule = ({ mounts, workers }) => {
 };
 export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   mounts.push(runtimeMounts);
-  workers.managed.set("account-turns", ({ accountTurns }) => accountTurns);
   workers.managed.set("runtime-idle", idleLane);
   shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
 };

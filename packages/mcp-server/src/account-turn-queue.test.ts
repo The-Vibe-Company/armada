@@ -538,109 +538,6 @@ test("dispatch job insertion failure rolls back the queued prompt", async () => 
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });
 
-test("backfill seeds missing nonterminal dispatch jobs using their original generation", async () => {
-  const callerRequest = requests[0]!;
-  const legacy = ids[0]!;
-  const existing = ids[1]!;
-  const terminal = ids[2]!;
-  const dispatchingRequest = requests[1]!;
-  for (const [id, request_id] of [
-    [legacy, callerRequest],
-    [legacy, dispatchingRequest],
-    [existing, callerRequest],
-    [terminal, callerRequest],
-  ])
-    await queue.accept(caller, { id: id!, request_id, prompt: "next instruction" });
-  await database().query("delete from public.jobs where sandbox_id <> $1", [existing]);
-  await database().query("update public.account_turn_queue set state='failed' where sandbox_id=$1", [terminal]);
-  await database().query(
-    "update public.account_turn_queue set state='dispatching',dispatch_generation=2,dispatch_until='infinity' where sandbox_id=$1 and request_id=$2",
-    [legacy, dispatchingRequest],
-  );
-  await database().query("update public.sandboxes set lifecycle_generation=2 where id=$1", [legacy]);
-
-  const readJobs = () =>
-    database().query<{ id: string; sandbox_id: string; generation: string; payload_enc: Uint8Array<ArrayBuffer> }>(
-      "select id,sandbox_id,generation::text,payload_enc from public.jobs order by id",
-    );
-  const [existingJob] = (await readJobs()).rows;
-  const signal = new AbortController().signal;
-  await queue.backfillDispatchJobs(signal);
-  const { rows } = await readJobs();
-  await queue.backfillDispatchJobs(signal);
-  expect((await readJobs()).rows).toEqual(rows);
-  expect(rows.find((job) => job.sandbox_id === existing)).toEqual(existingJob);
-  expect(rows).toHaveLength(3);
-  const recovered = await Promise.all(
-    rows
-      .filter((job) => job.sandbox_id === legacy)
-      .map(async (job) => ({
-        generation: job.generation,
-        payload: JSON.parse(await decryptSecret(job.payload_enc, btoa("x".repeat(32)))),
-      })),
-  );
-  expect(recovered).toEqual(
-    expect.arrayContaining([
-      { generation: "1", payload: { requestId: callerRequest } },
-      { generation: "1", payload: { requestId: dispatchingRequest } },
-    ]),
-  );
-});
-
-test("backfill advances past a page of terminal history to reach a waiting request", async () => {
-  const history = { id: ids[0]!, request_id: requests[0]!, prompt: "earlier instruction" };
-  await queue.accept(caller, history);
-  await database().query(
-    `insert into public.account_turn_queue
-       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
-     select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
-     from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1`,
-    [history.id],
-  );
-  await database().query("update public.account_turn_queue set state='failed' where sandbox_id=$1", [history.id]);
-  const waiting = { id: ids[1]!, request_id: requests[1]!, prompt: "next instruction" };
-  await queue.accept(caller, waiting);
-  await database().query("delete from public.jobs where sandbox_id=$1", [waiting.id]);
-  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
-  const signal = new AbortController().signal;
-  const jobsForWaiting = async () =>
-    (await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows;
-
-  await worker.backfillDispatchJobs(signal);
-  expect(await jobsForWaiting()).toHaveLength(0);
-  await worker.backfillDispatchJobs(signal);
-  expect(await jobsForWaiting()).toHaveLength(1);
-});
-
-test("a backfill sweep wraps to retry a failed insert while newer rows are arriving", async () => {
-  const waiting = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
-  await queue.accept(caller, waiting);
-  const addHistory = () =>
-    database().query(
-      `insert into public.account_turn_queue
-         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
-       select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
-       from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1 and request_id=$2`,
-      [waiting.id, waiting.request_id],
-    );
-  await addHistory();
-  await database().exec("delete from public.jobs");
-  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
-  const signal = new AbortController().signal;
-  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
-  try {
-    await expect(worker.backfillDispatchJobs(signal)).rejects.toThrow("reject_dispatch");
-  } finally {
-    await database().exec("alter table public.jobs drop constraint reject_dispatch");
-  }
-
-  for (let pass = 0; pass < 2; pass++) {
-    await addHistory();
-    await worker.backfillDispatchJobs(signal);
-  }
-  expect((await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows).toHaveLength(1);
-});
-
 test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails the queued prompt", async (provider) => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake rejected" };
   await database().query(
@@ -1239,6 +1136,33 @@ test("a native request with its own durable mutating command stays uncertain rat
   ]);
 });
 
+test("cutover waits for a live native dispatch window before settling uncertainty", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "already dispatching" };
+  await sql.query("update sandboxes set provider='boat' where id=$1", [input.id]);
+  await queue.accept(caller, input);
+  // A draining replica has advanced the sandbox generation without holding a jobs lease.
+  await sql.query(
+    `update account_turn_queue set state='dispatching', dispatch_generation=queued_generation,
+       dispatch_until=now()+interval '1 day' where sandbox_id=$1`,
+    [input.id],
+  );
+  await sql.query("update sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
+  const sent: unknown[] = [];
+  const run = sharedDispatcher(async (_caller, request) => {
+    sent.push(request);
+  });
+  await run();
+  expect((await sql.query("select state, attempts from jobs")).rows).toEqual([{ state: "queued", attempts: 0 }]);
+  await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
+  await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [input.id]);
+  await run();
+  expect(sent).toEqual([]);
+  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
+    failed: true,
+    message: "Dispatch outcome uncertain; inspect sandbox history before resending.",
+  });
+});
+
 test("a restarted Docker runner waits for the claim lease before recovering a dispatch without intent", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover a claimed instruction" };
   await database().query("update sandboxes set provider='docker' where id=$1", [input.id]);
@@ -1614,7 +1538,6 @@ test("terminal admission creates neither queue entries nor reservations", async 
   expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(0);
 });
 
-// Runtime evidence is not permission to wake a sandbox after its owner stopped it.
 test.each(["boat", "docker"])("%s stopped runtime receipts are refused instead of resumed", async (provider) => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "old instruction" };
   await database().query(
