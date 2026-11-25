@@ -694,11 +694,13 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           `select public.complete_job($1,$2,$3,$4,$5,
              case when $5 = 'failed' and evidence ? 'docker_actor_epoch'
                   then evidence || jsonb_build_object('reason', $8::text)
-                  when $5 = 'failed' and kind = 'stop' then jsonb_build_object('reason', $8::text)
+                  when $5 = 'failed' and kind = 'stop' then
+                    (case when boat_stop then coalesce(evidence, '{}'::jsonb) else '{}'::jsonb end)
+                       || jsonb_build_object('reason', $8::text)
                   when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
            from (
-             select kind, case when kind = 'launch' and $6::jsonb is not null
+             select kind, payload_enc is null as boat_stop, case when kind = 'launch' and $6::jsonb is not null
                          then jsonb_build_object('result', $6::jsonb) ||
                            case when outcome->'modal_machine' is null then '{}'::jsonb
                                 else jsonb_build_object('modal_machine', outcome->'modal_machine') end ||

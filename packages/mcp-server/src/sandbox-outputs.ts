@@ -380,12 +380,13 @@ export async function enqueueStopOutput(
   sandboxId: string,
   orgId: string,
   sourceGeneration: string | number,
+  includeHeld = false,
 ) {
   const source = (
     await tx.query<{ id: string }>(
       `select id from public.jobs where sandbox_id=$1 and generation=$2 and kind='stop' and outcome ? 'output'
-      and state in ('queued','leased','done') order by created_at desc,id desc limit 1`,
-      [sandboxId, sourceGeneration],
+      and (state in ('queued','leased','done') or ($3 and state='failed')) order by created_at desc,id desc limit 1`,
+      [sandboxId, sourceGeneration, includeHeld],
     )
   ).rows[0];
   if (source)

@@ -34,12 +34,12 @@ or permission bypass. Do not execute it as part of a PR or an audit.
    snapshots are enabled. If any of this evidence is unknown, leave the hold.
 4. In a transaction lock the original row and compare the recorded lifecycle
    generation, stop generation, provider binding, exact machine ID and pending stop
-   request. Require status still stopping and no live activity/reconciliation lease.
+   request. Require status still stopping or failed with a pending stop and no live operation lease.
    If anything changed, abort and investigate; never publish an old observation over
    a resumed generation. Only with confirmed evidence set status stopped
    (for Boat, definitive absence never authorizes this transition),
    stopped_at to the evidence time, stop_requested_at null, lifecycle_error null,
-   and clear reconciliation leases. Do not delete retained identity or data.
+   and clear reconciliation leases. Keep a failed row’s diagnostic and status when recording exit. Do not delete retained identity or data.
 
 For Modal, if original normal authority is legitimately available again, the operator may
 instead requeue the same fenced row by setting reconcile_after to now and clearing

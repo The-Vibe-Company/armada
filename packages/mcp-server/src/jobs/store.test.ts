@@ -18,6 +18,7 @@ import {
   prepareFilesystemSnapshot,
   scopeKey,
 } from "@armada/provider-modal";
+import { archivedBoat, runBoatStop } from "../../test/boat-stop.fixture.ts";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "../../test/support.ts";
 import { admitAccountTurn, createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
@@ -46,6 +47,7 @@ import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
 import { extendSandbox } from "../sandbox-extend.ts";
 import { createSandboxLifecycle, enqueueBoatStop, requestBoatLaunchFailure } from "../sandbox-lifecycle.ts";
+import { createSandboxOutputs } from "../sandbox-outputs.ts";
 import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
@@ -5785,9 +5787,12 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
           },
         },
         outputs: {
-          async readOutputs() {
+          async listOutputEntries() {
             captures++;
-            return [{ name: "late.txt", bytes: new TextEncoder().encode("late output") }];
+            return [{ name: "late.txt", size: 11, revision: "1:2:3:4" }];
+          },
+          async readOutputChunk() {
+            return new TextEncoder().encode("late output");
           },
         },
       };
@@ -5824,5 +5829,48 @@ test("Boat stop takes over a staged capture and settles the resumed VM generatio
   expect((await f.db.query("select kind from jobs where sandbox_id=$1 and kind='outputs_capture'", [id])).rows).toEqual(
     [{ kind: "outputs_capture" }],
   );
+  const output = (await f.store.claim("outputs_capture", nextOwner, 30, 1))!;
+  const publication = await createSandboxOutputs(f.sql, key, async () => ({})).captureJob.run(output, {
+    signal: crash.signal,
+    canDispatch: async () => true,
+  });
+  expect(await f.store.complete(output, nextOwner, publication)).toBe(true);
+  expect((await f.db.query("select name from sandbox_outputs where sandbox_id=$1", [id])).rows).toEqual([
+    { name: "late.txt" },
+  ]);
   expect(stops).toBe(2);
+});
+
+test("a failed Boat VM observed absent under its pinned account releases capacity", async () => {
+  const f = await fixture();
+  const id = await sandbox(f, true);
+  await f.db.query("update sandboxes set status='failed',stop_requested_at=now() where id=$1", [id]);
+  const launch = await f.store.enqueue("launch", id, 1, "fixture", null, {
+    orgId: f.people.org,
+    maxAttempts: 1,
+    deadline: new Date(Date.now() + 60_000),
+    request: { ownerId: f.people.owner, digest: "fixture" },
+  });
+  await f.db.query("update jobs set state='done',outcome=$2::jsonb where id=$1", [
+    launch,
+    JSON.stringify({
+      boat_authority: { backendId: "account", scope: "org" },
+      modal_machine: { entry: { machineId: id } },
+    }),
+  ]);
+  await f.db.query("insert into account_agent_reservations(sandbox_id,account_id) values($1,$2)", [
+    id,
+    f.openaiCredentialId,
+  ]);
+  await f.sql.transaction!((tx) => enqueueBoatStop(tx, id, 2));
+  expect(
+    await runBoatStop(f.sql, {
+      ...archivedBoat(false),
+      observe: async () => ({ kind: "absent", receipt: { operation: "delete" } }),
+    }),
+  ).toBe("done");
+  expect(
+    (await f.db.query("select stopped_at is not null as confirmed from sandboxes where id=$1", [id])).rows,
+  ).toEqual([{ confirmed: true }]);
+  expect((await f.db.query("select 1 from account_agent_reservations where sandbox_id=$1", [id])).rows).toEqual([]);
 });

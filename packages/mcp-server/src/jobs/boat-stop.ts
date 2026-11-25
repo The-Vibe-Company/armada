@@ -54,8 +54,15 @@ function boatStopMachine(sql: Sql, key: string, deploymentId: string) {
       machineId,
       ...(launchGeneration === null ? { orgId, ownerId } : { launchGeneration }),
     };
+    let exitTime: Date | undefined;
     const machine = createBoatMachine(
-      { ...options, stopBinding },
+      {
+        ...options,
+        stopBinding,
+        onStopped: (value) => {
+          exitTime = value;
+        },
+      },
       host,
       async () => null,
       async () => {
@@ -64,7 +71,7 @@ function boatStopMachine(sql: Sql, key: string, deploymentId: string) {
         await authorize();
       },
     );
-    return { machine, outputs: host };
+    return { machine, outputs: host, stoppedAt: () => exitTime };
   };
 }
 
@@ -79,6 +86,7 @@ export function createBoatStop(
   ) => Promise<{
     machine: Pick<Machine, "observe" | "stop">;
     outputs: OutputReader;
+    stoppedAt?: () => Date | undefined;
   }> = boatStopMachine(sql, key, deploymentId),
 ) {
   const jobs = createJobsStore(sql, key);
@@ -113,7 +121,7 @@ export function createBoatStop(
     const identity = { sandboxId, generation, machineId };
     const { deadline } = target;
     const budget = deadline - now();
-    const signal = budget > 0 ? AbortSignal.any([context.signal, AbortSignal.timeout(budget)]) : context.signal;
+    const signal = AbortSignal.any([context.signal, AbortSignal.timeout(budget > 0 ? budget : 10_000)]);
     const authorize = async () => {
       signal.throwIfAborted();
       if (!(await context.canDispatch())) throw Error("Boat stop ownership or deadline changed.");
@@ -126,29 +134,39 @@ export function createBoatStop(
       if (!rows.length || !(await context.canDispatch())) throw Error("Boat stop authority changed.");
       signal.throwIfAborted();
     };
+    let archiveObserved = false;
     const hold = () =>
       ({
         status: "fail",
         reason: "boat_stop_unconfirmed",
-        commit: (tx) => holdUnconfirmedBoatStop(tx, sandboxId, generation),
+        async commit(tx) {
+          await holdUnconfirmedBoatStop(tx, sandboxId, generation);
+          if (archiveObserved) await enqueueStopOutput(tx, jobs, sandboxId, target.orgId, generation, true);
+        },
       }) satisfies JobResult;
     const retry = async () =>
       (await context.canDispatch()) ? ({ status: "retry", after: new Date(now() + 2_000) } as const) : hold();
     try {
-      const { machine, outputs } = await resolve(target, authorize);
+      const { machine, outputs, stoppedAt } = await resolve(target, authorize);
       signal.throwIfAborted();
       const observed = await machine.observe({ ...identity, signal });
-      if (observed.kind === "unknown" || observed.receipt?.operation === "delete") return retry();
+      const absent = observed.receipt?.operation === "delete";
+      archiveObserved = observed.kind === "absent" && !absent;
+      if (observed.kind === "unknown" || (absent && (target.retain || !target.backendId))) return retry();
       if (observed.kind === "present" && observed.phase === "running" && (await context.canDispatch()))
         await stageStopOutputs(sql, key, job, context, outputs, Math.min(12_000, deadline - 30_000 - now()));
       signal.throwIfAborted();
-      await machine.stop({ ...identity, retain: target.retain, signal });
+      if (!absent) {
+        await machine.stop({ ...identity, retain: target.retain, signal });
+        archiveObserved = true;
+      }
       context.signal.throwIfAborted();
+      const exitTime = stoppedAt?.() ?? new Date(now());
       const note = target.retain ? await runtimePreservationNote(sql, sandboxId) : null;
       return {
         status: "done",
         async commit(tx) {
-          await settleBoatStop(tx, sandboxId, generation, note, new Date(now()));
+          await settleBoatStop(tx, sandboxId, generation, note, exitTime);
           await enqueueStopOutput(tx, jobs, sandboxId, target.orgId, generation);
         },
       };

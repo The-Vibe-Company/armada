@@ -12,7 +12,11 @@ type StopBinding = MachineIdentity &
   ({ readonly launchGeneration: number } | { readonly orgId: string; readonly ownerId: string });
 
 export function createBoatMachine(
-  options: BoatProviderOptions & { deploymentId: string; stopBinding?: StopBinding },
+  options: BoatProviderOptions & {
+    deploymentId: string;
+    stopBinding?: StopBinding;
+    onStopped?: (stoppedAt: Date | undefined) => void;
+  },
   host: Provider,
   resolveTicket: (request: Bootstrap, expiresAt: number) => Promise<Ticket | null>,
   authorize: () => Promise<void>,
@@ -132,13 +136,14 @@ export function createBoatMachine(
     tags: Record<string, string | undefined> = labels(request),
   ) {
     const sandbox = await exact(request, request.signal, tags);
-    if (!stopped(sandbox)) {
-      if (!sandbox.stop || sandbox.stop.status === "superseded")
-        await mutate(request.signal, () =>
-          api.stop({ sandboxId: request.machineId }, { signal: request.signal ?? null }),
-        );
-      if (!stopped(await exact(request, request.signal, tags))) throw invalidRequest("Boat stop is not confirmed.");
-    }
+    if (stopped(sandbox)) return sandbox;
+    if (!sandbox.stop || sandbox.stop.status === "superseded")
+      await mutate(request.signal, () =>
+        api.stop({ sandboxId: request.machineId }, { signal: request.signal ?? null }),
+      );
+    const archived = await exact(request, request.signal, tags);
+    if (!stopped(archived)) throw invalidRequest("Boat stop is not confirmed.");
+    return archived;
   }
   return {
     create(request) {
@@ -156,7 +161,9 @@ export function createBoatMachine(
     },
     async stop(request) {
       const tags = stopLabels(request);
-      await stopCompute(request, tags);
+      const archived = await stopCompute(request, tags);
+      const stoppedAt = archived.stoppedAt;
+      options.onStopped?.(stoppedAt && Number.isFinite(stoppedAt.getTime()) ? stoppedAt : undefined);
       if (!request.retain) return null;
       const info = await host.get(request.machineId, request.signal ? { signal: request.signal } : undefined);
       if (info.id !== request.machineId || !matches(info, tags) || info.retainedSnapshot !== "usable")

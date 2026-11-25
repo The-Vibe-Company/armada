@@ -578,20 +578,18 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
 }
 
 export async function enqueueBoatStop(tx: Sql, id: string, generation: string | number, admissionToken?: string) {
-  if (admissionToken)
-    await tx.query(
-      `update public.sandboxes set activity_lease_id=null,activity_until=null
-       where id=$1 and lifecycle_generation=$2 and activity_lease_id=$3`,
-      [id, generation, admissionToken],
-    );
   const {
     rows: [target],
   } = await tx.query<{ org_id: string; deadline: number }>(
-    `select org_id, (extract(epoch from clock_timestamp()+interval '2 minutes')*1000)::float8 as deadline
-     from public.sandboxes where id=$1 and lifecycle_generation=$2 and provider='boat'
+    `update public.sandboxes set reconcile_after='infinity'::timestamptz,
+       activity_lease_id=case when $3::uuid is not null then null else activity_lease_id end,
+       activity_until=case when $3::uuid is not null then null else activity_until end
+     where id=$1 and lifecycle_generation=$2 and provider='boat'
        and provider_sandbox_id is not null and status in ('stopping','failed')
-       and stopped_at is null and stop_requested_at is not null and deleted_at is null`,
-    [id, generation],
+       and stopped_at is null and stop_requested_at is not null and deleted_at is null
+       and ($3::uuid is null or activity_lease_id=$3)
+     returning org_id, (extract(epoch from clock_timestamp()+interval '2 minutes')*1000)::float8 as deadline`,
+    [id, generation, admissionToken ?? null],
   );
   if (!target) return;
   await createJobsStore(tx).enqueue(
@@ -619,7 +617,7 @@ export async function settleBoatStop(tx: Sql, id: string, generation: number, no
     rows: [current],
   } = await tx.query<{ status: string }>(
     `update public.sandboxes set stopped_at=$4::timestamptz,stop_requested_at=null,
-       activity_lease_id=null,activity_until=null,reconcile_lease=null,reconcile_lease_until=null,
+       activity_lease_id=null,activity_until=null,reconcile_lease=null,reconcile_lease_until=null,reconcile_after=now(),
        preservation_note=case when application_secret_tainted then 'Application-secret exposure forbids archives and disk reuse.' else coalesce($3,preservation_note) end,lifecycle_error=null
      where id=$1 and lifecycle_generation=$2 and provider='boat'
        and status in ('stopping','failed') and stop_requested_at is not null and stopped_at is null
