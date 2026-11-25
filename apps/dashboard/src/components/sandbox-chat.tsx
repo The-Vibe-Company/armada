@@ -16,9 +16,14 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  createContext,
+  type Dispatch,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
+  type SetStateAction,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -32,6 +37,7 @@ import { Markdown } from "@/components/markdown";
 import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { SandboxInspectorEvents, SandboxInspectorPhoneSlot } from "@/components/sandbox-details-panel";
+import { SandboxState } from "@/components/sandbox-state";
 import { StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -64,6 +70,7 @@ import {
 import { applyChatPage, type ChatEvent, initialChatHistory, isActiveStatus, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
+import { LIVE_FLEET_REFRESH_EVENT } from "@/lib/live-sandbox-view";
 import { cn } from "@/lib/utils";
 
 const WORKING_POLL_MS = 1_000;
@@ -176,6 +183,44 @@ function accessEndedMessage(status: number): string {
   return "This sandbox is no longer available. Reload the page, then retry.";
 }
 
+type LiveThreadState = {
+  status: SandboxStatus;
+  idlePaused: boolean;
+  statusMessage: string | null;
+  turnRunning: boolean;
+};
+
+const ThreadStateContext = createContext<{
+  live: LiveThreadState | null;
+  setLive: Dispatch<SetStateAction<LiveThreadState | null>>;
+} | null>(null);
+
+export function SandboxThreadStateProvider({ children }: { children: ReactNode }) {
+  const [live, setLive] = useState<LiveThreadState | null>(null);
+  const value = useMemo(() => ({ live, setLive }), [live]);
+  return <ThreadStateContext.Provider value={value}>{children}</ThreadStateContext.Provider>;
+}
+
+export function ThreadSandboxState(props: Parameters<typeof SandboxState>[0]) {
+  const live = useContext(ThreadStateContext)?.live ?? null;
+  const status = live ? live.status : props.status;
+  const statusMessage = live?.statusMessage ?? (live && live.status !== props.status ? null : props.statusMessage);
+  return (
+    <span
+      title={statusMessage ?? undefined}
+      className="shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 [&>span]:gap-1 [&>span]:text-[11px]"
+    >
+      <SandboxState
+        {...props}
+        status={status}
+        statusMessage={statusMessage}
+        activityLabel={live?.turnRunning ? "Working" : undefined}
+        idlePaused={live ? live.idlePaused : props.idlePaused}
+      />
+    </span>
+  );
+}
+
 /**
  * The sandbox as a conversation: the prompts, the agent's answers and its tool calls, read from the event stream
  * by cursor when the event feed changes, with a composer for the next message.
@@ -183,6 +228,7 @@ function accessEndedMessage(status: number): string {
 export function SandboxChat(props: Props) {
   const { sandboxId, initialStatus } = props;
   const router = useRouter();
+  const setThreadState = useContext(ThreadStateContext)?.setLive;
   const pendingRuntimePrompt = useRef<string | undefined>(undefined);
   const [outbox, setOutbox] = useState<PendingMessage[]>([]);
   const [history, setHistory] = useState(initialChatHistory);
@@ -516,8 +562,33 @@ export function SandboxChat(props: Props) {
     if (retained.length !== outbox.length) setOutbox((current) => (current === outbox ? retained : current));
   }, [outbox, unconfirmed]);
 
-  // A stopped or failed machine runs no turn, whatever its last prompt event said before it stopped.
-  const turnRunning = LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running);
+  // A stopped or failed machine runs no turn unless a queued turn is waking it.
+  const turnRunning =
+    (LIVE.includes(status) && chatTurnRunning(turnModel, currentConversation, chat.running)) ||
+    (status === "stopped" && turnModel?.state === "queued");
+  const previousTurnRunning = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (setThreadState) {
+      setThreadState((current) =>
+        current &&
+        current.status === status &&
+        current.idlePaused === idlePaused &&
+        current.statusMessage === statusMessage &&
+        current.turnRunning === turnRunning
+          ? current
+          : { status, idlePaused, statusMessage, turnRunning },
+      );
+    }
+    if (
+      previousTurnRunning.current !== null &&
+      previousTurnRunning.current !== turnRunning &&
+      typeof window !== "undefined"
+    ) {
+      window.dispatchEvent(new CustomEvent(LIVE_FLEET_REFRESH_EVENT));
+    }
+    if (loaded || turnRunning) previousTurnRunning.current = turnRunning;
+  }, [loaded, setThreadState, status, idlePaused, statusMessage, turnRunning]);
+  useEffect(() => () => setThreadState?.(null), [setThreadState]);
   const pauseMessage = idlePauseMessage({ status, idlePaused, expiresAt: props.expiresAt ?? null }, new Date());
   const failure = [...chat.items].reverse().find((item) => item.kind === "outcome" && item.status === "failed");
   const reason = failure?.kind === "outcome" ? failure.reason : undefined;

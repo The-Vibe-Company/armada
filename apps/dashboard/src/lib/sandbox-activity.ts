@@ -35,6 +35,19 @@ function canHaveActiveTurn(status: SandboxListMetadata["status"], expiresAt: str
   );
 }
 
+export function isSandboxWorking(
+  status: SandboxListMetadata["status"],
+  turn: RecordedTurn | undefined,
+  expiresAt: string | null = null,
+  now: Date = new Date(),
+) {
+  if (!canHaveActiveTurn(status, expiresAt, now)) return false;
+  if (turn === "queued") return true;
+  if (turn === "running") return status !== "stopped";
+  if (turn === "finished") return false;
+  return status === "running";
+}
+
 export function sandboxActivityPage(
   rows: SandboxListMetadata[],
   viewerId: string,
@@ -49,7 +62,7 @@ export function sandboxActivityPage(
   for (const row of rows) {
     if (!row.canOpen || !canHaveActiveTurn(row.status, row.expiresAt, now)) continue;
     const state = turns[row.id];
-    if (state === "queued" || (state === "running" && row.status !== "stopped")) {
+    if (isSandboxWorking(row.status, state, row.expiresAt, now)) {
       workingIds.add(row.id);
     } else if (
       state === "finished" &&
