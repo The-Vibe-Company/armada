@@ -24,6 +24,7 @@ async function fixture(status: "ready" | "deleted" = "ready") {
           sandboxId === id
             ? {
                 id,
+                provider: "boat",
                 status,
                 golden: null,
                 visibility: "private",

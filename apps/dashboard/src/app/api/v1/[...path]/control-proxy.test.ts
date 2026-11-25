@@ -171,6 +171,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["sandbox", "advice"],
     ["sandbox", "extend"],
     ["sandbox", "list"],
+    ["sandbox", "list-turns"],
     ["sandbox", "wait"],
     ["sandbox", "exec"],
     ["mcp", "catalog"],

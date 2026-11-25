@@ -6708,6 +6708,7 @@
                     "providerExpiresAt",
                     "id",
                     "golden",
+                    "provider",
                     "visibility",
                     "harness",
                     "repositoryDir",
@@ -7660,6 +7661,7 @@
                     "providerExpiresAt",
                     "id",
                     "golden",
+                    "provider",
                     "visibility",
                     "harness",
                     "repositoryDir",
@@ -8931,6 +8933,111 @@
                     "login"
                   ],
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/list-turns": {
+      "post": {
+        "operationId": "sandbox_list_turns",
+        "description": "Read recorded turn activity (queued, running, or finished) for visible sandboxes in an organization.",
+        "security": [
+          {
+            "personalSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 413,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "org": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "required": [
+                  "org"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "enum": [
+                      "queued",
+                      "running",
+                      "finished"
+                    ]
+                  }
                 }
               }
             }
@@ -11488,6 +11595,7 @@
                     "providerExpiresAt",
                     "id",
                     "golden",
+                    "provider",
                     "visibility",
                     "harness",
                     "repositoryDir",

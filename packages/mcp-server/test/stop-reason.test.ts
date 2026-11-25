@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import type { SandboxPatch } from "@armada/core";
+import { sandboxOperations } from "@armada/core/contract";
 import { createSqlData, type SandboxView, type ServerSandboxStore } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { settleBoatStop } from "../src/sandbox-lifecycle.ts";
-import { readStatus } from "../src/turns.ts";
+import { readStatus, recordedStatus } from "../src/turns.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -111,12 +112,56 @@ test.each([
   } as unknown as ServerSandboxStore;
 
   expect(await readStatus(provider, store, sandbox, { now: new Date(2000) })).toMatchObject({
+    provider: scenario.provider,
     status: scenario.machine,
     settled: scenario.prompt === "finished",
     prompt: { state: scenario.prompt },
   });
   expect(updates).toEqual([]);
 });
+
+test.each(["boat", "modal"] as const)(
+  "recordedStatus and readStatus return provider=%s for stopped sandboxes and satisfy sandbox/status output schema",
+  async (providerName) => {
+    const sandbox = {
+      id: "11111111-1111-4111-8111-111111111111",
+      provider: providerName,
+      golden: "base",
+      visibility: "private",
+      harness: "codex",
+      providerSandboxId: `${providerName}-sbx-1`,
+      repositoryDir: null,
+      machineSize: null,
+      model: null,
+      reasoningEffort: null,
+      status: "stopped",
+      statusReason: null,
+      stoppedAt: "2026-01-01T00:00:00.000Z",
+      taskPromptId: null,
+      conversationIds: [],
+    } as unknown as SandboxView;
+    const recorded = recordedStatus(sandbox);
+    expect(recorded.provider).toBe(providerName);
+    expect(
+      sandboxOperations.sandboxStatus.output.parse({
+        ...recorded,
+        timeLeftSeconds: null,
+        expiringSoon: false,
+      }),
+    ).toMatchObject({ id: sandbox.id, provider: providerName, status: "stopped" });
+
+    const provider = {
+      id: providerName,
+      getPrompt: async () => {
+        throw new Error("unexpected");
+      },
+      events: async () => ({ events: [], hasMore: false }),
+    };
+    const store = { update: async () => {} } as unknown as ServerSandboxStore;
+    const observed = await readStatus(provider, store, sandbox, { now: new Date(2000), stored: true });
+    expect(observed.provider).toBe(providerName);
+  },
+);
 
 test.each([
   { recorded: "ready", observed: "starting", reported: "ready" },

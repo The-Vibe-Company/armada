@@ -212,7 +212,7 @@ export const statusOutput = {
   externalRef: externalRefOutput,
   id: z.string(),
   golden: z.string().nullable(),
-  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS).optional(),
+  provider: z.enum(SANDBOX_PLACEMENT_PROVIDERS),
   hostId: z.string().optional(),
   image: z.string().optional(),
   snapshotId: z.uuid().optional().describe("Snapshot used to launch this Docker sandbox, when applicable."),

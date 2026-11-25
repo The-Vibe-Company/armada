@@ -115,4 +115,16 @@ export const sandboxCheckOperations = {
       login: z.string(),
     }),
   },
+  listSandboxTurns: {
+    name: "listSandboxTurns",
+    route: { method: "POST", path: "/api/v1/sandbox/list-turns" },
+    scopedAuth: ["personalSession"],
+    readOnly: true,
+    destructive: false,
+    audience: "public",
+    errors: controlErrors,
+    description: "Read recorded turn activity (queued, running, or finished) for visible sandboxes in an organization.",
+    input: { body: z.object({ org: z.uuid() }) },
+    output: z.record(z.string(), z.enum(["queued", "running", "finished"])),
+  },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType>>;
