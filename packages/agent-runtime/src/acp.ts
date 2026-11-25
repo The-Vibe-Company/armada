@@ -214,7 +214,10 @@ export class AcpDriver implements Driver {
               let input = u.rawInput;
               if (label.length > name.length) {
                 const command = redact(title);
-                input = input == null || input === title ? command : { title: command, rawInput: input };
+                input =
+                  input === null || input === undefined || input === title
+                    ? command
+                    : { title: command, rawInput: input };
               }
               c.emit({
                 kind: "message",

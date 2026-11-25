@@ -82,7 +82,7 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
         const tools = events.flatMap((event) => (event.kind === "message" ? event.tools : []));
         expect(tools).toEqual([
           { id: expect.any(String), name: preview, input: command },
-          { id: tools[0]?.id, name: "tool_result" },
+          { id: expect.any(String), name: "tool_result" },
           {
             id: expect.any(String),
             name: preview,
@@ -90,6 +90,7 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
           },
           { id: "tool", name: "shell" },
         ]);
+        expect(tools[0]?.id).toBe(tools[1]?.id);
         expect(tools[0]?.id).not.toBe(tools[2]?.id);
         for (const tool of tools) {
           expect(tool.id.length).toBeGreaterThan(0);
