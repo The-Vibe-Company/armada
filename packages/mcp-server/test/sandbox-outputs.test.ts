@@ -451,24 +451,23 @@ test("a failed or out-of-bounds read keeps the previous snapshot and never fails
   ]);
 });
 
-function observeLateAbort(signal: AbortSignal) {
-  const observed = Promise.withResolvers<void>();
-  const check = signal.throwIfAborted.bind(signal);
-  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Observe the released capture reaching the fence and invoke the original abort check.
-  const spy = spyOn(signal, "throwIfAborted").mockImplementation(() => {
-    if (signal.aborted) {
-      spy.mockRestore();
-      observed.resolve();
-    }
-    check();
-  });
-  return observed.promise;
+function finishReleasedReads() {
+  return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 test("a hanging provider read yields at the caller deadline, stays tracked and never persists late", async () => {
   const { db, id, sql } = await fixture({ boatId: "hanging_fixture" });
   const { state, provider } = disks();
-  state.live = [file("memo.txt", "late")];
+  let admitted = false;
+  state.live = [
+    {
+      get name() {
+        admitted = true;
+        return "memo.txt";
+      },
+      bytes: new TextEncoder().encode("late"),
+    },
+  ];
   let release = () => {};
   state.hold = new Promise<void>((resolve) => {
     release = resolve;
@@ -499,9 +498,9 @@ test("a hanging provider read yields at the caller deadline, stays tracked and n
   await reading;
   stop.abort();
   await expect(capture).rejects.toBeDefined();
-  const lateAbort = observeLateAbort(stop.signal);
   release();
-  await lateAbort;
+  await finishReleasedReads();
+  expect(admitted).toBe(false);
   expect(await rows()).toHaveLength(0);
   expect(state.reads).toBe(2);
 });
@@ -569,7 +568,6 @@ test("expired Modal reads leave final capture capacity for a healthy Boat sandbo
   modal.state.live = [file("late.txt", "expired")];
   const hold = Promise.withResolvers<void>();
   modal.state.hold = hold.promise;
-  const lateAborts: Promise<void>[] = [];
   try {
     for (const sandboxId of stalled.slice(0, 4)) {
       const reading = Promise.withResolvers<void>();
@@ -579,7 +577,6 @@ test("expired Modal reads leave final capture capacity for a healthy Boat sandbo
       await reading.promise;
       deadline.abort();
       await expect(capture).rejects.toBe(deadline.signal.reason);
-      lateAborts.push(observeLateAbort(deadline.signal));
     }
     await expect(captureFinalOutputs(sql, provider, stalled[4]!, { key: KEY })).rejects.toMatchObject({
       reason: "output_busy",
@@ -588,9 +585,11 @@ test("expired Modal reads leave final capture capacity for a healthy Boat sandbo
     expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
   } finally {
     hold.resolve();
-    await Promise.all(lateAborts);
+    await finishReleasedReads();
   }
   expect(await names()).toEqual([{ sandbox_id: id, name: "memo.txt" }]);
+  await captureFinalOutputs(sql, modal.provider, stalled[4]!, { key: KEY });
+  expect(modal.state.reads).toBe(5);
 });
 
 test("a collection whose deadline passes while it waits for the row lock never commits files or events", async () => {
@@ -710,11 +709,12 @@ test("a final capture whose deadline passes while its target query waits never h
   const gated: Sql = {
     ...sql,
     query: async (q, p) => {
+      const rows = await sql.query(q, p);
       if (q.includes("as generation,clock_timestamp()::text as scan")) {
         claiming();
         await held;
       }
-      return sql.query(q, p);
+      return rows;
     },
   };
   const diagnostics = spyOn(console, "warn");
@@ -735,9 +735,8 @@ test("a final capture whose deadline passes while its target query waits never h
     ]);
   } finally {
     diagnostics.mockRestore();
-    const lateAbort = observeLateAbort(stop.signal);
     release();
-    await lateAbort;
+    await finishReleasedReads();
   }
   expect(state.reads).toBe(0);
   expect((await sql.query(`select 1 from sandbox_outputs where sandbox_id=$1`, [id])).rows).toHaveLength(0);
