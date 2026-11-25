@@ -395,7 +395,7 @@ function row(
         </PanelSection>
         <PanelSection title="Daemon updates">
           <HostUpdateSettings
-            key={`${host.id}:${host.updatePolicy}:${host.pinnedVersion}`}
+            key={host.id}
             orgId={orgId}
             host={host}
             isAdmin={isAdmin}

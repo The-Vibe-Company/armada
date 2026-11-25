@@ -741,6 +741,9 @@ and journal, checks Docker, and completes an authenticated poll. If it exits or
 misses the two-minute readiness deadline, the hook restores the previous
 executable on the next start. The daemon reports the result on its normal poll.
 Each version gets one attempt, with an hour before trying a different target.
+During a rolling server deploy, a manifest for another release defers the
+attempt before the daemon downloads bytes. In manual mode, request the offer
+again after the server finishes rolling out.
 Unmanaged hosts and unsupported service managers skip updates. Daemons installed
 before self-update support need one manual upgrade. The updater runs official
 Armada release code as the installation owner.
@@ -780,11 +783,12 @@ or renaming an operation or field, changing a field's type or meaning, making
 an optional field required, or changing authentication. Optional fields and
 operations an older daemon never receives leave the protocol unchanged. The host list exposes the protocol
 from its last accepted poll and whether an upgrade is required. The list also
-compares the reported daemon release against `targetVersion`, the release pinned
-by `install.json`. The `versionStatus` field is `current`, `outdated`, `ahead`, or
+compares the reported daemon release against its pin or the deployed release. The `versionStatus` field is `current`, `outdated`, `ahead`, or
 `unknown` for an absent or unrecognized release. The CLI and dashboard show a
 release mismatch even while the host protocol is supported. The poll response
-and host list both advertise `targetVersion` and `minimumVersion`. The minimum
+and host list both advertise `minimumVersion`. The poll includes `targetVersion`
+when policy permits an offer. The list includes the server's release as
+`targetVersion` and the host's override as `pinnedVersion`. The minimum
 identifies the first release in the supported protocol window. Release strings
 are informational. The protocol header still determines whether a daemon can
 take work, including building snapshots.

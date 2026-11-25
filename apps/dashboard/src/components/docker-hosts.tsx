@@ -495,7 +495,7 @@ export function HostUpdateSettings({ orgId, host, isAdmin }: { orgId: string; ho
             <input type="hidden" name="org" value={orgId} />
             <input type="hidden" name="hostId" value={host.id} />
             <input type="hidden" name="intent" value="now" />
-            <Button type="submit" variant="outline" disabled={pending || host.updateRequested}>
+            <Button type="submit" variant="outline" disabled={pending}>
               Update now
             </Button>
           </form>

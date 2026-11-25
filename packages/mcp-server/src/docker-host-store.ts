@@ -1213,7 +1213,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
             h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.stopped_sandbox_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.daemon_protocol,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
-            h.update_policy,h.pinned_version,h.update_requested,h.last_update_result,
+            h.update_policy,h.pinned_version,h.update_requested,h.last_update_result - 'daemonAt' as last_update_result,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -1297,12 +1297,18 @@ export function createDockerHostStore(sql: Sql, key: string) {
         ).rows[0];
         if (!row) return deny();
         if (report) {
-          const result: DockerHostUpdateResult = { ...report, at: report.at ?? new Date().toISOString() };
+          const result = {
+            ...report,
+            at: report.at ?? new Date().toISOString(),
+            daemonAt: report.at,
+          } satisfies DockerHostUpdateResult & { daemonAt: string | null };
           await tx.query(
             `update public.docker_hosts set last_update_result=$2::jsonb where id=$1
-             and (last_update_result - 'at' is distinct from $2::jsonb - 'at'
-               or ($3::boolean and last_update_result->>'at' is distinct from $2::jsonb->>'at'))`,
-            [host.id, JSON.stringify(result), report.at !== null],
+             and ($3::timestamptz is null or last_update_result->>'daemonAt' is null
+               or (last_update_result->>'daemonAt')::timestamptz <= $3::timestamptz)
+             and (last_update_result - array['at','daemonAt'] is distinct from $2::jsonb - array['at','daemonAt']
+               or ($3::timestamptz is not null and last_update_result->>'daemonAt' is distinct from $2::jsonb->>'daemonAt'))`,
+            [host.id, JSON.stringify(result), report.at],
           );
         }
         const offer =
@@ -1310,7 +1316,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           (row.update_policy === "pinned"
             ? row.pinned_version === target
             : row.update_policy === "automatic" || row.update_requested);
-        if (row.update_requested && !row.draining)
+        if (row.update_requested && offer)
           await tx.query("update public.docker_hosts set update_requested=false where id=$1", [host.id]);
         return { updatePolicy: row.update_policy, ...(offer ? { targetVersion: target } : {}) };
       });

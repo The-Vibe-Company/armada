@@ -490,7 +490,7 @@ test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged"
     const daemon = f.daemon();
     if (refusal === "version") {
       f.config.version = "3.0.0";
-      await expect(daemon.stage(f.state, f.target)).rejects.toThrow("does not match the offered release");
+      expect(await daemon.stage(f.state, f.target)).toBe(false);
       expect(f.requests).toHaveLength(1);
     } else if (refusal === "digest") {
       f.config.bytes = Buffer.from("wrong artifact");
@@ -504,5 +504,10 @@ test.skipIf(process.platform !== "linux").each(["version", "digest", "unmanaged"
     expect(await daemon.swap()).toBe(false);
     expect(f.files.get(f.binary)).toEqual(f.old);
     expect(f.files.has(f.previous)).toBe(false);
+    if (refusal === "version") {
+      expect(daemon.result()).toBeUndefined();
+      f.config.version = f.target;
+      expect(await f.daemon().stage(f.state, f.target)).toBe(true);
+    }
   },
 );

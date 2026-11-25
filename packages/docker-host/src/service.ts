@@ -224,12 +224,14 @@ async function fetchUpgradeFile(io: UpgradeServiceIo, url: string) {
   return response;
 }
 
+class InstallerVersionMismatch extends Error {}
+
 async function pinnedUpgrade(
   io: UpgradeServiceIo,
   origin: string,
   installed: ManagedInstallation,
   retry: string,
-  target?: string,
+  offer?: { version: string; beforeDownload(): Promise<void> },
 ) {
   try {
     const arch = process.arch;
@@ -237,16 +239,21 @@ async function pinnedUpgrade(
     const manifest = (await (await fetchUpgradeFile(io, `${origin}/api/docker-host/install.json`)).json()) as Partial<
       Record<"version" | "x64" | "arm64", unknown>
     > | null;
-    if (target !== undefined && manifest?.version !== target)
-      throw new Error("Installer manifest does not match the offered release.");
+    if (offer && manifest?.version !== offer.version) {
+      if (typeof manifest?.version === "string" && releasePattern.test(manifest.version))
+        throw new InstallerVersionMismatch();
+      throw new Error("Invalid installer manifest release.");
+    }
     const digest = manifest?.[arch];
     if (typeof digest !== "string" || !digestPattern.test(digest)) throw new Error("Invalid host artifact pin.");
     if (installed.binarySha256 === digest && installed.pendingBinarySha256 === undefined) return { digest };
+    await offer?.beforeDownload();
     const artifact = await fetchUpgradeFile(io, `${origin}/api/runtime/artifacts/${digest}`);
     const bytes = new Uint8Array(await artifact.arrayBuffer());
     if (sha256(bytes) !== digest) throw new Error("Host artifact SHA-256 mismatch.");
     return { digest, bytes };
   } catch (error) {
+    if (error instanceof InstallerVersionMismatch) throw error;
     const reason =
       error instanceof Error && error.constructor === Error
         ? error.message
@@ -392,22 +399,21 @@ export function createManagedUpdater(
         status: "failed" as const,
       };
       const marker = { ...loaded, update };
-      await save(marker);
-      lastAttempt = update;
-      const { bytes, digest } = await pinnedUpgrade(
-        io,
-        state.server,
-        marker,
-        "inspect the installer release",
-        target,
-      ).catch(async (error: unknown) => {
+      const artifact = await pinnedUpgrade(io, state.server, marker, "inspect the installer release", {
+        version: target,
+        async beforeDownload() {
+          await save(marker);
+          lastAttempt = update;
+        },
+      }).catch(async (error: unknown) => {
+        if (error instanceof InstallerVersionMismatch) return undefined;
         const failed = { ...update, detail: "download_failed" as const };
         await save({ ...marker, update: failed });
         lastAttempt = failed;
         throw error;
       });
-      if (!bytes) return false;
-      staged = { bytes, digest, marker };
+      if (!artifact?.bytes) return false;
+      staged = { bytes: artifact.bytes, digest: artifact.digest, marker };
       return true;
     },
     async swap() {
