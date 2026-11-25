@@ -19,9 +19,11 @@ import { retainsDiskOnStop } from "./provider-runtime-admission.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import {
   type ChildOperation,
+  ChildStopNotAdmitted,
   createSandboxChildren,
   type SandboxChildExecutor,
   type StopRecoveryAdmission,
@@ -108,7 +110,15 @@ export function createSandboxAccessServices(input: {
       orgs: [{ orgId: operation.orgId, role: "member" as const }],
     };
     const scoped = createSqlData(sql)(caller).sandboxes;
-    if (!admitRecovery && (await scoped.requestStartingModalStop?.(saved))) return;
+    if (!admitRecovery) {
+      try {
+        if (await scoped.requestStartingModalStop?.(saved)) return;
+      } catch (error) {
+        if (error instanceof SandboxStopTargetChanged) throw new ChildStopNotAdmitted("stop_target_changed");
+        throw error;
+      }
+      if (saved.status === "starting") throw new ChildStopNotAdmitted("sandbox_not_ready");
+    }
     const provider = saved.provider === "boat" ? undefined : await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
@@ -233,8 +243,14 @@ export function createSandboxAccessServices(input: {
     },
     async read(id, ownerId, orgId) {
       const { saved, resolveProvider } = await child(id, ownerId, orgId);
-      if (!saved.providerSandboxId)
-        return { ...saved, providerSandboxId: null, events: [], cursor: null, hasMore: false };
+      if (saved.status === "starting" || !saved.providerSandboxId)
+        return {
+          ...saved,
+          providerSandboxId: saved.providerSandboxId || null,
+          events: [],
+          cursor: null,
+          hasMore: false,
+        };
       const provider = await resolveProvider();
       const events = await provider.events({ sandboxId: saved.providerSandboxId, direction: "backward", limit: 100 });
       return {

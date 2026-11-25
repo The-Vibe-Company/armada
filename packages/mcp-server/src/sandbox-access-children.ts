@@ -68,7 +68,11 @@ type ChildDispatch = {
   target_id: string;
   action: ChildOperation["action"];
 };
-export class ChildMessageNotDispatched extends Error {}
+export class ChildStopNotAdmitted extends Error {
+  constructor(readonly reason: "sandbox_not_ready" | "stop_target_changed") {
+    super(reason);
+  }
+}
 class ChildAdmissionCancelled extends Error {}
 
 function blockedBeforeDispatch(error: unknown) {
@@ -276,6 +280,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
                 rows: [lease],
               } = await tx.query<{ busy: boolean; extension_refused: boolean }>(
                 `select (coalesce(reconcile_lease_until>clock_timestamp(),false)
+                      or ($2='message' and status='starting')
                       or ($2='stop' and (boat_runtime or runtime_transport is not distinct from 'dialout')
                         and activity_lease_id is not null)) as busy,
                       ($2='extend' and boat_runtime) as extension_refused
@@ -425,14 +430,18 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       return { id: row.id, state: "succeeded", sandboxId: row.target_id };
     } catch (error) {
       const noAllocation = input.action === "launch" && error instanceof ChildLaunchNotAllocated;
-      const setupRefused = error instanceof ModalLaunchSetupConflict;
       const refusal = blockedBeforeDispatch(error);
-      const reconciliationRefused =
-        !recovery && phase === "execution" && input.action !== "launch" && refusal !== undefined;
-      const notDispatched =
-        error instanceof ChildAdmissionCancelled ||
-        reconciliationRefused ||
-        (input.action === "message" && (setupRefused || error instanceof ChildMessageNotDispatched));
+      const executionRefusal =
+        !recovery && phase === "execution" && input.action !== "launch"
+          ? (refusal?.reason ??
+            (input.action === "message" &&
+            (error instanceof ModalLaunchSetupConflict ||
+              (error instanceof RuntimeFollowupConflict && error.reason === "sandbox_not_ready"))
+              ? error.reason
+              : undefined) ??
+            (input.action === "stop" && error instanceof ChildStopNotAdmitted ? error.reason : undefined))
+          : undefined;
+      const notDispatched = error instanceof ChildAdmissionCancelled || executionRefusal !== undefined;
       const state = noAllocation || notDispatched ? "failed" : "uncertain";
       const code = noAllocation
         ? `child_${error.reason}`
@@ -441,20 +450,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           : "child_outcome_unconfirmed";
       if (noAllocation) error.record(operation, code);
       else {
-        const refusalCode =
-          error instanceof ChildAdmissionCancelled
-            ? "admission_cancelled"
-            : reconciliationRefused
-              ? refusal.reason
-              : notDispatched
-                ? setupRefused
-                  ? error.reason
-                  : error instanceof ChildMessageNotDispatched &&
-                      error.cause instanceof DataError &&
-                      error.cause.code === "sandbox_not_ready"
-                    ? "sandbox_not_ready"
-                    : "native_admission_error"
-                : undefined;
+        const refusalCode = error instanceof ChildAdmissionCancelled ? "admission_cancelled" : executionRefusal;
         const executionCause =
           error instanceof RuntimeFollowupConflict
             ? error.reason

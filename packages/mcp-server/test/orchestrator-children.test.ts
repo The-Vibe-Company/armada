@@ -15,8 +15,9 @@ import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { observeRequest } from "../src/request-observability.ts";
+import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
-import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
+import { createRuntimeFollowup, RuntimeFollowupConflict } from "../src/runtime-followup.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import {
   RuntimeCheckpointActivityConflict,
@@ -421,8 +422,24 @@ test("own children support independent target receipts while unrelated children 
         credential_version: selection.credentialVersion,
       });
     expect(rows).toHaveLength(4); // No synthetic three-child default from the provisional DTO.
-    const first = rows[0]?.sandbox_id,
-      second = rows[1]?.sandbox_id;
+    const readyChildren = [];
+    for (const providerSandboxId of ["receipt-isolation-first", "receipt-isolation-second"]) {
+      const child = await createSqlSandboxStore(sql).insert({
+        id: crypto.randomUUID(),
+        provider: parent.provider,
+        providerSandboxId,
+        goldenId: selection.goldenId,
+        orgId: p.org,
+        ownerId: p.owner,
+        harness: "claude",
+        status: "ready",
+        model: "claude-sonnet-4-6",
+        reasoningEffort: "medium",
+      });
+      await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+      readyChildren.push(child.id);
+    }
+    const [first, second] = readyChildren;
     if (!first || !second) throw Error("owned child missing");
     const one = await children.message(token, "same-key", first, "first ticket");
     expect(one.state).toBe("succeeded");
@@ -527,6 +544,72 @@ test.each(["launch", "message"] as const)(
     }
   },
 );
+
+test("scoped message after async launch waits for readiness before dispatch", async () => {
+  const { close, sql, token, selection } = await fixture();
+  const waiting = Promise.withResolvers<void>();
+  const abort = new AbortController();
+  const boat = fakeBoat();
+  const admitLaunch = await modalAdmissionFixture(
+    sql,
+    ENCRYPTION_KEY,
+    createSqlVaultStore(sql),
+    undefined,
+    boatAdmissionProvider(boat),
+  );
+  const services = createSandboxAccessServices({
+    sql: {
+      ...sql,
+      transaction: (work) =>
+        sql.transaction!(async (tx) =>
+          work({
+            async query<T>(statement: string, params?: unknown[]) {
+              const result = await tx.query<T>(statement, params);
+              if (statement.includes("as extension_refused") && (result.rows[0] as { busy?: boolean })?.busy)
+                waiting.resolve();
+              return result;
+            },
+          }),
+        ),
+    },
+    providers: { resolve: async () => boat.provider },
+    connections: undefined,
+    encryptionKey: ENCRYPTION_KEY,
+    scopedMcpUrl: "https://armada.example/mcp",
+    admitLaunch,
+    runtimeSend: createRuntimeFollowup(
+      sql,
+      ENCRYPTION_KEY,
+      createRuntimeCommands(createRuntimeEnrolments(sql, ENCRYPTION_KEY), ENCRYPTION_KEY),
+    ),
+  });
+  try {
+    const { sandboxId, state } = await services.childWorker.launch(token, "launch", {
+      ...selection,
+      model: "claude-sonnet-4-6",
+      size: "small",
+    });
+    expect(state).toBe("succeeded");
+    const send = services.childWorker.message(token, "message", sandboxId, "follow up", abort.signal);
+    const firstOutcome = await Promise.race([
+      waiting.promise.then(() => "waiting"),
+      send.then((receipt) => receipt.state),
+    ]);
+    abort.abort();
+    expect(firstOutcome).toBe("waiting");
+    expect(await send).toMatchObject({ state: "failed", sandboxId });
+    expect(
+      (
+        await sql.query(
+          "select dispatched_at from orchestrator_child_operations where target_id=$1 and action='message'",
+          [sandboxId],
+        )
+      ).rows,
+    ).toEqual([{ dispatched_at: null }]);
+  } finally {
+    await close();
+  }
+});
 
 test("an uncertain scoped message records a correlated operator diagnostic", async () => {
   const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
