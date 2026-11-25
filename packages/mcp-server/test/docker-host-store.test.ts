@@ -1081,13 +1081,17 @@ test("retiring a host cancels its stale Machine create without failing a newer s
   expect(rows).toEqual([{ status: "starting", outcome: "failed", cancelled: true }]);
 });
 
-async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, useSnapshot = false) {
+async function prepareRestore(
+  registered?: Awaited<ReturnType<typeof fixture>>,
+  useSnapshot = false,
+  bindTarget = true,
+) {
   const host = registered ?? (await fixture());
   const db = database();
   const bindings = createDockerMachineGenerationBindings(sql, host);
   const sandboxId = randomUUID();
   const predecessor = await bindings.bind({ sandboxId, generation: 1 });
-  const generation = await bindings.bind({ sandboxId, generation: 2 });
+  const generation = bindTarget ? await bindings.bind({ sandboxId, generation: 2 }) : randomUUID();
   const expiresAt = Date.UTC(2099, 0, 1);
   const snapshot = useSnapshot
     ? { id: randomUUID(), ownerId: host.memberId, visibility: "private" as const }
@@ -1276,7 +1280,7 @@ test("the current runner declines a completed restore receipt without a physical
 });
 
 test("the current runner attaches only a completed Docker restore and can recover an interrupted handoff", async () => {
-  const a = await prepareRestore();
+  const a = await prepareRestore(undefined, false, false);
   const db = database();
   const {
     rows: [claim],
@@ -1306,10 +1310,8 @@ test("the current runner attaches only a completed Docker restore and can recove
           ref: a.restore.predecessor.machineId,
         },
       });
-  const requestId = a.restore.requestId;
   const machineId = "c".repeat(64);
   const machine = { sandboxId: a.sandboxId, generation: Number(claim.generation), machineId };
-  const placement = `armada-${a.installationId}-${a.hostId}-${a.sandboxId}-${requestId}`;
   const current = async () =>
     (
       await db.query(
@@ -1318,9 +1320,21 @@ test("the current runner attaches only a completed Docker restore and can recove
       )
     ).rows[0];
   const predecessor = await current();
+  const target = { sandboxId: a.sandboxId, generation: 2 };
+  const submitFault = interruptDockerCommit(async (tx) =>
+    Boolean(await createDockerMachineGenerationBindings(tx, a).lookup(target)),
+  );
+  await expect(resume(submitFault.faultingStore)).rejects.toMatchObject({ cause: submitFault.failure });
+  expect(await createDockerMachineGenerationBindings(sql, a).lookup(target)).toBeUndefined();
+  expect(await a.poll([a.cleanupId])).toBeNull();
+
   await expect(resume()).rejects.toMatchObject({ outcome: "pending" });
   await expect(resume()).rejects.toMatchObject({ outcome: "pending" });
-  expect(await a.poll([a.cleanupId])).toEqual(a.restore);
+  const delivered = await a.poll([a.cleanupId]);
+  if (delivered?.operation !== "restore") throw new Error("Missing Docker restore delivery.");
+  const { requestId } = delivered;
+  expect(delivered.request.generation).toBe(requestId);
+  expect(delivered.predecessor).toEqual(a.restore.predecessor);
   await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed", machineId });
   await expect(store.attachMachineRestore(a.owner, { ...claim, lease_epoch: "1" })).rejects.toBeInstanceOf(
     DockerHostDenied,
@@ -1339,13 +1353,22 @@ test("the current runner attaches only a completed Docker restore and can recove
   });
   await expect(resume(faultingStore)).rejects.toMatchObject({ cause: failure });
   expect(await current()).toEqual(predecessor);
-  expect(await resume()).toEqual(machine);
-  await expect(resume()).resolves.toEqual(machine);
+  const {
+    rows: [successor],
+  } = await db.query<Job>(
+    `update jobs set lease_owner=$2,lease_epoch=lease_epoch+1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [claim.id, randomUUID()],
+  );
+  if (!successor) throw new Error("Missing successor lease.");
+  await denied(resume());
+  expect(await resume(store, successor)).toEqual(machine);
+  await expect(resume(store, successor)).resolves.toEqual(machine);
   expect(await current()).toEqual({
     status: "starting",
     lifecycle_generation: claim.generation,
     docker_generation: requestId,
-    provider_sandbox_id: placement,
+    provider_sandbox_id: `armada-${a.installationId}-${a.hostId}-${a.sandboxId}-${requestId}`,
   });
 
   await database().query("update jobs set state='done',lease_until=null,lease_owner=null where id=$1", [claim.id]);
@@ -1354,7 +1377,7 @@ test("the current runner attaches only a completed Docker restore and can recove
   await expect(a.poll()).resolves.toEqual({
     operation: "stop",
     requestId: stopId,
-    request: a.restore.request,
+    request: delivered.request,
   });
 });
 
