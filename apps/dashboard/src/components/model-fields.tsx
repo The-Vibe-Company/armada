@@ -9,7 +9,6 @@ import { EFFORT_LABEL } from "@/lib/labels";
 import {
   type ConnectionChoices,
   connectionValue,
-  dashboardHarnessModels,
   decodeModelValue,
   filterPicker,
   modelForAccount,
@@ -58,7 +57,7 @@ export function ModelFields({
   /** The account preselected for the launch: when it declares models, its first one is preselected too. */
   account?: string;
 }) {
-  const entry = dashboardHarnessModels(harness, catalog[harness]);
+  const entry = catalog[harness];
   // A model the catalog does not list starts as "Other model id", its id in the field.
   const initialListed = initial ? entry.models.some((option) => option.id === initial.model) : true;
   const declared = connections?.find((connection) => connection.accountId === account)?.models[0];

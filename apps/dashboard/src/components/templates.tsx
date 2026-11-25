@@ -57,7 +57,6 @@ import { PROVIDER_LABELS } from "@/lib/golden-form";
 import { HARNESS_LABELS } from "@/lib/labels";
 import { composerChips, launchHoldIds, templateStartAfterRemoval } from "@/lib/launch-composer";
 import { accountProblem, accountsFor, HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
-import { dashboardHarnessModels } from "@/lib/model-picker";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import {
   MAX_TEMPLATE_NAME,
@@ -191,7 +190,7 @@ function TemplateForm({
 
   const [model, setModel] = useState(editing?.definition.model ?? catalog[harness].defaultModel);
   const [effort, setEffort] = useState(editing?.definition.reasoningEffort ?? catalog[harness].defaultReasoningEffort);
-  const modelEntry = dashboardHarnessModels(harness, catalog[harness]);
+  const modelEntry = catalog[harness];
   const efforts =
     modelEntry.models.find((entry) => entry.id === model)?.reasoningEfforts ?? modelEntry.reasoningEfforts;
   const word = "inline-flex h-10 max-w-full rounded-md border bg-muted/30 px-2 align-middle text-sm sm:h-8";

@@ -3,13 +3,8 @@
  * agent, grouped by connection, searchable, the default marked and the price per million tokens when known.
  * A connection model's select value also names its account, so choosing it chooses who is billed.
  */
-import type { ConnectionModelInfo, Harness, HarnessModels } from "@armada/core";
+import type { ConnectionModelInfo, HarnessModels } from "@armada/core";
 import { modelPrice } from "@armada/core";
-
-export function dashboardHarnessModels(harness: Harness, entry: HarnessModels) {
-  if (harness !== "antigravity") return entry;
-  return { ...entry, models: entry.models.filter(({ id }) => id === entry.defaultModel) };
-}
 
 /** A model a connection declares, offered under that connection's name. */
 export interface ConnectionChoices {
