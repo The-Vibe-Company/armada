@@ -272,13 +272,6 @@ export function hostVersionWarning(host: Pick<DockerHost, "version" | "versionSt
   return null;
 }
 
-/** A row's fact: what runs there and which daemon runs it. */
-export function hostFact(host: Pick<DockerHost, "sandboxes" | "version" | "resources" | "running">): string {
-  if (!host.resources || host.running === undefined)
-    return "Update the Docker host to report running sandboxes and limits.";
-  return `${host.running} ${host.running === 1 ? "sandbox" : "sandboxes"} running · up to ${host.resources.capacity}${host.resources.heldBack ? ` (${host.resources.heldBack} held back: machine busy)` : ""}`;
-}
-
 /** What revoking a host does, said before it happens. */
 export function revokeWarning(sandboxes: number): string {
   const base =

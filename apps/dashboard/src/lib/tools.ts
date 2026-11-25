@@ -1,5 +1,5 @@
 import { connectAction, type McpCatalogService, type McpConnection, statusLabel } from "./connections.ts";
-import type { Blocker, ResourceState } from "./resource-list.ts";
+import type { ResourceState } from "./resource-list.ts";
 import type { Tone } from "./status-tone.ts";
 
 /**
@@ -53,24 +53,6 @@ export function serviceOffer(
     return { tone: "warning", label: "Needs server setup", count, action: "setup" };
   if (count === 0) return { tone: "neutral", label: "Not added", count, action: "connect" };
   return { tone: "success", label: "Added", count, action: "another" };
-}
-
-/** Each connection the viewer can fix, named by its fix ("Reconnect Acme Sentry"); its row's panel holds the button. */
-export function toolBlockers(
-  rows: readonly { key: string; connection: Pick<McpConnection, "name">; state: ToolState }[],
-): Blocker[] {
-  return rows.flatMap(({ key, connection, state }) =>
-    state.bucket === "action" && state.action
-      ? [
-          {
-            key: `fix-${key}`,
-            label: `${state.action} ${connection.name}`,
-            detail: `${state.label}: agents cannot use it until it is fixed.`,
-            target: { item: key },
-          },
-        ]
-      : [],
-  );
 }
 
 /** A connection's useful fact on its row: who it signed in as and how many tools it exposes. */
