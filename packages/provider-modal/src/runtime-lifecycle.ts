@@ -4,7 +4,7 @@ import type { Machine as MachineContract, MachineIdentity } from "@armada/core/s
 import type { Sandbox } from "modal";
 import { abortable, withModalStopSignal } from "./client.ts";
 import { ModalOperationError, refusal } from "./errors.ts";
-import { observeModalCompute, stopModalCompute, terminateModalCompute } from "./machine.ts";
+import { observeModalCompute, stopModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
 import { bootstrapModalRuntime, type RuntimeTicket, validateRuntimeTicket } from "./runtime-bootstrap.ts";
@@ -30,6 +30,7 @@ export type ModalRuntimeStop = (binding: {
   recordId: string;
   sandboxId: string;
   generation: number;
+  resumeGeneration?: number | undefined;
   physical?: PhysicalTarget | undefined;
   checkpoint: { epoch: string; watermark: number } | null;
   write(work: (tx: Sql) => Promise<void>): Promise<void>;
@@ -45,7 +46,6 @@ export type ModalRuntimeStop = (binding: {
 interface RuntimeLifecycleDependencies {
   store: ModalStore;
   distribution: Pick<RunnerDistribution, "prepareSnapshot">;
-  bound(): Promise<unknown>;
   assertMachineSource(row: Machine): void;
   physical(row: Machine, signal?: AbortSignal): Promise<Sandbox>;
   namedOwned(row: Machine): Promise<Sandbox>;
@@ -61,7 +61,6 @@ interface RuntimeLifecycleDependencies {
 export function createRuntimeLifecycle({
   store,
   distribution,
-  bound,
   assertMachineSource,
   physical,
   namedOwned,
@@ -79,7 +78,7 @@ export function createRuntimeLifecycle({
           !row.physicalId ||
           row.phase !== "active" ||
           row.runtimeStartAttempted ||
-          row.runtimeResumeGeneration !== input.resumeGeneration
+          row.runtimeResumeGeneration !== undefined
         )
           throw refusal("conflict", "Enrolled runtime bootstrap requires a fresh host-only incarnation.");
         const sb = await physical(row);
@@ -103,6 +102,7 @@ export function createRuntimeLifecycle({
       recordId,
       sandboxId: logicalId,
       generation,
+      resumeGeneration,
       physical: savedTarget,
       checkpoint,
       write,
@@ -110,10 +110,20 @@ export function createRuntimeLifecycle({
       deadlineAt,
       signal: leaseSignal,
     }: Parameters<ModalRuntimeStop>[0]) {
+      if (resumeGeneration !== undefined && resumeGeneration !== generation && resumeGeneration !== generation - 1)
+        throw refusal("conflict", "Cancelled Modal resume generation changed.");
       const pinned = await store.get(recordId);
+      assertMachineSource(pinned);
       const source = pinned.runtimeCheckpoint;
       const image = pinned.recoveryImageId;
-      if (source && image && pinned.runtimeResumeGeneration === generation && !pinned.physicalId) {
+      if (
+        source &&
+        image &&
+        pinned.imageId === image &&
+        resumeGeneration !== undefined &&
+        pinned.runtimeResumeGeneration === resumeGeneration &&
+        !pinned.physicalId
+      ) {
         if (pinned.phase === "reserved") {
           pinned.generation = source.generation;
           pinned.physicalId = source.physicalId;
@@ -206,17 +216,20 @@ export function createRuntimeLifecycle({
                   expected &&
                   prior &&
                   row.recoveryImageId &&
-                  row.runtimeResumeGeneration === generation &&
+                  row.imageId === row.recoveryImageId &&
+                  resumeGeneration !== undefined &&
+                  row.runtimeResumeGeneration === resumeGeneration &&
                   row.generation === prior.generation + 1 &&
                   prior.epoch === expected.epoch &&
                   prior.watermark === expected.watermark;
-                if (reuseRetained && !reconcileOnly) {
+                const exited = (await sb.poll()) !== null;
+                if (reuseRetained && (exited || !reconcileOnly)) {
                   row.runtimeCheckpoint = expected;
                   row.phase = "terminate";
                   row.quiesced = true;
                   await save();
                 }
-                if ((await sb.poll()) !== null) return settle(row.phase === "terminate" ? retained() : null);
+                if (exited) return settle(row.phase === "terminate" ? retained() : null);
                 if (reconcileOnly)
                   throw refusal("unavailable", "The Modal machine still runs; observation will retry.");
                 const livePhases: Machine["phase"][] = expected
@@ -387,44 +400,5 @@ export function createRuntimeLifecycle({
         },
       };
     },
-    async rollbackRuntimeResume({ sandboxId, generation }) {
-      await bound();
-      await store.lease(sandboxId, async (row, save) => {
-        assertMachineSource(row);
-        const checkpoint = row.runtimeCheckpoint;
-        if (
-          !row.commonRuntime ||
-          row.runtimeResumeGeneration !== generation ||
-          !row.recoveryImageId ||
-          row.imageId !== row.recoveryImageId ||
-          !checkpoint ||
-          !row.physicalId
-        )
-          throw refusal("conflict", "Rollback requires the exact retained resume.");
-        if (
-          row.phase === "stopped" &&
-          checkpoint.generation === row.generation &&
-          checkpoint.physicalId === row.physicalId
-        )
-          return;
-        if (row.generation !== checkpoint.generation + 1 || !["active", "terminate"].includes(row.phase))
-          throw refusal("conflict", "Rollback requires the exact replacement incarnation.");
-        if (row.phase !== "terminate") {
-          row.phase = "terminate";
-          row.info.state = "stopping";
-          await save(row);
-        }
-        await terminateModalCompute(await physical(row));
-        row.runtimeCheckpoint = { ...checkpoint, physicalId: row.physicalId, generation: row.generation };
-        row.phase = "stopped";
-        row.info.state = "stopped";
-        row.info.providerState = "stopped";
-        row.info.stoppedAt = new Date();
-        await save(row);
-      });
-    },
-  } satisfies Pick<
-    ModalProvider,
-    "startRuntime" | "runtimeStopMachine" | "runtimeResumeMachine" | "rollbackRuntimeResume"
-  >;
+  } satisfies Pick<ModalProvider, "startRuntime" | "runtimeStopMachine" | "runtimeResumeMachine">;
 }

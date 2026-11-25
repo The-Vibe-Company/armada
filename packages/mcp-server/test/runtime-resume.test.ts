@@ -160,10 +160,7 @@ describe("Modal retained stop", () => {
 describe.each([
   ["boat", "codex"],
   ["boat", "claude"],
-  ["modal", "codex"],
-  ["modal", "claude"],
-  ["modal", "opencode"],
-] as const)("retained runtime resume (%s/%s)", (provider, harness) => {
+] as readonly ["boat" | "modal", Harness][])("retained runtime resume (%s/%s)", (provider, harness) => {
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,
   // not resume/replay work. Keep the behavior timeout and real assertions intact.
   const fixture = scopedRuntimeFixture(() => stopped(harness, provider), { timeout: 20_000 });
@@ -1811,10 +1808,7 @@ async function acknowledgedScopedGrant(tx: Sql, sandboxId: string) {
 describe.each([
   ["boat", "codex"],
   ["boat", "claude"],
-  ["modal", "codex"],
-  ["modal", "claude"],
-  ["modal", "opencode"],
-] as const)("empty retained runtime wake (%s/%s)", (provider, harness) => {
+] as readonly ["boat" | "modal", Harness][])("empty retained runtime wake (%s/%s)", (provider, harness) => {
   const fixture = scopedRuntimeFixture(() => stopped(harness, provider, true));
   test("one fresh-epoch first conversation survives replay without inventing native history", async () => {
     const f = await fixture();
@@ -1925,7 +1919,9 @@ describe("Modal resume job", () => {
       watermark: f.cp.checkpoint.watermark,
       conversationId: f.first.conversationId!,
     };
+    const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
     const service = createResumeJob({
+      turns,
       sql: f.sql,
       key: ENCRYPTION_KEY,
       commands: f.bridge,
@@ -1982,10 +1978,10 @@ describe("Modal resume job", () => {
       undefined,
       service.resume,
     );
-    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, explicit);
-    const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
-    turns.setDispatch(send);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, explicit, undefined, service.wake);
+    turns.setDispatch((caller, input, claim) => send(caller, input, claim, { fromQueue: true }));
     const request = input(f.row.id);
+    const joined = input(f.row.id);
     const wake = Promise.withResolvers<void>();
     const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, wake.resolve);
     try {
@@ -1996,6 +1992,8 @@ describe("Modal resume job", () => {
         (value) => ({ value }),
         (error: unknown) => ({ error }),
       );
+      if (!expired)
+        expect(await turns.accept(f.caller, joined, { resumeOnly: true })).toMatchObject({ status: "queued" });
       const owner = crypto.randomUUID();
       const take = async () => {
         const job = (await jobs.claim("resume", owner, 30, 8))!;
@@ -2026,15 +2024,35 @@ describe("Modal resume job", () => {
       await f.reboot(restore, true, ticketToken);
       await f.sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
       expect(await take()).toBe("done");
+      expect(f.starts).toEqual([undefined]);
+      await turns.drain();
+      f.lose();
+      expect(await turns.reconcileOne(new AbortController().signal)).toBe(true);
+      await turns.drain();
+      await f.sql.query("update public.jobs set deadline_at=now() where sandbox_id=$1 and kind='resume'", [f.row.id]);
+      expect(await turns.reconcileOne(new AbortController().signal)).toBe(true);
+      await turns.drain();
       const accepted = await receipt;
       if (!("value" in accepted)) throw accepted.error;
-      await turns.drain();
       expect(await turns.status(f.caller, request.id, request.request_id)).toMatchObject({
         nativePromptId: accepted.value.promptId,
       });
       expect(allocations).toBe(1);
       expect(bootstraps).toBe(1);
       expect(f.starts).toEqual([undefined, "native-thread"]);
+      expect(
+        (
+          await f.sql.query("select state from public.account_turn_queue where sandbox_id=$1 and request_id=$2", [
+            joined.id,
+            joined.request_id,
+          ])
+        ).rows,
+      ).toEqual([{ state: "queued" }]);
+      const { rows } = await f.sql.query(
+        "select generation::text from public.jobs where sandbox_id=$1 and kind='resume'",
+        [f.row.id],
+      );
+      expect(rows).toEqual([{ generation: String(firstGeneration + 1) }]);
     } finally {
       unsubscribe();
     }

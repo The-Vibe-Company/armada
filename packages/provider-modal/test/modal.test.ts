@@ -1274,7 +1274,23 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   expect((await resumeRuntime(f.provider, request)).physicalGeneration).toBe("2");
   expect(f.creates).toBe(2);
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
-  await f.provider.startRuntime({ ...bootstrap, resumeGeneration: request.generation });
+  const restarted = await f.provider.runtimeResumeMachine({
+    recordId: worker.id,
+    sandboxId: worker.id,
+    generation: request.generation,
+    checkpoint: request.checkpoint,
+    async authorize() {},
+    write: (work) => work(fixtureSql),
+    async ticket() {
+      return bootstrap;
+    },
+  });
+  await restarted.bootstrap({
+    sandboxId: worker.id,
+    generation: request.generation,
+    machineId: restored.physicalId!,
+    bindingRef: "current-job",
+  });
   f.onTerminate(async () => {
     const stopping = await f.store.get(worker.id);
     expect(stopping.runtimeCheckpoint).toBeUndefined();
@@ -1284,46 +1300,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await expect(resumeRuntime(f.provider, request)).rejects.toMatchObject({ code: "conflict" });
 });
 
-test("retained Modal rollback retries termination and fences a newer replacement", async () => {
-  const f = fixture(scope, fixtureSql);
-  const worker = await runningFork(f);
-  const checkpoint = { epoch: "1", watermark: 2 };
-  await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", ...checkpoint });
-  const { recoveryImageId } = await f.store.get(worker.id);
-  const request = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint };
-  await resumeRuntime(f.provider, request);
-  const replacement = await f.store.get(worker.id);
-  const before = f.log.length;
-  f.loseTerminateResponse(true);
-  await expect(f.provider.rollbackRuntimeResume(request)).rejects.toThrow();
-  expect(await f.store.get(worker.id)).toMatchObject({ phase: "terminate", recoveryImageId });
-  await f.provider.rollbackRuntimeResume(request);
-  await f.provider.rollbackRuntimeResume(request);
-  expect(f.log.slice(before)).toEqual(["terminate"]);
-  expect(await f.store.get(worker.id)).toMatchObject({
-    phase: "stopped",
-    recoveryImageId,
-    runtimeCheckpoint: { ...checkpoint, physicalId: replacement.physicalId, generation: 2 },
-  });
-  await expect(resumeRuntime(f.provider, request)).rejects.toMatchObject({ code: "conflict" });
-  await resumeRuntime(f.provider, { ...request, generation: 4 });
-  await expect(f.provider.rollbackRuntimeResume(request)).rejects.toMatchObject({ code: "conflict" });
-  const bootstrap = {
-    sandboxId: worker.id,
-    serverUrl: "https://armada.example",
-    enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
-    cacheDir: "/tmp/armada-runtime",
-    artifact: { sha256: "b".repeat(64), bytes: 1 },
-  };
-  await expect(f.provider.startRuntime({ ...bootstrap, resumeGeneration: request.generation })).rejects.toMatchObject({
-    code: "conflict",
-  });
-  await f.provider.startRuntime({ ...bootstrap, resumeGeneration: 4 });
-  expect(await f.provider.get(worker.id)).toMatchObject({ state: "ready", physicalGeneration: "3" });
-  expect((await f.store.get(worker.id)).imageId).toBe(recoveryImageId);
-});
-
-test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
+test("owner stop adopts a lost Modal replacement across the stop generation bump", async () => {
   const f = fixture(scope, fixtureSql);
   const worker = await runningFork(f);
   await stopRuntime(f.provider, { sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
@@ -1343,13 +1320,15 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
   const job = await f.provider.runtimeStopMachine({
     recordId: worker.id,
     sandboxId: worker.id,
-    generation: 2,
+    generation: 3,
+    resumeGeneration: 2,
     checkpoint: { epoch: "1", watermark: 2 },
     write: (work) => work(fixtureSql),
   });
-  expect(await job.machine.stop({ ...job.physical, sandboxId: worker.id, generation: 2, retain: true })).toMatchObject({
-    kind: "image",
-  });
+  const request = { ...job.physical, sandboxId: worker.id, generation: 3, retain: true };
+  f.loseTerminateResponse(true);
+  await expect(job.machine.stop(request)).rejects.toThrow();
+  expect(await job.machine.stop(request)).toMatchObject({ kind: "image" });
   expect(f.log.slice(beforeCleanup)).toEqual(["terminate"]);
   expect(f.creates).toBe(2);
   const stopped = await f.store.get(worker.id);
@@ -1358,6 +1337,10 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
   expect(stopped.runtimeCheckpoint).toMatchObject({ epoch: "1", watermark: 2, generation: 2 });
   expect(stopped.recoveryImageId).toBeDefined();
   expect(await f.provider.get(worker.id)).toMatchObject({ state: "stopped" });
+  const resume = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } };
+  await expect(resumeRuntime(f.provider, resume)).rejects.toMatchObject({ code: "conflict" });
+  f.failCreate(false);
+  expect(await resumeRuntime(f.provider, { ...resume, generation: 4 })).toMatchObject({ state: "ready" });
 });
 
 test("uncertain enrolled Modal snapshot refuses retry or resume and compute fallback drops retention", async () => {

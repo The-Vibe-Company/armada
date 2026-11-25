@@ -10,7 +10,7 @@ import type { Caller } from "./caller.ts";
 import type { SandboxView } from "./data.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
-import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
+import { unresolvedModalLaunch, unresolvedResume } from "./modal-launch-handoff.ts";
 import { runtimeHarnessSupported, usesHostLaunch } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -435,8 +435,8 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
     if (sandbox.ownerId !== caller.userId)
       throw new VaultError("forbidden", "Only the runtime owner may checkpoint this sandbox.");
     const current = (
-      await sql.query<{ request_id: string | null; application_secret_tainted: boolean }>(
-        `select p.request_id::text,s.application_secret_tainted from public.sandboxes s
+      await sql.query<{ request_id: string | null; application_secret_tainted: boolean; resuming: boolean }>(
+        `select p.request_id::text,s.application_secret_tainted,${unresolvedResume("s")} as resuming from public.sandboxes s
          left join public.runtime_enrolments r on r.sandbox_id=s.id
          left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
          where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
@@ -451,7 +451,7 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
         undefined,
         new SandboxStopTargetChanged(),
       );
-    if (current.application_secret_tainted) return undefined;
+    if (current.application_secret_tainted || current.resuming) return undefined;
     return checkpoint(
       caller,
       { id: sandbox.id, request_id: current.request_id ?? crypto.randomUUID(), runtimeVersion: 1 },

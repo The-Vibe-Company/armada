@@ -395,7 +395,9 @@ export async function createServerServices(env: Record<string, string | undefine
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;
+  const accountTurns = createAccountTurnQueue(sql, config.encryptionKey);
   const resume = createResumeJob({
+    turns: accountTurns,
     sql,
     key: config.encryptionKey,
     commands: runtimeCommands,
@@ -415,7 +417,6 @@ export async function createServerServices(env: Record<string, string | undefine
     sandboxArmadaAccess.restoreEnrolled,
     resume.resume,
   );
-  const accountTurns = createAccountTurnQueue(sql, config.encryptionKey);
   const runtimeSend = createRuntimeFollowup(
     sql,
     config.encryptionKey,
@@ -423,6 +424,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeMcp.prepare,
     runtimeResume,
     sandboxArmadaAccess.restoreEnrolled,
+    resume.wake,
   );
   const dockerControls =
     env.ARMADA_DOCKER_HOSTS === "1"

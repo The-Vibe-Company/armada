@@ -66,10 +66,9 @@ export interface ModalProviderOptions extends ModalConnection {
   ssh?: SshPreparation;
 }
 export interface ModalProvider extends Provider {
-  startRuntime(input: RuntimeTicket & { sandboxId: string; resumeGeneration?: number }): Promise<void>;
+  startRuntime(input: RuntimeTicket & { sandboxId: string }): Promise<void>;
   runtimeStopMachine: ModalRuntimeStop;
   runtimeResumeMachine: ModalRuntimeResume;
-  rollbackRuntimeResume(input: { sandboxId: string; generation: number }): Promise<void>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
@@ -323,7 +322,6 @@ export function createModalProvider(options: ModalProviderOptions) {
     ...createRuntimeLifecycle({
       store,
       distribution,
-      bound,
       assertMachineSource,
       physical,
       namedOwned,

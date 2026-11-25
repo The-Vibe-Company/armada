@@ -12,7 +12,6 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
@@ -388,6 +387,8 @@ export async function publishRuntimeReadiness(
            select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
            and j.bound_operation='create' and j.outcome='completed'
          )))
+         or exists(select 1 from public.jobs j where not $2::boolean and j.kind='resume' and j.sandbox_id=s.id
+           and j.generation=s.lifecycle_generation and j.outcome ? 'bootstrap_ticket_enc' and j.state in ('queued','leased'))
          or launch.id is not null
          or (s.provider='boat' and s.boat_runtime and not $2::boolean and exists(
            select 1 from public.jobs j where j.kind='launch' and j.sandbox_id=s.id
@@ -715,11 +716,18 @@ export async function enqueueModalStop(
   return true;
 }
 
+export async function prepareResumeGeneration(tx: Sql, id: string, generation: number) {
+  await tx.query(
+    "update public.sandboxes set task_prompt_id=null,task_outcome=null where id=$1 and lifecycle_generation=$2 and status='starting'",
+    [id, generation],
+  );
+}
+
 export async function stopUnfinishedResume(tx: Sql, sandboxId: string, generation: number) {
   await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
-    fromStates: ["starting"],
+    fromStates: ["starting", "ready"],
     toState: "stopping",
     actor: "expiry",
     code: "resume_dispatch_ended",
@@ -1425,7 +1433,6 @@ async function recoverInterruptedRuntimeResume(
        and (
          (s.provider='boat' and s.boat_runtime and (s.provider_sandbox_id=$4::text or r.activated_at is not null
            or (e.enrolment_hash is not null and e.lifecycle_generation=$3)))
-         or (s.provider='modal' and s.runtime_transport='dialout' and r.activated_at is not null)
        )
        and c.watermark=r.watermark
        and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)`,
@@ -1506,23 +1513,17 @@ export function createSandboxLifecycle(
           retained_resume: boolean;
           checkpointed_stop: boolean;
           interrupted_resume: boolean;
-          protected_resume: boolean;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
         }>(
           `update public.sandboxes s set reconcile_lease=$1::uuid,
           reconcile_lease_until=now()+interval '2 minutes'
         from (
-          select candidate.id,recovery.retained_resume,recovery.modal_resume from public.sandboxes candidate
+          select candidate.id,recovery.retained_resume from public.sandboxes candidate
           cross join lateral (select candidate.status='stopping' and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=candidate.id and t.generation=candidate.lifecycle_generation
             and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
-          ) as retained_resume, (candidate.provider='modal' and candidate.runtime_transport='dialout'
-            and candidate.status='starting' and exists(
-              select 1 from public.runtime_resumes r where r.sandbox_id=candidate.id
-                and r.request_id=candidate.activity_lease_id and r.phase='dispatched'
-                and r.receipt is null and r.activated_at is not null
-            )) as modal_resume) recovery
+          ) as retained_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           and not ${unresolvedModalStop("candidate")}
           -- The launch job owns recovery across retries and worker replacement.
@@ -1538,7 +1539,7 @@ export function createSandboxLifecycle(
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           -- Only this worker understands the retained-resume handoff. Old
           -- replicas see an infinite schedule and cannot claim it.
-          and (candidate.reconcile_after<=now() or recovery.modal_resume
+          and (candidate.reconcile_after<=now()
             or (recovery.retained_resume and coalesce(candidate.lifecycle_error,'') not like $4))
           and (candidate.activity_until is null or candidate.activity_until<now())
           and (candidate.reconcile_lease_until is null or candidate.reconcile_lease_until<now())
@@ -1550,14 +1551,12 @@ export function createSandboxLifecycle(
           ))
           order by case
             when recovery.retained_resume then coalesce(candidate.reconcile_lease_until,candidate.stop_requested_at)
-            when recovery.modal_resume then candidate.activity_until
             else candidate.reconcile_after end
           limit 1 for update of candidate skip locked
         ) due
         where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,extract(epoch from s.expires_at)::text as expiry_epoch,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.stop_requested_at,s.preservation_note,
           due.retained_resume,
-          due.modal_resume as protected_resume,
           ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
             and s.status='stopping' and s.stop_requested_at is not null and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
@@ -1574,7 +1573,7 @@ export function createSandboxLifecycle(
       ).rows[0];
       if (!row) return false;
       const recoverInterruptedResume = async (observedProviderId: string | null) => {
-        if (!row.interrupted_resume && !row.protected_resume) return false;
+        if (!row.interrupted_resume) return false;
         if (!sql.transaction) throw Error("Runtime resume recovery requires a SQL transaction.");
         return sql.transaction(async (tx) => {
           const owned = await tx.query(
@@ -1618,11 +1617,10 @@ export function createSandboxLifecycle(
         await sql.query(
           `update public.sandboxes set
             lifecycle_error='Cleanup blocked: removed-owner authority is unavailable. Automatic cleanup requires service-owned worker authority.',
-            reconcile_after=case when $4 then 'infinity'::timestamptz else now()+interval '1 minute' end,
-            reconcile_lease=null,reconcile_lease_until=case when $4 then now()+interval '1 minute' end
+            reconcile_after=now()+interval '1 minute',reconcile_lease=null,reconcile_lease_until=null
           where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
             and reconcile_lease_until>now() and (activity_until is null or activity_until<now())`,
-          [row.id, token, row.lifecycle_generation, row.protected_resume],
+          [row.id, token, row.lifecycle_generation],
         );
         return true;
       }
@@ -1641,7 +1639,6 @@ export function createSandboxLifecycle(
       const logicalDeadline = Number(row.expiry_epoch) * 1000;
       const expired = logicalDeadline <= now();
       const retainedResume = row.retained_resume;
-      const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const canDeferInterruptedResume =
         row.interrupted_resume && !expired && !row.stop_requested_at && !row.application_secret_tainted;
       const deferInterruptedResume = () =>
@@ -1829,15 +1826,6 @@ export function createSandboxLifecycle(
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
-        if (rollbackRetainedResume) {
-          const rollback = (provider as Partial<ModalProvider>).rollbackRuntimeResume;
-          if (!rollback) throw Error("Modal rollback authority is unavailable.");
-          await operation(signal, () =>
-            rollback.call(provider, { sandboxId: row.provider_sandbox_id, generation: row.lifecycle_generation - 1 }),
-          );
-          terminal = true;
-          return settle();
-        }
         const observe = async () => {
           observing = true;
           const info = await operation(signal, () => provider.get(row.provider_sandbox_id));
@@ -2103,7 +2091,6 @@ export function createSandboxLifecycle(
         }
         if (
           resolved &&
-          !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&
           (!requireMissingObservation || observing) &&
           caught instanceof ProviderError &&
@@ -2155,23 +2142,18 @@ export async function publishRuntimeWake(
   requestId: string,
   promptId: string,
   conversationIds: string[],
-  resumeJob?: string,
 ) {
   const published = await tx.query(
     `update public.sandboxes s set task_prompt_id=$4,conversation_ids=$5::text[],status_reason=null,
        activity_lease_id=null,activity_until=null
-     where s.id=$1 and s.lifecycle_generation=$2
-       and (case when $6::uuid is null then s.activity_lease_id=$3 and s.activity_until>clock_timestamp()
-         else exists(select 1 from public.jobs j where j.id=$6 and j.sandbox_id=s.id
-           and j.generation=s.lifecycle_generation and j.kind='resume' and j.state='leased'
-           and j.lease_until>clock_timestamp() and j.deadline_at>clock_timestamp()) end)
-       and s.status='starting'  and s.expires_at>clock_timestamp()
+     where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
+       and s.status='starting' and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
        and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
        and not s.application_secret_tainted
        and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
        and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
      returning s.id`,
-    [sandboxId, generation, requestId, promptId, conversationIds, resumeJob ?? null],
+    [sandboxId, generation, requestId, promptId, conversationIds],
   );
   if (!published.rows.length) throw new VaultError("conflict", "Runtime wake publication is stale.");
   const transition = await transitionSandbox(tx, {
@@ -2184,7 +2166,6 @@ export async function publishRuntimeWake(
     effects: [],
   });
   if (transition.kind === "conflict") throw new VaultError("conflict", "Runtime wake publication is stale.");
-  if (resumeJob) await restoreModalResumeSchedule(tx, sandboxId);
   await releaseAccountCapacity(tx, sandboxId);
   await settleRuntimeTurn(tx, sandboxId, generation);
 }

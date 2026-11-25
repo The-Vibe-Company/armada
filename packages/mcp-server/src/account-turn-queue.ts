@@ -149,6 +149,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       canDispatch: JobContext["canDispatch"];
       authority?: LaunchAuthority | undefined;
     },
+    resumeOnly = false,
   ) {
     const requestId = input.request_id;
     const normalized = {
@@ -287,14 +288,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         throw new VaultError("conflict", "Reuse the original request_id and identical input.");
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
-          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
+          `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids, ${unresolvedResume("s")} as resuming from public.sandboxes s where id=$1 and credential_id=$2 and credential_version=$3
            and deleted_at is null and expires_at>now()
            and (status='stopping' or (stop_requested_at is null
-             and (status in ('ready','running','stopped') or (status='starting' and ${LAUNCH_PENDING})))) for update`,
+             and (status in ('ready','running','stopped') or (status='starting' and (${LAUNCH_PENDING} or ${unresolvedResume("s")}))))) for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
-        if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        if (!locked || (resumeOnly && locked.status !== "stopped" && !locked.resuming))
+          throw new VaultError("conflict", "Sandbox cannot accept a retained resume prompt.");
         if (locked.status === "stopping") {
           // WARNING: Reading the journal before taking the lock can miss a concurrent stop admission.
           const pending = await tx.query(
@@ -302,7 +304,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             [input.id],
           );
           if (!pending.rows.length) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
-        } else if (locked.status !== "stopped") {
+        } else if (locked.status !== "stopped" && !locked.resuming) {
           const checkpoint = (
             await tx.query<{ merge_stop: boolean }>(
               `select p.merge_stop from public.runtime_checkpoints p join public.runtime_enrolments r
@@ -335,7 +337,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         saved = (
           await tx.query<Entry>(
             `insert into public.account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,model,queued_generation)
-           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,(select lifecycle_generation from public.sandboxes where id=$1)) returning *`,
+           values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,(select lifecycle_generation from public.sandboxes where id=$1)-$12) returning *`,
             [
               input.id,
               requestId,
@@ -348,6 +350,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               sealed,
               currentConversation ?? `first_${requestId}`,
               input.model ?? target.model,
+              locked.resuming ? 1 : 0,
             ],
           )
         ).rows[0]!;
@@ -358,9 +361,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       return saved;
     });
   }
-  async function accept(caller: Caller, input: RuntimeFollowupInput) {
+  async function accept(caller: Caller, input: RuntimeFollowupInput, { resumeOnly = false } = {}) {
     const requestId = input.request_id?.toLowerCase() ?? randomUUID();
-    const entry = await persist(caller, { ...input, request_id: requestId });
+    const entry = await persist(caller, { ...input, request_id: requestId }, undefined, resumeOnly);
     if (!entry) return null;
     if (entry.result_enc) return JSON.parse(await decryptSecret(entry.result_enc, key));
     if (entry.state === "failed")

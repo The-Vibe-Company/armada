@@ -85,7 +85,6 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
-      resume: resumeJob,
       delete: launchCleanupJob ?? modal.launchCleanupJob,
       ...(modalLaunchJob || dockerLaunch
         ? {
@@ -109,6 +108,7 @@ const jobsLane: LaneFactory = ({
         : {}),
       ...(config.encryptionKey
         ? {
+            resume: resumeJob,
             stop: createStopJob(
               sql,
               config.encryptionKey,

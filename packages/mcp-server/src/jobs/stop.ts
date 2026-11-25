@@ -74,6 +74,7 @@ export function createStopJob(
       provider_sandbox_id: string;
       status: "failed" | "stopping" | "stopped";
       confirmed_exit: boolean;
+      resume_generation: string | null;
       retention_required: boolean;
       checkpoint: { epoch: string; watermark: number } | null;
       deadline_at: Date;
@@ -84,13 +85,25 @@ export function createStopJob(
          select 1 from public.sandbox_transitions t where t.sandbox_id=s.id and t.generation=$2
            and t.code='runtime_retained_stop'
        )) as retention_required,
-       p.checkpoint,j.deadline_at
+       p.checkpoint,j.deadline_at,resume.generation::text as resume_generation
        from public.sandboxes s join public.jobs j on j.id=$3
        left join lateral (
+         select r.generation,r.state,coalesce(r.outcome#>'{evidence,checkpoint}',r.outcome->'checkpoint') as checkpoint
+         from public.jobs r where r.sandbox_id=s.id and r.org_id=s.org_id
+           and r.kind='resume' and r.generation in (s.lifecycle_generation,s.lifecycle_generation-1)
+         order by r.generation desc limit 1
+       ) resume on true
+       left join lateral (
          select jsonb_build_object('epoch',p.epoch::text,'watermark',p.watermark) as checkpoint
-         from public.runtime_enrolments r join public.runtime_checkpoints p on p.sandbox_id=r.sandbox_id and p.epoch=r.epoch
+         from public.runtime_enrolments r join public.runtime_checkpoints p on p.sandbox_id=r.sandbox_id
          where r.sandbox_id=s.id and not s.application_secret_tainted and p.completed_at is not null
            and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+           and (p.epoch=r.epoch or (
+             resume.state<>'done' and p.epoch::text=resume.checkpoint->>'epoch'
+               and r.epoch::text=resume.checkpoint->>'target'
+               and p.watermark::text=resume.checkpoint->>'watermark'
+           ))
+         order by p.epoch desc limit 1
        ) p on true
        where s.id=$1 and s.lifecycle_generation=$2 and s.provider='modal' and s.runtime_transport='dialout'
          and ((s.status in ('stopping','failed') and s.stop_requested_at is not null and s.stopped_at is null)
@@ -137,6 +150,7 @@ export function createStopJob(
         recordId: target.provider_sandbox_id,
         sandboxId,
         generation: Number(generation),
+        resumeGeneration: target.resume_generation === null ? undefined : Number(target.resume_generation),
         physical: prior?.modal_physical,
         checkpoint,
         write,
@@ -197,6 +211,7 @@ export function createStopJob(
           target.status === "failed" ? "failed" : "stopping",
           retentionLost,
         );
+        if (checkpoint && !retentionLost) await mergeStopOutcome(tx, job.id, { modal_checkpoint: checkpoint });
         await publish(tx);
       },
     };

@@ -9,7 +9,7 @@ import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts"
 import type { createResumeJob } from "./jobs/resume.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
-import { modalDialoutPlacement, runtimeBridgeTarget, usesDiskStopJob } from "./provider-runtime-admission.ts";
+import { modalDialoutPlacement, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -22,10 +22,8 @@ import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sand
 import {
   confirmRuntimeResumeActivation,
   deferAmbiguousBoatResume,
-  pendingModalStopOutput,
   publishRuntimeWake,
   requestFailedRuntimeResumeStop,
-  restoreModalResumeSchedule,
   transitionSandbox,
 } from "./sandbox-lifecycle.ts";
 
@@ -116,8 +114,10 @@ export function createRuntimeResume(
       throw new VaultError("not_found", "No owned runtime resume target.");
     if (!HARNESS_CAPABILITIES[found.harness].resume)
       throw new VaultError("unavailable", "This harness cannot resume a stopped conversation.");
-    if (modalDialoutPlacement(found) && queuedResume)
-      return queuedResume(caller, found, { ...input, id: found.id, request_id: requestId }, claim);
+    if (modalDialoutPlacement(found)) {
+      if (!queuedResume) throw new VaultError("unavailable", "Modal resume jobs are unavailable.");
+      return queuedResume(caller, found, { ...input, id: found.id, request_id: requestId });
+    }
 
     const prior = await read(sql, found.id, requestId);
     const empty = prior?.empty_checkpoint ?? (found.conversationIds.length === 0 && !found.taskPromptId);
@@ -240,11 +240,6 @@ export function createRuntimeResume(
         current.lifecycleGeneration === undefined
       )
         throw new VaultError("conflict", "Resume requires a confirmed retained stop and no unresolved admission.");
-      if (
-        current.modalTransport === "dialout" &&
-        (await pendingModalStopOutput(tx, found.id, current.lifecycleGeneration))
-      )
-        throw new VaultError("conflict", "Final stop outputs are awaiting publication. Retry after stop settlement.");
       const proof = (
         await tx.query<{ watermark: string }>(
           `select watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2 and watermark is not null
@@ -376,7 +371,6 @@ export function createRuntimeResume(
             receipt.promptId,
             admitted.op.empty_checkpoint ? [conversation] : admitted.current.conversationIds,
           );
-          if (found.modalTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",
             [found.id, requestId, JSON.stringify(receipt)],
@@ -471,7 +465,7 @@ export function createRuntimeResume(
               );
             await prepareGitHub?.(caller, found.id, commandGuard);
             await prepareMcp?.(caller, found.id, signal, commandGuard);
-            if (found.boatRuntime || found.modalTransport === "dialout")
+            if (found.boatRuntime)
               await restoreScopedAccess?.(
                 caller.userId,
                 found.id,
@@ -561,11 +555,7 @@ export function createRuntimeResume(
           const boatSourceEpoch =
             found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
           const retained = Boolean(
-            (boatSourceEpoch && (runtime.ticket_issued || runtime.activation_confirmed || preActivationArchive)) ||
-              (found.modalTransport === "dialout" &&
-                runtime?.activation_confirmed &&
-                !runtime.live &&
-                runtime.epoch === admitted.op.source_epoch),
+            boatSourceEpoch && (runtime.ticket_issued || runtime.activation_confirmed || preActivationArchive),
           );
           await assertClaim(tx);
           if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
@@ -588,8 +578,6 @@ export function createRuntimeResume(
           return status;
         })
         .catch(() => undefined);
-      if (cleanup === "failed" && !usesDiskStopJob(found.provider) && placement && !preActivationArchive)
-        await placement.stop().catch(() => {});
       if (cleanup === "stopping")
         throw new VaultError(
           "conflict",

@@ -19,7 +19,7 @@ const owners = [
     "boat_runtime_extension_state",
     [`${server}/boat-runtime-resume.ts`, `${server}/sandbox-lifecycle.ts`, `${server}/runtime-resume.ts`],
   ],
-  ["runtime_resumes", [`${server}/runtime-resume.ts`, `${server}/jobs/resume.ts`, `${server}/sandbox-lifecycle.ts`]],
+  ["runtime_resumes", [`${server}/runtime-resume.ts`, `${server}/sandbox-lifecycle.ts`]],
   ["runtime_*", [`${server}/runtime-*.ts`]],
   ["docker_*", [`${server}/docker-*.ts`]],
   ["model_auth_* account_*", [`${server}/account-*.ts`, `${server}/model-auth*.ts`]],

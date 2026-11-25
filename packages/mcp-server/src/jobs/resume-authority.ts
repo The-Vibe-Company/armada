@@ -1,7 +1,7 @@
 export function resumeDispatchAuthority(job: string, sandbox: string, pendingTicket = false) {
   return `(${job}.attempts<=${job}.max_attempts and ${job}.deadline_at>clock_timestamp()
     ${pendingTicket ? `and ${job}.state in ('queued','leased')` : `and ${job}.state='leased' and ${job}.lease_until>clock_timestamp()`}
-    and ${sandbox}.status='starting' and ${sandbox}.stop_requested_at is null and ${sandbox}.deleted_at is null
+    and ${sandbox}.status in ('starting','ready') and ${sandbox}.stop_requested_at is null and ${sandbox}.deleted_at is null
     and not ${sandbox}.application_secret_tainted and ${sandbox}.expires_at>clock_timestamp()
     and date_trunc('milliseconds',${sandbox}.expires_at)=(${job}.outcome->>'expiresAt')::timestamptz
     and exists(select 1 from public.mcp_actor_epochs e join public.members m
