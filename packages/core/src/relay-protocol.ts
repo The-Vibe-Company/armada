@@ -6,7 +6,6 @@ export const CREDIT_WATERMARK = 65_536 as const;
 export const MAX_PTYS_PER_SANDBOX = 4 as const;
 export const MAX_TCP_PER_SANDBOX = 16 as const;
 export const MAX_STREAMS_PER_SANDBOX = 20 as const;
-
 export const RELAY_OPCODE = {
   OPEN_PTY: 0x01,
   OPEN_TCP: 0x02,
@@ -31,7 +30,6 @@ export type RelayProtocolErrorCode =
   | "invalid_port"
   | "invalid_terminal_size"
   | "invalid_close_reason";
-
 export class RelayProtocolError extends Error {
   readonly code: RelayProtocolErrorCode;
   constructor(code: RelayProtocolErrorCode, message: string) {
@@ -77,12 +75,12 @@ const checkStream = (id: number, type: RelayOpcode) => {
   if (!intIn(id, 0, U32) || (ctrl ? id !== 0 : type !== CLOSE && id === 0)) fail("invalid_stream_id", "Bad stream.");
   return id;
 };
-const checkCwd = (cwd: unknown) =>
-  cwd === undefined
-    ? undefined
-    : typeof cwd === "string" && cwd.length >= 1 && cwd.length <= 4096 && !cwd.includes("\0")
-      ? cwd
-      : fail("invalid_payload", "Invalid cwd.");
+const checkCwd = (cwd: unknown) => {
+  if (cwd === undefined) return undefined;
+  if (typeof cwd !== "string" || cwd.length === 0 || cwd.length > 4096 || cwd.includes("\0"))
+    fail("invalid_payload", "Invalid cwd.");
+  return cwd;
+};
 const utf8 = (b: Uint8Array) => {
   try {
     return dec.decode(b);
@@ -168,7 +166,6 @@ export function encodeRelayMessage(m: RelayMessage) {
   if (m.nonce !== undefined && m.nonce.byteLength !== 8) fail("invalid_payload", "Bad nonce.");
   return send(m.nonce ?? EMPTY);
 }
-
 export function decodeRelayMessage(bytes: Uint8Array) {
   const { type, streamId, payload } = decodeRelayFrame(bytes);
   checkStream(streamId, type);
@@ -211,49 +208,57 @@ export function decodeRelayMessage(bytes: Uint8Array) {
   if (len !== 0 && len !== 8) fail("invalid_payload", "Bad PING/PONG.");
   return (len === 8 ? { type, streamId: 0, nonce: payload } : { type, streamId: 0 }) satisfies RelayMessage;
 }
-
 export class StreamWindow {
-  sendAvailable: number;
-  receiveAvailable: number;
-  pendingCredit = 0;
+  #send: number;
+  #recv: number;
+  #pending = 0;
   #inFlight = 0;
   readonly #watermark: number;
-  constructor(initialWindow = INITIAL_STREAM_WINDOW, watermark = CREDIT_WATERMARK) {
+  constructor(initialWindow: number = INITIAL_STREAM_WINDOW, watermark: number = CREDIT_WATERMARK) {
     if (!intIn(initialWindow, 1, U32) || !intIn(watermark, 1, initialWindow)) throw new RangeError("Invalid window.");
-    this.sendAvailable = initialWindow;
-    this.receiveAvailable = initialWindow;
+    this.#send = initialWindow;
+    this.#recv = initialWindow;
     this.#watermark = watermark;
+  }
+  get sendAvailable() {
+    return this.#send;
+  }
+  get receiveAvailable() {
+    return this.#recv;
+  }
+  get pendingCredit() {
+    return this.#pending;
   }
   canSend(n: number) {
     if (!intIn(n, 0, Number.MAX_SAFE_INTEGER)) throw new RangeError("Bad byte count.");
-    return n <= this.sendAvailable;
+    return n <= this.#send;
   }
   consumeSend(n: number) {
     if (!this.canSend(n)) return false;
-    this.sendAvailable -= n;
+    this.#send -= n;
     return true;
   }
   replenishSend(n: number) {
     if (!intIn(n, 1, U32)) throw new RangeError("Bad credit.");
-    if (this.sendAvailable + n > U32) fail("invalid_payload", "Window overflow.");
-    this.sendAvailable += n;
-    return this.sendAvailable;
+    if (this.#send + n > U32) fail("invalid_payload", "Window overflow.");
+    this.#send += n;
+    return this.#send;
   }
   recordReceived(n: number) {
     if (!intIn(n, 0, Number.MAX_SAFE_INTEGER)) throw new RangeError("Bad byte count.");
-    if (n > this.receiveAvailable) return false;
-    this.receiveAvailable -= n;
+    if (n > this.#recv) return false;
+    this.#recv -= n;
     this.#inFlight += n;
     return true;
   }
   acknowledgeReceived(n: number) {
     if (!intIn(n, 0, this.#inFlight)) throw new RangeError("Ack exceeds in-flight.");
     this.#inFlight -= n;
-    this.pendingCredit += n;
-    if (this.pendingCredit < this.#watermark) return 0;
-    const grant = this.pendingCredit;
-    this.pendingCredit = 0;
-    this.receiveAvailable += grant;
+    this.#pending += n;
+    if (this.#pending < this.#watermark) return 0;
+    const grant = this.#pending;
+    this.#pending = 0;
+    this.#recv += grant;
     return grant;
   }
 }

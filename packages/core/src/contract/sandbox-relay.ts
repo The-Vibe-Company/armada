@@ -45,7 +45,7 @@ export const sandboxRelayOperations = {
     name: "mintSandboxRelayTicket",
     directServer: true,
     route: { method: "POST", path: "/api/v1/sandboxes/{id}/relay-ticket" },
-    input: { body: relayTicketRequest, path: { id: z.uuid() }, maxBodyBytes: 4096, oversizedBodyStatus: 400 },
+    input: { body: relayTicketRequest, path: { id: z.uuid() }, maxBodyBytes: 32_768, oversizedBodyStatus: 400 },
     output: relayTicketResponse,
     errorOutput: z.strictObject({
       error: z.strictObject({ code: z.enum(RELAY_TICKET_ERRORS), message: z.string().min(1) }),

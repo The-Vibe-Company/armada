@@ -92,6 +92,9 @@ test("enforces port bounds, terminal bounds, OPEN_PTY clamping, and StreamWindow
   expect([w.recordReceived(r.MAX_DATA_CHUNK), w.acknowledgeReceived(r.MAX_DATA_CHUNK)]).toEqual([true, 65_536]);
   expect([w.pendingCredit, w.receiveAvailable, w.recordReceived(262_145)]).toEqual([0, 262_144, false]);
   expect(() => w.acknowledgeReceived(1)).toThrow(RangeError);
+  expect(() => w.replenishSend(0xffff_ffff)).toThrow(RelayProtocolError);
+  expect(() => new StreamWindow(0, 1)).toThrow(RangeError);
+  expect(() => new StreamWindow(10, 11)).toThrow(RangeError);
 });
 
 test("validates sandboxRelayOperations.mintTicket contract", () => {
