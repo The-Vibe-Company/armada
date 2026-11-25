@@ -1,6 +1,7 @@
 import {
   type CredentialKind as CoreCredentialKind,
   type CredentialScope,
+  MAX_SECRET_LENGTH,
   parseCredentialValue,
   VaultError,
 } from "@armada/core";
@@ -13,25 +14,30 @@ import { explainDbError } from "./action";
  */
 export type CredentialKind = Extract<CoreCredentialKind, "boat" | "modal">;
 
-type CredentialKindInfo = { kind: CredentialKind; label: string; description: string };
+type CredentialKindInfo = {
+  kind: CredentialKind;
+  label: string;
+  description: string;
+  format: "key" | "token-pair";
+};
 
 export const CREDENTIAL_KINDS: readonly CredentialKindInfo[] = [
   {
     kind: "boat",
+    format: "key",
     label: "boat.dev API key",
     description: "Hosts sandboxes on Boat. An org key covers everyone; a personal key covers your private snapshots.",
   },
   {
     kind: "modal",
+    format: "token-pair",
     label: "Modal token",
     description: "Hosts sandboxes on Modal: a token ID and its secret, stored together.",
   },
 ];
 
 /** The kinds stored from one pasted value; the Modal token has its own two-field form. */
-export const SINGLE_VALUE_KINDS = CREDENTIAL_KINDS.filter((info) => info.kind !== "modal");
-
-export const MAX_SECRET_LENGTH = 8192;
+export const SINGLE_VALUE_KINDS = CREDENTIAL_KINDS.filter((info) => info.format === "key");
 
 export function credentialKindInfo(kind: CredentialKind): CredentialKindInfo {
   const info = CREDENTIAL_KINDS.find((item) => item.kind === kind);

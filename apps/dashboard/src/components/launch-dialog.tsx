@@ -108,7 +108,7 @@ export function LaunchDialog(props: LaunchProps) {
  * With templates for this environment, the dialog starts with a choice: everything chosen here, or a template's
  * preset (its agent, model, tools and variables), where only the task and the run remain to choose.
  */
-export type HostLaunchStart = {
+type HostLaunchStart = {
   orgId: string;
   hostId: string;
   hostName: string;

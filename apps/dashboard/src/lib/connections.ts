@@ -60,7 +60,7 @@ export interface McpConnection {
  * The registry's complete `McpConnectionInput`. Create and update both send all of it: update is a full replace
  * whose `scope` must restate the stored one (it is immutable), and it clears every saved authentication.
  */
-export type ConnectionDefinition = {
+type ConnectionDefinition = {
   scope: ConnectionScope;
   name: string;
   transport: ConnectionTransport;

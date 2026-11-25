@@ -20,12 +20,7 @@ import { SnapshotBuildRefresh, SnapshotCreateChoice, SnapshotRebuildDialog } fro
 import { EnvironmentTemplates } from "@/components/environment-templates";
 import { GoldenCreateDialog } from "@/components/golden-create-dialog";
 import { GoldenForm } from "@/components/golden-form";
-import {
-  type HostLaunchStart,
-  type LaunchConnections,
-  type LaunchProps,
-  LaunchStart,
-} from "@/components/launch-dialog";
+import { type LaunchConnections, type LaunchProps, LaunchStart } from "@/components/launch-dialog";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { Empty } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
@@ -450,7 +445,9 @@ async function SnapshotEnvironmentTemplates(props: Omit<ComponentProps<typeof En
   return <EnvironmentTemplates {...props} list={await readSnapshotTemplates()} />;
 }
 
-async function EmptyHostLaunchStart(props: Omit<HostLaunchStart, "accounts">) {
+async function EmptyHostLaunchStart(
+  props: Omit<Extract<ComponentProps<typeof LaunchStart>, { hostId: string }>, "accounts">,
+) {
   const accounts = await readSnapshotAccounts();
   return (
     <EnvironmentLaunchDialog>

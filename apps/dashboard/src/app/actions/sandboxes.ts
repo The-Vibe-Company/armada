@@ -4,6 +4,7 @@ import {
   type Harness,
   isSandboxProvider,
   MODEL_CATALOG,
+  PROVIDER_LIMITS,
   SANDBOX_PLACEMENT_LABELS,
   validateSkillPins,
 } from "@armada/core";
@@ -162,7 +163,8 @@ export async function deleteSandbox(_previous: ActionResult | null, data: FormDa
   if (!isUuid(id)) return fail("That request is not valid.");
   const target = await gatewayFor(id);
   if (target.error) return target.error;
-  if (target.sandbox.provider !== "docker") return fail("Deleting is offered for Docker sandboxes only.");
+  if (capabilities(target.sandbox.provider).launchSource !== "host")
+    return fail("Deleting is offered for Docker sandboxes only.");
   if (target.sandbox.status !== "stopped" && target.sandbox.status !== "failed")
     return fail("Stop the sandbox before deleting it.");
   try {
@@ -577,7 +579,7 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
     ? goldens
         .filter(
           (golden) =>
-            golden.provider === "boat" &&
+            PROVIDER_LIMITS[golden.provider].defaultGoldenCapacity !== undefined &&
             goldenRowState(golden, goldens, { id: viewer.id, isAdmin: selected.role === "admin" }).canRebuild,
         )
         .map(({ id, name, visibility }) => ({ id, name, visibility }))

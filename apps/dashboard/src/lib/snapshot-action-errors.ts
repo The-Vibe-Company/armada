@@ -1,4 +1,4 @@
-import type { SandboxProviderId } from "@armada/core";
+import { PROVIDER_LIMITS, type SandboxProviderId } from "@armada/core";
 import type { ControlError } from "./control";
 
 export const SNAPSHOT_ACTION_UNCONFIRMED =
@@ -27,7 +27,13 @@ export function snapshotActionFailure(
   if (action === "build" && error.code === "docker_host_upgrade_required") return error.message;
   if (error.code === "host_draining")
     return "This host is draining for uninstall. Finish or retry the uninstall on the machine; it takes new work again only after the uninstall completes.";
-  if (provider === "boat" && action === "build" && error.code === "conflict" && /golden capacity/i.test(error.message))
+  if (
+    provider &&
+    PROVIDER_LIMITS[provider].defaultGoldenCapacity !== undefined &&
+    action === "build" &&
+    error.code === "conflict" &&
+    /golden capacity/i.test(error.message)
+  )
     return "Snapshot capacity has been reached. Rebuild an existing snapshot or review active builds before creating another.";
   if (error.code === "payment_required")
     return "The provider account needs billing or credits. Check Providers and the build status before trying again.";

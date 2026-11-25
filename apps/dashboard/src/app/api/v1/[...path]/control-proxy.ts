@@ -1,6 +1,5 @@
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import {
-  antigravityLoginOperations,
   controlRouteKey,
   isAntigravityLoginPath,
   operations,
@@ -12,22 +11,8 @@ import {
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
 
-/**
- * Routes with path parameters that the public endpoint forwards with a bearer, beyond the
- * static route tables. The matchers in `forwardControl` admit exactly these shapes; the
- * proxy test fills each in and checks it is forwarded and published or given a reason.
- */
-export const PARAMETERIZED_CONTROL_ROUTES = [
-  ...[antigravityLoginOperations.completeAntigravityLogin, antigravityLoginOperations.cancelAntigravityLogin].map(
-    ({ route }) => ({ method: route.method, path: controlRouteKey(route) }),
-  ),
-  { method: "DELETE", path: "sandboxes/{id}" },
-  { method: "GET", path: "sandboxes/{id}/outputs" },
-  { method: "GET", path: "sandboxes/{id}/outputs/{name}" },
-] as const;
-
 /** POST routes the public endpoint forwards with a bearer. */
-export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
+const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   ...Object.values(operations)
     .filter(
       (operation) =>
@@ -323,7 +308,7 @@ function sandboxOutputsPath(url: string): string | null {
   return SANDBOX_OUTPUTS.exec(new URL(url).pathname)?.[1] ?? null;
 }
 
-export function controlOrigin(value: string | undefined): string | null {
+function controlOrigin(value: string | undefined): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
