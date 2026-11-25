@@ -2,7 +2,7 @@ import type { ServerWebSocket } from "bun";
 import { createHandler } from "./http.ts";
 import { assembleServer } from "./modules.ts";
 import type { RelaySocketData } from "./relay-hub.ts";
-import type { PreviewWsSocketData } from "./relay-preview.ts";
+import { PREVIEW_WS_MAX_PAYLOAD, type PreviewWsSocketData } from "./relay-preview.ts";
 import { BUN_REQUEST_BODY_BACKSTOP, ingressRequest } from "./request-body-ceiling.ts";
 import { currentRequestId, observeRequest, REQUEST_ID_HEADER } from "./request-observability.ts";
 import type { RuntimeSocketData } from "./runtime-sockets.ts";
@@ -90,6 +90,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
         }, options.logError),
       websocket: {
         ...relayHub.websocket,
+        maxPayloadLength: Math.max(relayHub.websocket.maxPayloadLength ?? 0, PREVIEW_WS_MAX_PAYLOAD),
         open(s) {
           if (s.data.kind === "channel")
             return runtimeSockets.websocket.open?.(s as ServerWebSocket<RuntimeSocketData>);

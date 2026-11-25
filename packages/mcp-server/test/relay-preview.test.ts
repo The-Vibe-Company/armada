@@ -9,10 +9,10 @@ import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
-const sharedDb = rowOnlyDatabase(),
-  enc = new TextEncoder(),
-  dec = new TextDecoder(),
-  WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const sharedDb = rowOnlyDatabase();
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 function fakeClock(now = 1_700_000_000_000) {
   const tasks = new Set<{ at: number; interval: number | undefined; cb: () => void }>();
@@ -37,37 +37,48 @@ function fakeClock(now = 1_700_000_000_000) {
     }
     now = target;
   };
-  return { clock, advance };
+  return { clock, advance, tasks };
 }
 
-const wsServerFrame = (opcode: number, payload: Uint8Array, fin = true) => {
-  const o = new Uint8Array(2 + payload.byteLength);
+function wsServerFrame(opcode: number, payload: Uint8Array, fin = true) {
+  const len = payload.byteLength;
+  const hdr = len < 126 ? 2 : len <= 0xffff ? 4 : 10;
+  const o = new Uint8Array(hdr + len);
   o[0] = (fin ? 0x80 : 0) | opcode;
-  o[1] = payload.byteLength;
-  o.set(payload, 2);
+  if (hdr === 2) o[1] = len;
+  else if (hdr === 4) {
+    o[1] = 126;
+    o[2] = (len >>> 8) & 0xff;
+    o[3] = len & 0xff;
+  } else {
+    o[1] = 127;
+    new DataView(o.buffer).setUint32(6, len >>> 0, false);
+  }
+  o.set(payload, hdr);
   return o;
-};
+}
 
-const decodeClientFrame = (buf: Uint8Array) => {
-  const opcode = buf[0]! & 0x0f,
-    masked = (buf[1]! & 0x80) !== 0,
-    len = buf[1]! & 0x7f,
-    mask = buf.subarray(2, 6),
-    payload = new Uint8Array(len);
+function decodeClientFrame(buf: Uint8Array) {
+  const opcode = buf[0]! & 0x0f;
+  const masked = (buf[1]! & 0x80) !== 0;
+  const len = buf[1]! & 0x7f;
+  const mask = buf.subarray(2, 6);
+  const payload = new Uint8Array(len);
   for (let i = 0; i < len; i++) payload[i] = buf[6 + i]! ^ mask[i & 3]!;
   return { opcode, masked, text: dec.decode(payload) };
-};
+}
 
 type TcpPeer = {
   id: number;
   port: number;
+  sendOpenOk: () => void;
   sendData: (b: Uint8Array) => void;
   close: (code?: number, reason?: "eof" | "refused" | "revoked") => void;
 };
 
 async function fixture(onTcp: (s: TcpPeer, received: Uint8Array, credits: number[]) => void) {
-  const { db, people } = await sharedDb(),
-    id = crypto.randomUUID();
+  const { db, people } = await sharedDb();
+  const id = crypto.randomUUID();
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime,expires_at)
      select $1,id,org_id,owner_id,'prev-boat','codex','ready',true,now()+interval '1 hour' from goldens where owner_id=$2 and visibility='private' limit 1`,
@@ -77,8 +88,8 @@ async function fixture(onTcp: (s: TcpPeer, received: Uint8Array, credits: number
     unsafe: async (q, v) => (await db.query(q, v)).rows,
     begin: (work) => db.transaction((tx) => work({ unsafe: async (q, v) => (await tx.query(q, v)).rows })),
   });
-  const timer = fakeClock(),
-    authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
+  const timer = fakeClock();
+  const authority = createRuntimeEnrolments(sql, ENCRYPTION_KEY);
   const hub = createRelayHub({
     sql,
     authority,
@@ -139,6 +150,7 @@ async function fixture(onTcp: (s: TcpPeer, received: Uint8Array, credits: number
         const api: TcpPeer = {
           id: m.streamId,
           port: s.port,
+          sendOpenOk: () => deliver({ type: RELAY_OPCODE.OPEN_OK, streamId: m.streamId }),
           sendData: (b) => deliver({ type: RELAY_OPCODE.DATA, streamId: m.streamId, data: b }),
           close: (code = 1000, reason = "eof") =>
             deliver({ type: RELAY_OPCODE.CLOSE, streamId: m.streamId, code, reason }),
@@ -161,26 +173,32 @@ async function fixture(onTcp: (s: TcpPeer, received: Uint8Array, credits: number
   return { db, id, hub, preview, timer, mint, call };
 }
 
-test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, chunked streaming + credit, taint & invalid port", async () => {
-  const seenRequests: string[] = [],
-    seenCredits: number[][] = [],
-    handled = new Set<number>();
+test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, chunked streaming + credit, taint & edge cases", async () => {
+  const seenRequests: string[] = [];
+  const seenCredits: number[][] = [];
+  const handled = new Set<number>();
   const f = await fixture((s, received, credits) => {
     const text = dec.decode(received);
     if (handled.has(s.id) || !text.includes("\r\n\r\n")) return;
-    if (text.startsWith("POST ") && !text.endsWith("0\r\n\r\n")) return;
+    if (text.startsWith("POST /stream ") && !text.endsWith("0\r\n\r\n")) return;
     handled.add(s.id);
     seenRequests.push(text);
     seenCredits.push(credits);
     if (text.startsWith("GET /redirect ")) {
       s.sendData(
         enc.encode(
-          "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:3000/home?x=1\r\nSet-Cookie: app_sid=xyz; Path=/; Domain=localhost; HttpOnly\r\nSet-Cookie: armada_preview=evil; Path=/\r\nContent-Length: 0\r\n\r\n",
+          "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:3000/home?x=1\r\n" +
+            "Set-Cookie: app_sid=xyz; Path = /; Domain = localhost; HttpOnly\r\n" +
+            "Set-Cookie: armada_preview=evil; Path=/\r\nSet-Cookie: __Host-sb-tok=1; Path=/\r\nContent-Length: 0\r\n\r\n",
         ),
       );
       return;
     }
-    if (text.startsWith("GET /rel ")) {
+    if (text.startsWith("GET /app/rel ")) {
+      s.sendData(enc.encode("HTTP/1.1 302 Found\r\nLocation: step2?a=1\r\nContent-Length: 0\r\n\r\n"));
+      return;
+    }
+    if (text.startsWith("GET /rootrel ")) {
       s.sendData(enc.encode("HTTP/1.1 302 Found\r\nLocation: /login?next=/app\r\nContent-Length: 0\r\n\r\n"));
       return;
     }
@@ -190,8 +208,21 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
       );
       return;
     }
+    if (text.startsWith("GET /badhdr ")) {
+      s.sendData(new Uint8Array([...enc.encode("HTTP/1.1 200 OK\r\nX-Bad: a"), 0x00, ...enc.encode("b\r\n\r\n")]));
+      return;
+    }
+    if (text.startsWith("GET /dupopen ")) {
+      s.sendOpenOk();
+      return;
+    }
     if (text.startsWith("GET /refused ")) {
       s.close(1000, "refused");
+      return;
+    }
+    if (text.startsWith("POST /trunc ")) return;
+    if (text.startsWith("POST /empty ")) {
+      s.sendData(enc.encode("HTTP/1.1 204 No Content\r\n\r\n"));
       return;
     }
     const big = "A".repeat(70_000);
@@ -202,9 +233,9 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
     for (let i = 20; i < resp.byteLength; i += 16_384) s.sendData(resp.subarray(i, i + 16_384));
   });
   try {
-    const t1 = await f.mint({ mode: "preview", port: 3000 }),
-      pty = await f.mint({ mode: "pty" }),
-      scope = `/api/v1/sandboxes/${f.id}/ports/3000/`;
+    const t1 = await f.mint({ mode: "preview", port: 3000 });
+    const pty = await f.mint({ mode: "pty" });
+    const scope = `/api/v1/sandboxes/${f.id}/ports/3000/`;
     expect([t1.bootstrapUrl, t1.previewUrl]).toEqual([
       `${PUBLIC_URL}/api/v1/relay/preview/enter`,
       `${PUBLIC_URL}${scope}`,
@@ -234,8 +265,8 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
       body: new URLSearchParams({ ticket: t1.ticket }).toString(),
     });
     expect([entered.status, entered.headers.get("location")]).toEqual([303, scope]);
-    const setCookie = entered.headers.get("set-cookie") ?? "",
-      cookiePair = setCookie.split(";")[0]!;
+    const setCookie = entered.headers.get("set-cookie") ?? "";
+    const cookiePair = setCookie.split(";")[0]!;
     expect(setCookie).toContain(`HttpOnly; Secure; SameSite=Lax; Max-Age=900; Path=${scope}`);
     expect(
       (
@@ -254,7 +285,7 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
 
     const redir = await f.call(`${scope}redirect`, {
       headers: {
-        cookie: `${cookiePair}; app_theme=dark; sb-auth=secret`,
+        cookie: `${cookiePair}; app_theme=dark; sb-auth=secret; __Secure-sb-x=1`,
         authorization: "Bearer no-leak",
         connection: "keep-alive, x-secret-hop",
         "x-secret-hop": "drop",
@@ -266,16 +297,32 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
       "nosniff",
     ]);
     expect(redir.headers.getSetCookie()).toEqual([`app_sid=xyz; HttpOnly; Path=${scope}`]);
-    const rel = await f.call(`${scope}rel`, { headers: { cookie: cookiePair } });
-    expect([rel.status, rel.headers.get("location")]).toEqual([302, `${scope}login?next=/app`]);
-    const ext = await f.call(`${scope}ext`, { headers: { cookie: cookiePair } });
-    expect([ext.status, ext.headers.get("location")]).toEqual([302, "https://external.example/auth"]);
-    const refused = await f.call(`${scope}refused`, { headers: { cookie: cookiePair } });
-    expect(refused.status).toBe(502);
     expect(seenRequests[0]).toContain("Host: 127.0.0.1:3000\r\n");
     expect(seenRequests[0]).toContain("Cookie: app_theme=dark\r\n");
-    for (const leaked of ["no-leak", "armada_preview", "sb-auth", "x-secret-hop"])
+    for (const leaked of ["no-leak", "armada_preview", "sb-auth", "__Secure-sb-x", "x-secret-hop"])
       expect(seenRequests[0]).not.toContain(leaked);
+
+    expect((await f.call(`${scope}app/rel`, { headers: { cookie: cookiePair } })).headers.get("location")).toBe(
+      "step2?a=1",
+    );
+    expect((await f.call(`${scope}rootrel`, { headers: { cookie: cookiePair } })).headers.get("location")).toBe(
+      `${scope}login?next=/app`,
+    );
+    expect((await f.call(`${scope}ext`, { headers: { cookie: cookiePair } })).headers.get("location")).toBe(
+      "https://external.example/auth",
+    );
+    expect((await f.call(`${scope}badhdr`, { headers: { cookie: cookiePair } })).status).toBe(502);
+    expect((await f.call(`${scope}dupopen`, { headers: { cookie: cookiePair } })).status).toBe(502);
+    expect((await f.call(`${scope}refused`, { headers: { cookie: cookiePair } })).status).toBe(502);
+    expect((await f.call(`${scope}empty`, { method: "POST", headers: { cookie: cookiePair } })).status).toBe(204);
+    expect(seenRequests.at(-1)).toContain("Content-Length: 0\r\n");
+
+    const trunc = await f.call(`${scope}trunc`, {
+      method: "POST",
+      headers: { cookie: cookiePair, "content-length": "100" },
+      body: "short",
+    });
+    expect(trunc.status).toBe(400);
 
     const streamed = await f.call(`${scope}stream`, {
       method: "POST",
@@ -299,14 +346,16 @@ test("POST enter cookie scoping, header stripping, Set-Cookie/Location rewrite, 
   }
 });
 
-test("WS preview upgrade checks Origin + cookie, negotiates subprotocol, bridges frames, and closes on taint", async () => {
+test("WS preview upgrade checks Origin + cookie, handles post-101 race, >256KiB frames, pings, and closes on taint", async () => {
   const clientFrames: ReturnType<typeof decodeClientFrame>[] = [];
-  let wsUpgraded = false,
-    wsOffset = 0;
-  const f = await fixture((s, received) => {
+  let wsUpgraded = false;
+  let wsOffset = 0;
+  let largeSent = false;
+  let creditsSeen = 0;
+  const f = await fixture((s, received, credits) => {
     if (!wsUpgraded) {
-      const text = dec.decode(received),
-        end = text.indexOf("\r\n\r\n");
+      const text = dec.decode(received);
+      const end = text.indexOf("\r\n\r\n");
       if (end === -1) return;
       wsUpgraded = true;
       wsOffset = end + 4;
@@ -316,14 +365,12 @@ test("WS preview upgrade checks Origin + cookie, negotiates subprotocol, bridges
       const accept = createHash("sha1")
         .update(key + WS_GUID)
         .digest("base64");
-      const head = enc.encode(
-        `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: vite-hmr\r\n\r\n`,
+      s.sendData(
+        enc.encode(
+          `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: vite-hmr\r\n\r\n`,
+        ),
       );
-      const welcome = wsServerFrame(0x1, enc.encode("hmr:connected")),
-        combined = new Uint8Array(head.byteLength + welcome.byteLength);
-      combined.set(head, 0);
-      combined.set(welcome, head.byteLength);
-      s.sendData(combined);
+      s.sendData(wsServerFrame(0x1, enc.encode("hmr:connected")));
       return;
     }
     const delta = received.subarray(wsOffset);
@@ -331,7 +378,12 @@ test("WS preview upgrade checks Origin + cookie, negotiates subprotocol, bridges
     wsOffset = received.byteLength;
     const frame = decodeClientFrame(delta);
     clientFrames.push(frame);
-    if (frame.opcode === 0x1) {
+    if (frame.opcode === 0x1 && !largeSent) {
+      largeSent = true;
+      const bigPayload = enc.encode("B".repeat(300_000));
+      const bigFrame = wsServerFrame(0x1, bigPayload);
+      for (let i = 0; i < bigFrame.byteLength; i += 32_768) s.sendData(bigFrame.subarray(i, i + 32_768));
+      creditsSeen = credits.reduce((a, b) => a + b, 0);
       s.sendData(wsServerFrame(0x1, enc.encode("part1-"), false));
       s.sendData(wsServerFrame(0x0, enc.encode("part2"), true));
       s.sendData(wsServerFrame(0x9, enc.encode("ping")));
@@ -344,8 +396,8 @@ test("WS preview upgrade checks Origin + cookie, negotiates subprotocol, bridges
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ticket: t.ticket }),
     });
-    const cookiePair = entered.headers.get("set-cookie")!.split(";")[0]!,
-      wsUrl = `${PUBLIC_URL}/api/v1/sandboxes/${f.id}/ports/5173/@vite/client`;
+    const cookiePair = entered.headers.get("set-cookie")!.split(";")[0]!;
+    const wsUrl = `${PUBLIC_URL}/api/v1/sandboxes/${f.id}/ports/5173/@vite/client`;
     expect(
       (await f.preview.upgradeWebSocket(
         new Request(wsUrl, { headers: { upgrade: "websocket", origin: "https://evil.example", cookie: cookiePair } }),
@@ -359,7 +411,8 @@ test("WS preview upgrade checks Origin + cookie, negotiates subprotocol, bridges
       ))!.status,
     ).toBe(401);
 
-    let wsData: PreviewWsSocketData | undefined, negotiated: Record<string, string> | undefined;
+    let wsData: PreviewWsSocketData | undefined;
+    let negotiated: Record<string, string> | undefined;
     expect(
       await f.preview.upgradeWebSocket(
         new Request(wsUrl, {
@@ -381,11 +434,16 @@ test("WS preview upgrade checks Origin + cookie, negotiates subprotocol, bridges
 
     const received: (string | Uint8Array)[] = [];
     let closedCode: number | undefined;
+    let pingCount = 0;
     const browserWs = {
       data: wsData!,
       send: (v: string | Uint8Array) => {
         received.push(v);
         return typeof v === "string" ? v.length : v.byteLength;
+      },
+      ping: () => {
+        pingCount++;
+        return 0;
       },
       close: (c = 1000) => {
         closedCode = c;
@@ -400,7 +458,10 @@ test("WS preview upgrade checks Origin + cookie, negotiates subprotocol, bridges
       { opcode: 0x1, masked: true, text: "update?" },
       { opcode: 0xa, masked: true, text: "ping" },
     ]);
-    expect(received).toEqual(["hmr:connected", "part1-part2"]);
+    expect(received).toEqual(["hmr:connected", "B".repeat(300_000), "part1-part2"]);
+    expect(creditsSeen).toBeGreaterThanOrEqual(262_144);
+    await f.timer.advance(30_000);
+    expect(pingCount).toBe(1);
     await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.id]);
     await f.timer.advance(30_000);
     expect(closedCode).toBe(4403);

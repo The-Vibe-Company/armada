@@ -79,7 +79,7 @@ export const runtimeMounts: MountFactory = (services, configureRequestTimeout) =
     ...(runtimeGitHub ? [runtimeGitHub.route] : []),
     delegatedAccess.scopedToolsRoute,
     ...(modelAuth.broker ? [modelAuth.broker.route] : []),
-    relayPreview.route,
+    (request) => relayPreview.route(request, configureRequestTimeout),
   ];
 };
 
