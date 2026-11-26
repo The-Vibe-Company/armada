@@ -248,7 +248,7 @@ describe("oauth", () => {
   test.each([
     { redirectUri: "https://client.example/oauth/callback", expectedTarget: "https://client.example" },
     { redirectUri: "http://127.0.0.1:9999/callback", expectedTarget: "http://127.0.0.1:9999" },
-    { redirectUri: "http://[::1]:9999/callback", expectedTarget: "http://[::1]:9999" },
+    { redirectUri: "http://[::1]:9999/callback", expectedTarget: "http:" },
     { redirectUri: "claude://oauth/callback", expectedTarget: "claude:" },
     { redirectUri: "vscode://armada.ext/callback", expectedTarget: "vscode:" },
   ])(

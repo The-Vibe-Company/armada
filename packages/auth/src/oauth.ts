@@ -424,8 +424,7 @@ async function refreshGrant(form: URLSearchParams, options: OAuthServerOptions):
   if (bearerKind(presented) !== "refresh") return oauthError(400, "invalid_grant", "The refresh token is invalid.");
   const expectedResource = resourceUrl(options.publicUrl);
   const resources = form.getAll("resource");
-  const resource = resources.length === 0 ? expectedResource : resources.length === 1 ? (resources[0] ?? "") : "";
-  if (!sameResource(resource, expectedResource)) {
+  if (resources.length > 1 || (resources.length === 1 && !sameResource(resources[0] ?? "", expectedResource))) {
     return oauthError(400, "invalid_target", "resource must be this server's MCP endpoint.");
   }
   const now = options.now();

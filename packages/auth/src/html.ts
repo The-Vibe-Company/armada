@@ -17,7 +17,11 @@ function escapeHtml(value: string): string {
 }
 
 function formActionSource(redirect: URL): string {
-  if ((redirect.protocol === "https:" || redirect.protocol === "http:") && redirect.origin !== "null") {
+  if (
+    (redirect.protocol === "https:" || redirect.protocol === "http:") &&
+    redirect.origin !== "null" &&
+    !redirect.hostname.startsWith("[")
+  ) {
     return redirect.origin;
   }
   return redirect.protocol;
