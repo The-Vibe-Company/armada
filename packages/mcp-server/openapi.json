@@ -10420,7 +10420,6 @@
       "post": {
         "operationId": "sandboxes_{id}_relay_ticket",
         "description": "Mint a short-lived relay ticket for PTY, loopback TCP forwarding, or HTTP preview.",
-        "x-armada-direct-server": true,
         "security": [
           {
             "serviceToken": []
@@ -10441,7 +10440,7 @@
         ],
         "requestBody": {
           "required": true,
-          "description": "Send at most 32768 bytes of serialized JSON.",
+          "description": "Send at most 32768 bytes of serialized JSON. The server refuses larger bodies with HTTP 400 before processing the request. The dashboard proxy refuses bodies over 131072 bytes with HTTP 413.",
           "x-max-body-bytes": 32768,
           "x-oversized-body-status": 400,
           "content": {
@@ -10592,6 +10591,16 @@
                       }
                     }
                   ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
                 }
               }
             }

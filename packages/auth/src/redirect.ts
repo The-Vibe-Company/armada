@@ -14,6 +14,8 @@ export function isAllowedRedirect(uri: string): boolean {
   const scheme = url.protocol.slice(0, -1);
   if (BLOCKED.has(scheme)) return false;
   if (url.protocol === "https:") return url.hostname.length > 0;
-  if (url.protocol === "http:") return url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol === "http:") {
+    return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  }
   return /^[a-z][a-z0-9+.-]{1,32}$/.test(scheme);
 }
