@@ -8,6 +8,7 @@ import {
   type SandboxCost,
   summarizeLaunch,
 } from "@armada/core";
+import { cache } from "react";
 import { isUuid } from "@/lib/action";
 import type { BillingAccountMetadata } from "@/lib/billing-account";
 import { boundedEnrichment } from "@/lib/bounded-enrichment";
@@ -79,20 +80,31 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
   return { ...data, harness: data.harness, publicStatus: readiness.data };
 }
 
+const CREDENTIALS_PAGE_SIZE = 1000;
+
 /**
- * The kind of each readable account among `ids`, by id. Row level security returns an org account to its members and a
- * personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is "API-equivalent".
+ * The kind of each readable account for the signed-in viewer, by id. Row level security returns an org account to its
+ * members and a personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is
+ * "API-equivalent". Cached per request and run in parallel with sandbox enrichment to avoid a serial round-trip.
  */
-async function credentialKinds(supabase: Supabase, ids: readonly (string | null)[]) {
-  const wanted = [...new Set(ids.filter((id): id is string => typeof id === "string"))];
+const readReadableCredentialKinds = cache(async (supabase: Supabase) => {
   const kinds = new Map<string, CredentialKind>();
-  if (wanted.length === 0) return kinds;
-  const data = await boundedEnrichment("credentialKinds", wanted, (ids) =>
-    supabase.from("credentials").select("id,kind").in("id", ids),
-  );
-  for (const row of data ?? []) kinds.set(row.id, row.kind);
+  try {
+    for (let from = 0; ; from += CREDENTIALS_PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("credentials")
+        .select("id,kind")
+        .order("id")
+        .range(from, from + CREDENTIALS_PAGE_SIZE - 1);
+      if (error) throw error;
+      for (const row of data ?? []) kinds.set(row.id, row.kind);
+      if (!data || data.length < CREDENTIALS_PAGE_SIZE) break;
+    }
+  } catch {
+    console.error("Dashboard enrichment failed: credentialKinds");
+  }
   return kinds;
-}
+});
 
 /** Only user-JWT-readable billing metadata; absent/private accounts and failed reads remain unavailable. */
 export async function credentialMetadata(
@@ -116,21 +128,21 @@ export async function listSandboxEnrichment(
   rows: readonly Pick<SandboxListMetadata, "id" | "canOpen">[],
 ) {
   const readableIds = rows.filter(({ id, canOpen }) => canOpen && isUuid(id)).map(({ id }) => id);
-  const data = await boundedEnrichment("listSandboxEnrichment", readableIds, (ids) =>
-    supabase
-      .from("sandboxes")
-      .select(
-        "id,harness,credential_id,usage_turns,usage_runtime_seconds,usage_running_since,docker_host_id,goldens!sandboxes_golden_id_fkey(name)",
-      )
-      .eq("org_id", orgId)
-      .eq("goldens.org_id", orgId)
-      .in("id", ids),
-  );
-  const kinds = await credentialKinds(
-    supabase,
-    data.map((row) => row.credential_id),
-  );
   const enrichment = new Map<string, { cost?: SandboxCost; hostId: string | null; snapshot?: string }>();
+  if (readableIds.length === 0) return enrichment;
+  const [data, kinds] = await Promise.all([
+    boundedEnrichment("listSandboxEnrichment", readableIds, (ids) =>
+      supabase
+        .from("sandboxes")
+        .select(
+          "id,harness,credential_id,usage_turns,usage_runtime_seconds,usage_running_since,docker_host_id,goldens!sandboxes_golden_id_fkey(name)",
+        )
+        .eq("org_id", orgId)
+        .eq("goldens.org_id", orgId)
+        .in("id", ids),
+    ),
+    readReadableCredentialKinds(supabase),
+  ]);
   for (const { goldens, docker_host_id, ...row } of data) {
     const cost = isHarness(row.harness)
       ? costOfRow({ ...row, harness: row.harness }, kinds.get(row.credential_id ?? "") ?? null)

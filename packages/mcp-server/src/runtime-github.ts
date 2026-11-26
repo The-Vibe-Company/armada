@@ -61,7 +61,7 @@ const launchSetupKeySql = `format('["internal","%s","launch_initial_turn","%s",1
 const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_id,'orgId',s.org_id,
  'epoch',r.epoch::text,'providerSandboxId',s.provider_sandbox_id,'goldenId',s.golden_id,
  'membershipEpoch',e.epoch,'mcpGeneration',s.mcp_generation,'connectionEpoch',c.connection_epoch,
- 'githubId',c.github_id,'repositories',g.config->'repos') as binding,s.expires_at,
+ 'githubId',c.github_id,'repositories',g.config->'repos') as binding,s.expires_at,s.provider::text as provider,
  modal_setup.id as modal_setup_id,modal_setup.payload_enc as modal_setup_enc
  from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
  left join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id
@@ -77,6 +77,23 @@ const snapshot = `select jsonb_build_object('sandboxId',s.id,'ownerId',s.owner_i
  and (s.status in ('ready','running') or (s.provider='docker' and s.status='starting') or (((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout')) and s.status='starting' and s.activity_lease_id is not null and s.activity_until>now())) and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
  and not exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=r.epoch)`;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+function canonicalJsonb(value: unknown) {
+  if (value === null || typeof value !== "object") return Object.is(value, -0) ? 0 : value;
+  if (Array.isArray(value)) {
+    const items: unknown[] = [];
+    for (const item of value) items.push(item === undefined ? null : canonicalJsonb(item));
+    return items;
+  }
+  const entries = Object.entries(value)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([a], [b]) => {
+      const lengthDiff = Buffer.byteLength(a) - Buffer.byteLength(b);
+      return lengthDiff !== 0 ? lengthDiff : Buffer.compare(Buffer.from(a), Buffer.from(b));
+    });
+  const sorted: Record<string, unknown> = {};
+  for (const [entryKey, entryValue] of entries) sorted[entryKey] = canonicalJsonb(entryValue);
+  return sorted;
+}
 function allowed(binding: Pick<Binding, "repositories">, repo: string) {
   return (
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) &&
@@ -154,6 +171,7 @@ export function createRuntimeGitHub(options: {
     } = await tx.query<{
       binding: Binding;
       expires_at: string | Date;
+      provider?: string;
       modal_setup_id: string | null;
       modal_setup_enc: Uint8Array<ArrayBuffer> | null;
     }>(snapshot, [id]);
@@ -163,7 +181,7 @@ export function createRuntimeGitHub(options: {
         JSON.parse(await decryptSecret(row.modal_setup_enc, key)),
       ).repos;
     }
-    const docker = await readDockerLaunchManifest(tx, id);
+    const docker = usesHostLaunch(row.provider) ? await readDockerLaunchManifest(tx, id) : undefined;
     if (docker) {
       const manifest = JSON.parse(await decryptSecret(docker.request_enc, key));
       if (
@@ -176,9 +194,7 @@ export function createRuntimeGitHub(options: {
     }
     if (docker || row.modal_setup_id !== null) {
       // Match the JSONB representation persisted with the capability, including nested key order.
-      row.binding =
-        (await tx.query<{ binding: Binding }>("select $1::jsonb as binding", [JSON.stringify(row.binding)])).rows[0]
-          ?.binding ?? denied();
+      row.binding = canonicalJsonb(row.binding) as Binding;
     }
     if (!Array.isArray(row.binding.repositories)) return denied();
     return row;
@@ -307,23 +323,30 @@ export function createRuntimeGitHub(options: {
       return empty;
     }
   }
-  async function prepare(
-    caller: Caller,
+  async function prepareOwned(
     id: string,
+    s: Awaited<ReturnType<typeof owner>>,
     resolved?: Awaited<ReturnType<typeof resolveGitHubAccess>>,
     assertClaim?: (tx: Sql) => Promise<void>,
   ) {
-    const s = await owner(caller, id);
     if (!options.github.app) return denied();
-    if (!(await options.github.store.getGitHubConnection(s.ownerId))) throw new RuntimeGitHubConnectionError();
-    const before = await authority.withOwner(id, s.ownerId, (tx) => current(tx, id));
-    const access = resolved ?? (await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId));
+    let before: Awaited<ReturnType<typeof current>> | undefined;
+    let access = resolved;
+    if (!access) {
+      if (!(await options.github.store.getGitHubConnection(s.ownerId))) throw new RuntimeGitHubConnectionError();
+      before = await authority.withOwner(id, s.ownerId, (tx) => current(tx, id));
+      access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId);
+    }
     if (access.status === "not_connected") throw new RuntimeGitHubConnectionError();
-    if (access.status !== "connected" || access.identity.id !== before.binding.githubId) return denied();
+    if (access.status !== "connected" || (before && access.identity.id !== before.binding.githubId)) return denied();
     const identity = gitIdentity(access.identity);
     const issuedCap = await authority.withOwner(id, s.ownerId, async (tx, scope) => {
       const now = await current(tx, id);
-      if (!same(now.binding, before.binding) || now.binding.epoch !== scope.epoch) return denied();
+      if (
+        (before ? !same(now.binding, before.binding) : access.identity.id !== now.binding.githubId) ||
+        now.binding.epoch !== scope.epoch
+      )
+        return denied();
       await assertClaim?.(tx);
       const revision =
         (await tx.query<{ revision: string }>("select nextval('public.runtime_github_revision_seq')::text as revision"))
@@ -339,7 +362,13 @@ export function createRuntimeGitHub(options: {
       );
       await issued(tx, now.binding, capability);
       await assertClaim?.(tx);
-      return { revision, capability, epoch: scope.epoch, expiresAt: expiresAt.getTime() };
+      return {
+        revision,
+        capability,
+        epoch: scope.epoch,
+        expiresAt: expiresAt.getTime(),
+        repositories: now.binding.repositories,
+      };
     });
     const history = (
       await sql.query<{ token_enc: Uint8Array<ArrayBuffer> }>(
@@ -365,7 +394,7 @@ export function createRuntimeGitHub(options: {
           capability: issuedCap.capability,
           url: new URL(path, options.origin).href,
           retired,
-          repositories: before.binding.repositories.map(({ url }) =>
+          repositories: issuedCap.repositories.map(({ url }) =>
             url
               .replace(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/, "")
               .replace(/\.git$/, ""),
@@ -396,6 +425,14 @@ export function createRuntimeGitHub(options: {
       runtime: { kind: "armada" as const, epoch: issuedCap.epoch },
       revision: issuedCap.revision,
     };
+  }
+  async function prepare(
+    caller: Caller,
+    id: string,
+    resolved?: Awaited<ReturnType<typeof resolveGitHubAccess>>,
+    assertClaim?: (tx: Sql) => Promise<void>,
+  ) {
+    return prepareOwned(id, await owner(caller, id), resolved, assertClaim);
   }
   async function prepareTurn(caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) {
     const launch = (
@@ -542,7 +579,7 @@ export function createRuntimeGitHub(options: {
         status: access.status,
         message: access.status === "not_connected" ? GITHUB_CALLER_NOT_CONNECTED : access.message,
       };
-    const result = await prepare(caller, id, access, assertClaim);
+    const result = await prepareOwned(id, s, access, assertClaim);
     return {
       status: result.status,
       login: result.login,

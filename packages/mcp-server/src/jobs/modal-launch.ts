@@ -1181,7 +1181,7 @@ export async function runModalLaunch(
   const applyPlan = (plan: ModalLaunchPlan, resolve: Parameters<typeof dispatchModalLaunch>[5]) =>
     dispatchModalLaunch(sql, job, context, plan, targetIncarnation, resolve, launchAuthorized);
   const dispatch = plan
-    ? await applyPlan(plan, async (request, preparation, handoff, physicalExpiry) => {
+    ? await applyPlan(plan, async (request, preparation, handoff, physicalExpiry, lockExtra) => {
         const { ownerId, configuration, lockPrerequisites, accountPin, ...prepared } = preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
           const enrolmentToken = await decryptSecret(
@@ -1247,7 +1247,10 @@ export async function runModalLaunch(
                 throw new ModalBootstrapRefused("Modal launch changed before handoff.");
             },
             ticketGuard: {
-              lockPrerequisites,
+              async lockPrerequisites(tx) {
+                await lockPrerequisites(tx);
+                await lockExtra?.(tx);
+              },
               async check(tx) {
                 const receipt = await readPinnedEnrolment(tx, accountPin);
                 if (receipt.enrolled || receipt.check_after) throw enrolmentInProgress;
@@ -1364,6 +1367,7 @@ async function dispatchModalLaunch(
     preparation: Awaited<ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>>,
     handoff: ModalLaunchHandoff | undefined,
     physicalExpiry?: number,
+    lockExtra?: (tx: Sql) => Promise<void>,
   ) => ReturnType<PrepareModalTicket>,
   launchAuthorized: (tx: Sql) => Promise<boolean>,
 ) {
@@ -1478,15 +1482,31 @@ async function dispatchModalLaunch(
         throw error;
       });
       const canDeferReplay = recoveredAllocation && replayingTicket;
-      const ticket = await beforeProviderMutation(context, canDeferReplay, () =>
-        resolveRuntimeTicket(request, preparation, handoff),
-      );
+      const ticket = await beforeProviderMutation(context, canDeferReplay, async () => {
+        const modalCred = !replayingTicket ? await plan.modalCredential() : undefined;
+        const lockModalCredential = modalCred
+          ? async (tx: Sql) => {
+              const { credentialScope, credentialOwnerId } = plan.placement.managementAuthority;
+              const { rows } = await tx.query(
+                `select 1 from public.credentials
+                 where id=$1 and version=$2 and kind='modal' and scope=$3 and owner_id=$4
+                   and status='active' and (expires_at is null or expires_at>clock_timestamp())
+                 for share`,
+                [modalCred.id, modalCred.version, credentialScope, credentialOwnerId],
+              );
+              if (!rows.length) throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
+            }
+          : undefined;
+        return resolveRuntimeTicket(request, preparation, handoff, undefined, lockModalCredential);
+      });
       if (ticket === "deferred") throw preparationDeferred;
       if (!ticket) return null;
-      const authorized = await beforeProviderMutation(context, canDeferReplay, target);
-      if (authorized === "deferred") throw preparationDeferred;
-      if (authorized?.provider_sandbox_id !== request.machineId)
-        throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
+      if (replayingTicket) {
+        const authorized = await beforeProviderMutation(context, canDeferReplay, target);
+        if (authorized === "deferred") throw preparationDeferred;
+        if (authorized?.provider_sandbox_id !== request.machineId)
+          throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
+      }
       return ticket;
     },
   };
@@ -1510,12 +1530,14 @@ async function dispatchModalLaunch(
   if (!current) return reconcile();
 
   const machineId = current.provider_sandbox_id;
+  let authorizedMachineId = machineId;
   const observed =
     job.attempts > 1 ? await machine.observe({ ...incarnation, ...(machineId ? { machineId } : {}) }) : undefined;
   if (observed) {
     const confirmed = await beforeProviderMutation(context, recovering, target);
     if (confirmed === "deferred") return deferred;
     if (!confirmed) return { kind: "reconcile", observation: observed } as const;
+    authorizedMachineId = confirmed.provider_sandbox_id;
     if (observed.kind === "unknown" || (machineId && observed.kind === "absent"))
       return { kind: "dispatch_deferred" } as const;
   }
@@ -1565,14 +1587,13 @@ async function dispatchModalLaunch(
     );
     if (bound === "deferred") return deferred;
     if (!bound) return observed?.kind === "present" ? { kind: "reconcile", observation: observed } : reconcile();
+    authorizedMachineId = allocated.machineId;
   }
 
   if (observed?.kind === "present" && observed.phase === "stopped")
     return { kind: "reconcile", observation: observed } as const;
   recoveredAllocation = machineId !== null || observed?.kind === "present";
-  const readyToBootstrap = await beforeProviderMutation(context, recoveredAllocation, target);
-  if (readyToBootstrap === "deferred") return deferred;
-  if (readyToBootstrap?.provider_sandbox_id !== allocated.machineId) return reconcile();
+  if (authorizedMachineId !== allocated.machineId) return reconcile();
   signal.throwIfAborted();
   try {
     await machine.bootstrap({ ...allocated, signal, bindingRef: plan.bindingRef });

@@ -1,5 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { createClient } from "@supabase/supabase-js";
+import { Suspense } from "react";
 import SandboxPage from "@/app/(app)/sandboxes/[id]/page";
 import { disconnectGitHub } from "@/app/actions/github";
 import { execSandbox, interruptSandbox, sendToSandbox, steerSandbox, stopSandbox } from "@/app/actions/sandboxes";
@@ -30,6 +31,10 @@ const account = {
 };
 const revalidatedPaths: string[] = [];
 
+const actualViewer = await import("./viewer");
+const realMemberDirectory = actualViewer.memberDirectory;
+const realDisplayUser = actualViewer.displayUser;
+
 mock.module("next/cache", () => ({
   revalidatePath: (path: string) => {
     revalidatedPaths.push(path);
@@ -39,8 +44,8 @@ mock.module("./viewer", () => ({
   readViewer: async () => activeViewer,
   requireViewer: async () => viewer,
   listMemberships: async () => [selected],
-  memberDirectory: async () => new Map(),
-  displayUser: () => "You",
+  memberDirectory: realMemberDirectory,
+  displayUser: realDisplayUser,
 }));
 mock.module("./selected-org", () => ({ selectedOrganization: async () => selected }));
 mock.module("@/lib/env", () => ({ mcpUrl: () => origin }));
@@ -186,20 +191,24 @@ test("account listing starts the model read while the credential response is pen
 });
 
 function findElementsByTypeName(root: unknown, name: string) {
-  const matches: Array<{ type: (props: unknown) => unknown; props: unknown }> = [];
-  const stack: unknown[] = [root];
+  const matches: Array<{ type: (props: unknown) => unknown; props: unknown; inSuspense: boolean }> = [];
+  const stack: Array<{ node: unknown; inSuspense: boolean }> = [{ node: root, inSuspense: false }];
   while (stack.length > 0) {
-    const node = stack.pop();
+    const entry = stack.pop()!;
+    const { node, inSuspense } = entry;
     if (!node || typeof node !== "object") continue;
     if (Array.isArray(node)) {
-      stack.push(...node);
+      for (const item of node) stack.push({ node: item, inSuspense });
       continue;
     }
     const record = node as { type?: unknown; props?: Record<string, unknown> };
+    const nextInSuspense = inSuspense || record.type === Suspense;
     if (typeof record.type === "function" && record.type.name === name) {
-      matches.push({ type: record.type as (props: unknown) => unknown, props: record.props });
+      matches.push({ type: record.type as (props: unknown) => unknown, props: record.props, inSuspense });
     }
-    if (record.props && typeof record.props === "object") stack.push(...Object.values(record.props));
+    if (record.props && typeof record.props === "object") {
+      for (const value of Object.values(record.props)) stack.push({ node: value, inSuspense: nextInSuspense });
+    }
   }
   return matches;
 }
@@ -253,6 +262,58 @@ test("sandbox detail mounts account choices inside Suspense when ready without b
   expect(sections).toHaveLength(1);
   await sections[0]!.type(sections[0]!.props);
   expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toContain("/api/v1/creds/list");
+});
+
+test("Docker sandbox detail streams launch/options inside Suspense without blocking top-level SSR", async () => {
+  const requests = recordFetch((url) => {
+    switch (url.pathname) {
+      case "/rest/v1/sandboxes":
+        return Response.json([sandboxRow({ provider: "docker", golden_id: null, status: "ready" })]);
+      case "/rest/v1/rpc/sandbox_detail_status":
+        return Response.json("ready");
+      case "/api/v1/launch/options":
+        return Response.json({
+          providers: [
+            {
+              id: "docker",
+              enabled: true,
+              launchSources: ["image"],
+              harnesses: ["codex"],
+              capabilities: { logs: true, followupPrompts: true, stop: true, delete: true, exec: true },
+            },
+          ],
+        });
+      default:
+        throw new Error(`Unexpected request ${url.pathname}`);
+    }
+  });
+
+  const tree = await SandboxPage({ params: Promise.resolve({ id: firstId }) });
+  expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+    "/rest/v1/sandboxes",
+    "/rest/v1/rpc/sandbox_detail_status",
+  ]);
+  const docker = findElementsByTypeName(tree, "DockerSandbox");
+  expect(docker).toHaveLength(1);
+  const dockerTree = docker[0]!.type(docker[0]!.props);
+  const sectionNames = [
+    "DockerHeaderActions",
+    "DockerUnavailableCard",
+    "DockerCommandSection",
+    "DockerConversationSection",
+  ] as const;
+  const sections = sectionNames.map((name) => {
+    const found = findElementsByTypeName(dockerTree, name);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.inSuspense).toBe(true);
+    return found[0]!;
+  });
+  await Promise.all(sections.map((section) => section.type(section.props)));
+  expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
+    "/rest/v1/sandboxes",
+    "/rest/v1/rpc/sandbox_detail_status",
+    "/api/v1/launch/options",
+  ]);
 });
 
 test("conversation reads request limit 200 with coalesce and skip sandbox/status when threadStatus is returned", async () => {

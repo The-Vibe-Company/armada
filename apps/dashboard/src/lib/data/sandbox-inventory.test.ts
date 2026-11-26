@@ -5,6 +5,7 @@ import { canPushDownDeletedSearch, parseSandboxFilters, sandboxInventoryScope } 
 import type { Database } from "../supabase/types";
 import { loadSandboxInventory, readSandboxMetadata } from "./sandbox-inventory";
 import { listSandboxEnrichment } from "./sandboxes";
+import { memberDirectory } from "./viewer";
 
 function sandbox(index: number, status = "ready") {
   return {
@@ -349,48 +350,93 @@ test("fallback-matching text search keeps shared inventory active-only and pages
   expect(result.facets.status.get("deleted")).toBe(1);
 });
 
-test("one JWT sandbox read enriches only readable rows with cost, host and snapshot", async () => {
+test("listSandboxEnrichment reads readable rows and credential kinds in parallel without a serial round-trip", async () => {
   const readable = "10000000-0000-4000-8000-000000000001";
   const restricted = "10000000-0000-4000-8000-000000000002";
   const host = "10000000-0000-4000-8000-000000000003";
+  const credentialId = "10000000-0000-4000-8000-000000000004";
   const requests: URL[] = [];
+  const sandboxReply = Promise.withResolvers<Response>();
+  const credentialsStarted = Promise.withResolvers<void>();
   const supabase = createClient<Database, "public">("https://metadata.test", "placeholder", {
     global: {
       fetch: Object.assign(
         async (input: RequestInfo | URL) => {
-          requests.push(new URL(String(input)));
-          return Response.json([
-            {
-              id: readable,
-              harness: "codex",
-              credential_id: null,
-              usage_turns: [],
-              usage_runtime_seconds: 20,
-              usage_running_since: null,
-              docker_host_id: host,
-              goldens: { name: "Nightly" },
-            },
-          ]);
+          const url = new URL(String(input));
+          requests.push(url);
+          if (url.pathname === "/rest/v1/sandboxes") return sandboxReply.promise;
+          if (url.pathname === "/rest/v1/credentials") {
+            credentialsStarted.resolve();
+            return Response.json([{ id: credentialId, kind: "openai" }]);
+          }
+          throw new Error(`Unexpected request ${url.pathname}`);
         },
         { preconnect: fetch.preconnect },
       ),
     },
   });
 
-  const result = await listSandboxEnrichment(supabase, "org", [
+  const pending = listSandboxEnrichment(supabase, "org", [
     { id: readable, canOpen: true },
     { id: restricted, canOpen: false },
     { id: "malformed", canOpen: true },
   ]);
 
-  expect(requests).toHaveLength(1);
+  await credentialsStarted.promise;
+  expect(requests.map((url) => url.pathname)).toEqual(["/rest/v1/sandboxes", "/rest/v1/credentials"]);
+
+  sandboxReply.resolve(
+    Response.json([
+      {
+        id: readable,
+        harness: "codex",
+        credential_id: credentialId,
+        usage_turns: [],
+        usage_runtime_seconds: 20,
+        usage_running_since: null,
+        docker_host_id: host,
+        goldens: { name: "Nightly" },
+      },
+    ]),
+  );
+  const result = await pending;
+
+  expect(requests).toHaveLength(2);
   expect(requests[0]?.pathname).toBe("/rest/v1/sandboxes");
   expect(requests[0]?.searchParams.get("id")).toBe(`in.(${readable})`);
   expect(requests[0]?.searchParams.get("org_id")).toBe("eq.org");
   expect(requests[0]?.searchParams.get("goldens.org_id")).toBe("eq.org");
   expect(requests[0]?.searchParams.get("select")).not.toContain("*");
+  expect(requests[1]?.pathname).toBe("/rest/v1/credentials");
+  expect(requests[1]?.searchParams.get("select")).toBe("id,kind");
   expect([...result.keys()]).toEqual([readable]);
-  expect(result.get(readable)).toMatchObject({ cost: { computeSeconds: 20 }, hostId: host, snapshot: "Nightly" });
+  expect(result.get(readable)).toMatchObject({
+    cost: { computeSeconds: 20, basis: "estimated" },
+    hostId: host,
+    snapshot: "Nightly",
+  });
+});
+
+test("memberDirectory deduplicates org_members RPC reads for repeated org ids", async () => {
+  const calls: string[] = [];
+  const supabase = createClient<Database, "public">("https://metadata.test", "placeholder", {
+    global: {
+      fetch: Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = new URL(String(input));
+          expect(url.pathname).toBe("/rest/v1/rpc/org_members");
+          const body = JSON.parse(String(init?.body)) as { target_org: string };
+          calls.push(body.target_org);
+          return Response.json([{ user_id: "u-1", email: "alice@example.com" }]);
+        },
+        { preconnect: fetch.preconnect },
+      ),
+    },
+  });
+
+  const directory = await memberDirectory(supabase, ["org-1", "org-1"]);
+  expect(directory.get("u-1")).toBe("alice@example.com");
+  expect(calls).toEqual(["org-1"]);
 });
 
 test("only sandbox list requests share metadata with the shell, using full inventory only when deleted rows are displayed", () => {

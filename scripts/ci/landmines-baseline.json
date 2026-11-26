@@ -1073,7 +1073,7 @@
     "apps/dashboard/src/lib/data/skillpack-key.ts": 1,
     "apps/dashboard/src/lib/data/templates.ts": 4,
     "apps/dashboard/src/lib/data/variables.ts": 1,
-    "apps/dashboard/src/lib/data/viewer.ts": 5,
+    "apps/dashboard/src/lib/data/viewer.ts": 4,
     "apps/dashboard/src/lib/docker-hosts.ts": 16,
     "apps/dashboard/src/lib/docker-launch.ts": 10,
     "apps/dashboard/src/lib/docker-snapshots.ts": 6,
