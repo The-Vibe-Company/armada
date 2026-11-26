@@ -88,11 +88,13 @@ export type {
   GoldenLaunchInput,
   InterruptInput,
   InterruptResult,
+  LaunchEnvelope,
   LaunchInput,
   ListInput,
   ListResult,
   LogsInput,
   LogsResult,
+  ModalLaunchReceipt,
   OutputGetInput,
   OutputsListInput,
   OutputsListResult,
@@ -104,16 +106,24 @@ export type {
   StatusInput,
   SteerInput,
   SteerResult,
+  StopInput,
+  StopResult,
   TemplateLaunchInput,
   TemplateLaunchResult,
   ViewerTokenInput,
   ViewerTokenResult,
   WaitInput,
+  WaitResult,
 };
 export type LaunchResult = LaunchEnvelope | ModalLaunchReceipt | PinnedModalLaunchReceipt;
-export type { ModalLaunchReceipt };
 
 const { listSandboxOutputs, readSandboxOutput } = sandboxOutputOperations;
+
+function formatArmadaErrorMessage(code: FailureCode, status: number, serverCode: string | undefined) {
+  if (Object.hasOwn(API_FAILURE_HELP, code)) return API_FAILURE_HELP[code as ApiFailureCode];
+  const label = code === "unknown_response" && serverCode ? `${code}: ${serverCode}` : code;
+  return status > 0 ? `Armada request failed (${label}, HTTP ${status}).` : `Armada request failed (${label}).`;
+}
 
 /**
  * An Armada request failure. When `retryAfterSeconds` is set from the `Retry-After`
@@ -127,12 +137,9 @@ export class ArmadaError extends Error {
     readonly serverCode: string | undefined,
     readonly outcomeUnknown: boolean,
     readonly retryAfterSeconds?: number,
+    message?: string,
   ) {
-    super(
-      code in API_FAILURE_HELP
-        ? API_FAILURE_HELP[code as ApiFailureCode]
-        : `Armada request failed (${code}, HTTP ${status}).`,
-    );
+    super(message ?? formatArmadaErrorMessage(code, status, serverCode));
   }
 }
 export interface RequestOptions {
@@ -277,7 +284,8 @@ export class Armada {
               (response) => response.ok,
             );
             const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-            if (contentType === outputMediaType && response.body) return { body: response.body };
+            if (contentType === outputMediaType && response.body)
+              return { body: response.body, status: response.status };
             await response.body?.cancel().catch(() => {});
             throw new ArmadaError("unknown_response", response.status, undefined, false);
           } catch (error) {
@@ -290,6 +298,7 @@ export class Armada {
           }
         },
         signal,
+        (message, status) => new ArmadaError("unknown_response", status, undefined, false, undefined, message),
       );
       const close = stream.return.bind(stream);
       stream.return = (value) => {
@@ -303,9 +312,10 @@ export class Armada {
   readonly outputs = {
     list: async (input: OutputsListInput, options?: RequestOptions) => {
       const { route, readOnly } = listSandboxOutputs;
-      const id = listSandboxOutputs.input.path.id.parse(input.id);
+      const parsedId = listSandboxOutputs.input.path.id.safeParse(input.id);
+      if (!parsedId.success) throw new TypeError("Invalid sandbox ID.");
       return this.requestJson<OutputsListResult>(
-        route.path.replace("{id}", id),
+        route.path.replace("{id}", parsedId.data),
         { method: route.method },
         readOnly,
         options,
@@ -314,9 +324,11 @@ export class Armada {
     /** Stream a stored output and expose its response headers, including ETag and Content-Range. */
     get: async (input: OutputGetInput, options?: RequestOptions) => {
       const { route, readOnly } = readSandboxOutput;
-      const id = readSandboxOutput.input.path.id.parse(input.id);
-      const name = readSandboxOutput.input.path.name.parse(input.name);
-      const path = route.path.replace("{id}", id).replace("{name}", encodeURIComponent(name));
+      const parsedId = readSandboxOutput.input.path.id.safeParse(input.id);
+      if (!parsedId.success) throw new TypeError("Invalid sandbox ID.");
+      const parsedName = readSandboxOutput.input.path.name.safeParse(input.name);
+      if (!parsedName.success) throw new TypeError("Invalid output name.");
+      const path = route.path.replace("{id}", parsedId.data).replace("{name}", encodeURIComponent(parsedName.data));
       const headers = new Headers({ accept: "*/*" });
       if (input.range !== undefined) headers.set("range", input.range);
       if (input.ifRange !== undefined) headers.set("if-range", input.ifRange);
@@ -367,13 +379,20 @@ export class Armada {
     init: RequestInit | (() => RequestInit),
     readOnly: boolean,
     options: RequestOptions = {},
-    defaultTimeoutMs = 300000,
+    defaultTimeoutMs?: number,
     streamResponse?: RequestPolicy["streamResponse"],
   ) {
+    const timeoutMs =
+      options.timeoutMs ??
+      (defaultTimeoutMs !== undefined
+        ? this.timeoutMs !== undefined
+          ? Math.max(this.timeoutMs, defaultTimeoutMs)
+          : defaultTimeoutMs
+        : (this.timeoutMs ?? 300000));
     const result = await requestApi(apiUrl(this.origin, path), init, {
       fetch: (url, init) => this.fetcher(String(url), init),
       token: this.#token,
-      timeoutMs: options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs,
+      timeoutMs,
       signal: options.signal,
       combineSignal: true,
       readOnly,

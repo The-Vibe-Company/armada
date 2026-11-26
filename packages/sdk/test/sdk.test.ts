@@ -8,6 +8,7 @@ import { webhookSignature } from "../../mcp-server/src/outbound-webhooks.ts";
 import { createRuntimeAgent } from "../../mcp-server/src/runtime-agent.ts";
 import { RuntimeCommandPending, RuntimeCommandRefused } from "../../mcp-server/src/runtime-commands.ts";
 import { createServerRequestDrain } from "../../mcp-server/src/server-request-drain.ts";
+import { commandClient } from "../src/commands.ts";
 import {
   Armada,
   ArmadaError,
@@ -211,9 +212,17 @@ test("retry policy replays only eligible reads and retains typed safe failures",
   ]) {
     const client = new Armada({
       token: "service_placeholder",
-      fetch: async () => Response.json({ error: { code: serverCode } }, { status: 400 }),
+      fetch: async () => Response.json({ error: { code: serverCode, message: "secret_echo" } }, { status: 400 }),
     });
-    await expect(client.logs({ id: "sandbox_placeholder" })).rejects.toMatchObject({ code, serverCode });
+    const error = await client.logs({ id: "sandbox_placeholder" }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArmadaError);
+    expect(error).toMatchObject({ code, serverCode });
+    expect((error as ArmadaError).message).not.toContain("secret_echo");
+    if (code === "unknown_response") {
+      expect((error as ArmadaError).message).toBe(
+        "Armada request failed (unknown_response: future_failure, HTTP 400).",
+      );
+    }
   }
 });
 
@@ -442,10 +451,19 @@ test("outputs.get encodes the output name and preserves a streamed binary range 
   expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 });
 
-test("outputs.get rejects a dot path segment before sending a request", async () => {
+test("outputs.list and outputs.get wrap invalid sandbox IDs and output names as TypeError before sending a request", async () => {
   const fetch = jest.fn(async () => new Response());
   const client = new Armada({ token: "service_placeholder", fetch });
-  await expect(client.outputs.get({ id: outputSandboxId, name: ".." })).rejects.toThrow();
+  for (const call of [
+    () => client.outputs.list({ id: "not-a-uuid" }),
+    () => client.outputs.get({ id: "not-a-uuid", name: "artifact.bin" }),
+    () => client.outputs.get({ id: outputSandboxId, name: ".." }),
+  ]) {
+    const error = await call().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).name).toBe("TypeError");
+    expect((error as Error).message).not.toContain("invalid_format");
+  }
   expect(fetch).not.toHaveBeenCalled();
 });
 
@@ -592,7 +610,7 @@ test("the SDK browser bundle reaches no Node builtin, server entry point or work
   expect(bundle).not.toMatch(/from\s*["'](node:|@armada\/)|require\(|supabase|postgres/i);
 });
 
-test("wait uses the per-call deadline, then the client deadline, then the server wait plus a margin", async () => {
+test("wait and exec preserve their server budgets when client timeoutMs is shorter, while per-call timeoutMs overrides", async () => {
   let signal: AbortSignal | null | undefined;
   const fetch: import("../src/index.ts").Fetch = async (_url, init) => {
     signal = init?.signal;
@@ -604,17 +622,30 @@ test("wait uses the per-call deadline, then the client deadline, then the server
     jest.advanceTimersByTime(1);
     expect(signal?.reason).toMatchObject({ name: "TimeoutError" });
   };
-  const configured = new Armada({ token: "service_placeholder", timeoutMs: 2000, fetch });
+  const shortClient = new Armada({ token: "service_placeholder", timeoutMs: 15_000, fetch });
+  const longClient = new Armada({ token: "service_placeholder", timeoutMs: 600_000, fetch });
   const unconfigured = new Armada({ token: "service_placeholder", fetch });
 
   jest.useFakeTimers();
   try {
-    await configured.status({ id: "sandbox_placeholder" });
-    expectDeadline(2000);
-    await configured.wait({ id: "sandbox_placeholder" });
-    expectDeadline(2000);
-    await configured.wait({ id: "sandbox_placeholder" }, { timeoutMs: 3000 });
-    expectDeadline(3000);
+    await shortClient.status({ id: "sandbox_placeholder" });
+    expectDeadline(15_000);
+    await shortClient.wait({ id: "sandbox_placeholder" });
+    expectDeadline(90_000);
+    await shortClient.wait({ id: "sandbox_placeholder", timeout_seconds: 10 });
+    expectDeadline(40_000);
+    await shortClient.wait({ id: "sandbox_placeholder" }, { timeoutMs: 3_000 });
+    expectDeadline(3_000);
+    await shortClient.exec({ id: "sandbox_placeholder", command: "pwd" });
+    expectDeadline(300_000);
+    await shortClient.exec({ id: "sandbox_placeholder", command: "pwd", timeout_seconds: 400 });
+    expectDeadline(430_000);
+    await shortClient.exec({ id: "sandbox_placeholder", command: "pwd" }, { timeoutMs: 3_000 });
+    expectDeadline(3_000);
+    await longClient.wait({ id: "sandbox_placeholder", timeout_seconds: 10 });
+    expectDeadline(600_000);
+    await longClient.exec({ id: "sandbox_placeholder", command: "pwd", timeout_seconds: 400 });
+    expectDeadline(600_000);
     await unconfigured.wait({ id: "sandbox_placeholder", timeout_seconds: 10 });
     expectDeadline(40_000);
     await unconfigured.status({ id: "sandbox_placeholder" });
@@ -622,6 +653,33 @@ test("wait uses the per-call deadline, then the client deadline, then the server
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("commandClient.dockerHost sends application/json content-type with its JSON body", async () => {
+  let sentContentType = null as string | null;
+  let sentBody: unknown;
+  let sentPath = "";
+  const commands = commandClient(
+    "https://direct.armada.test",
+    {
+      fetch: async (url, init) => {
+        sentPath = new URL(String(url)).pathname;
+        sentContentType = new Headers(init?.headers).get("content-type");
+        sentBody = JSON.parse(String(init?.body));
+        return Response.json({ hosts: [] });
+      },
+      timeoutMs: 10_000,
+      token: () => "service_placeholder",
+      invalidPath: (error) => {
+        throw error;
+      },
+    },
+    (result) => (result.kind === "response" ? result.payload : null),
+  );
+  await commands.dockerHost("list", { org: "org_placeholder" });
+  expect(sentPath).toBe("/api/v1/docker/hosts/list");
+  expect(sentContentType).toBe("application/json");
+  expect(sentBody).toEqual({ org: "org_placeholder" });
 });
 
 test("a body that fails after the headers is a transport error, while a malformed body stays unknown_response", async () => {
