@@ -9,7 +9,7 @@ const usage = "  armada api ROUTE [JSON|-]";
 export default {
   name: "api",
   summary: "Call a versioned Armada API route",
-  usage,
+  usage: { auth: `${usage}                Call a versioned /api/v1/ API route directly` },
   help: `Usage: ${usage.trim()}
 POST to /api/v1/ROUTE using the selected Armada login and print the JSON response.
 Pass the route relative to /api/v1/. With no body argument, send {}.

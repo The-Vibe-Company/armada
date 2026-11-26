@@ -85,18 +85,18 @@ test.each([VERSION, "0.0.1", null])(
       },
     });
     expect(await f.run(["info"])).toBe(0);
-    expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
-    expect(f.output()).toContain("Session\tok\tSigned in as user (service)");
-    expect(f.output()).toContain("Organization\tok\torg");
+    expect(f.output()).toMatch(/CHECK\s+STATUS\s+DETAIL \/ NEXT STEP/);
+    expect(f.output()).toMatch(/Session\s+ok\s+Signed in as user \(service\)/);
+    expect(f.output()).toMatch(/Organization\s+ok\s+org/);
     expect(f.output()).toContain("npm i -g @the-vibe-company/armada");
     expect(f.output()).toContain(`online; daemon ${hostVersion ?? "unknown"}`);
-    expect(f.output()).toContain(
-      `Host desk\t${hostVersion === VERSION ? "ok" : hostVersion ? "warning" : "unknown"}\t`,
+    expect(f.output()).toMatch(
+      new RegExp(`Host desk\\s+${hostVersion === VERSION ? "ok" : hostVersion ? "warning" : "unknown"}\\s+`),
     );
     if (hostVersion && hostVersion !== VERSION)
       expect(f.output()).toContain("On the host machine, check the status of the daemon instance for this server.");
-    expect(f.output()).toContain("Account Work\tactive");
-    expect(f.output()).toContain("GitHub\tok\tConnected as owner");
+    expect(f.output()).toMatch(/Account Work\s+active/);
+    expect(f.output()).toMatch(/GitHub\s+ok\s+Connected as owner/);
     expect(f.output()).toContain("The-Vibe-Company (selected repositories), owner (all repositories)");
     expect(f.output()).toContain("Per-repository access is checked at launch");
   },

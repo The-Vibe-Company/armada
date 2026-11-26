@@ -265,4 +265,5 @@ test("template help does not swallow a literal prompt value", async () => {
   expect(result.code).toBe(0);
   expect(result.requests).toHaveLength(1);
   expect(await result.requests[0]?.json()).toMatchObject({ prompt: "-h" });
+  expect((await invoke(["template", "launch", "--help"])).out).toContain("--keep-after-merge");
 });

@@ -6,7 +6,7 @@ import type { Command } from "./command.ts";
 export default {
   name: "logout",
   summary: "Clear saved Armada login",
-  usage: { session: `  armada logout` },
+  usage: { auth: "  armada logout [--json]                   Clear saved local Armada login" },
   help: `Usage: armada logout [--json]
 Clear the saved local Armada login without a server request.
 --json returns {authenticated:false}.
@@ -14,6 +14,7 @@ This does not revoke service tokens or remove ARMADA_TOKEN from your environment
 To sign out a personal session remotely first, use armada account logout.
 Example: armada logout
 `,
+  automaticJson: true,
   async run(argv, { auth }) {
     const parsed = parseAuth(argv);
     rejectUnknown(parsed.flags, ["json"]);

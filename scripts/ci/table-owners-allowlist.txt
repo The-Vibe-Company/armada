@@ -1,5 +1,4 @@
 # One exception per existing write. Remove its line when moving or deleting the write.
-apps/dashboard/src/app/actions/github.ts	github_connections	delete
 packages/core/src/delegated-authority.ts	sandboxes	update
 packages/core/src/vault-store.ts	github_connections	update
 packages/core/src/vault-store.ts	github_connections	update

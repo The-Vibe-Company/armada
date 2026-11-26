@@ -4,8 +4,8 @@ export default sandboxOperation({
   name: "bind-credential",
   summary: "Recover a sandbox credential binding",
   usage: {
-    "bind-credential": `  armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
-                                           Owner-only legacy Modal binding recovery; stop safely first; no restart`,
+    sandboxes: `  armada bind-credential <sandbox-id> --credential-id UUID [--org ORG] [--json]
+                                           Recover a legacy Modal credential binding (owner-only)`,
   },
   help: `Usage: armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
 Owner-only legacy Modal credential-binding recovery after Armada login.

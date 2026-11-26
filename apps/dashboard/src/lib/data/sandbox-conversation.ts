@@ -3,7 +3,7 @@ import { capabilities } from "@armada/core/machine-capabilities";
 import { isUuid } from "@/lib/action";
 import { viewerGateway } from "@/lib/data/gateway";
 import { getSandbox } from "@/lib/data/sandboxes";
-import { requireViewer } from "@/lib/data/viewer";
+import { readViewer } from "@/lib/data/viewer";
 import { conversationReadDirection, parseEventPage, readLogPages } from "@/lib/events";
 import { GatewayError } from "@/lib/gateway";
 import { createClient } from "@/lib/supabase/server";
@@ -19,7 +19,8 @@ export async function readSandboxConversation(
 ) {
   if (!isUuid(id)) return { body: { error: "Not found." }, status: 404 };
 
-  const [viewer, supabase] = await Promise.all([requireViewer(), createClient()]);
+  const [viewer, supabase] = await Promise.all([readViewer(), createClient()]);
+  if (!viewer) return { body: { error: "Sign in again." }, status: 401 };
   const sandbox = await getSandbox(supabase, id);
   if (!sandbox) return { body: { error: "Not found." }, status: 404 };
 

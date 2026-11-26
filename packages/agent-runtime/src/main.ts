@@ -14,15 +14,15 @@ import { runtimeStartupFailure } from "../../core/src/runtime-startup-failure.ts
 import { AntigravityDriver } from "./antigravity.ts";
 import { runArtifactInstallMode } from "./artifact-cache.ts";
 import { configureClaudeEndpoint } from "./claude-endpoint.ts";
-import { configureCodexEndpoint } from "./codex-endpoint.ts";
 import { enrolRuntime, RuntimeDialout, runtimeSubscriptionAccess } from "./dialout.ts";
-import { prepareEnrolledHarness } from "./enrolled-harness.ts";
 import {
-  execCredentialValues,
-  privateHarnessHome,
-  validateExecEnvironment,
-  validateExecReadables,
-} from "./exec-env.ts";
+  bootstrapGitHubHomes,
+  initializeBootstrapHarnessHomes,
+  prepareEnrolledHarness,
+  selectBootstrapHarnesses,
+  shouldPrepareLocalOpenCode,
+} from "./enrolled-harness.ts";
+import { execCredentialValues, validateExecEnvironment, validateExecReadables } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
 import { runGitHubClient } from "./github-client.ts";
 import { githubRuntimeEnvironment, installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
@@ -30,7 +30,12 @@ import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
 import { ClaudeDriver, CodexDriver, type Grant, Journal, type McpConfiguration, Runner } from "./index.ts";
 import { runtimeModelConnection, testModelConnection } from "./model-connection-test.ts";
-import { quiesceNativeCodex, readNativeCodexAuth, removeNativeCodexAuth } from "./native-auth.ts";
+import {
+  createNativeAuthRefresher,
+  quiesceNativeCodex,
+  readNativeCodexAuth,
+  removeNativeCodexAuth,
+} from "./native-auth.ts";
 import { OpenCodeDriver } from "./opencode.ts";
 import { configureOpenCodeEndpoint } from "./opencode-endpoint.ts";
 import { prepareOpenCode } from "./opencode-install.ts";
@@ -209,14 +214,16 @@ async function main(dialout = false) {
       : null;
   configureOpenCodeEndpoint(opencodeEnv);
   const journal = new Journal(`${config.root}/journal.sqlite`, redact);
-  let lastAuth: string | undefined;
-  const refreshNativeSecrets = () => {
-    const current = readNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
-    if (current !== lastAuth) {
-      lastAuth = current;
-      journal.sanitize();
-    }
-  };
+  const refreshNativeSecrets =
+    (config.nativeAuthRevision !== undefined || Boolean(config.codexAuthJson)) &&
+    !config.subscription &&
+    !config.runtimeSubscription
+      ? createNativeAuthRefresher(
+          config.root,
+          (values) => journal.registerSecrets(values),
+          () => journal.sanitize(),
+        )
+      : undefined;
   const receiptKey = `native-auth:checkpoint-ack:${checkpointIdentityKey(config.grant)}`;
   const publishNativeAuth = async (checkpoint = false, observedAuth?: string) => {
     // Private generation-bound publication must be acknowledged before auth is scrubbed.
@@ -326,27 +333,28 @@ async function main(dialout = false) {
       sourceIdentity,
       restore ? { sandboxId: config.grant.sandboxId, generation: restore.epoch } : undefined,
     );
+  const activeHarnesses = selectBootstrapHarnesses(Boolean(enrolled), config.selectedHarness);
+  const activeHarnessSet = new Set(activeHarnesses);
+  const harnessEnvs = {
+    opencode: opencodeEnv,
+    claude: config.claudeEnv,
+    codex: config.codexEnv,
+  };
   if (!fenced) {
     await rm(`${config.root}/exec-transient`, { recursive: true, force: true });
     await mkdir(`${config.root}/exec-transient/gh`, { recursive: true, mode: 0o700 });
     // Private HOME catches legacy ~/.claude.json, XDG caches and refreshed native auth.
-    for (const [harness, env] of [
-      ["opencode", opencodeEnv],
-      ["claude", config.claudeEnv],
-      ["codex", config.codexEnv],
-    ] as const)
-      await mkdir(privateHarnessHome(config.root, harness, env, execEnv), { recursive: true, mode: 0o700 });
-    opencodeEnv.XDG_DATA_HOME = `${config.root}/opencode/data`;
-    opencodeEnv.XDG_CONFIG_HOME = `${config.root}/opencode/config`;
-    opencodeEnv.XDG_CACHE_HOME = `${config.root}/opencode/cache`;
-    opencodeEnv.XDG_STATE_HOME = `${config.root}/opencode/state`;
-    config.claudeEnv.CLAUDE_CONFIG_DIR = `${config.root}/claude`;
-    config.codexEnv.CODEX_HOME = `${config.root}/codex`;
-    await configureCodexEndpoint(config.codexEnv.CODEX_HOME, codexEndpoint);
+    await initializeBootstrapHarnessHomes({
+      root: config.root,
+      harnesses: activeHarnesses,
+      envs: harnessEnvs,
+      execEnv,
+      codexEndpoint,
+    });
     if (config.subscription || config.runtimeSubscription) {
       removeNativeCodexAuth(config.root, (values) => journal.registerSecrets(values));
       journal.sanitize();
-    } else if (config.codexAuthJson)
+    } else if (activeHarnessSet.has("codex") && config.codexAuthJson)
       await writeFile(`${config.root}/codex/auth.json`, config.codexAuthJson, { mode: 0o600 });
   }
   const subscriptionRevisions = new Map<string, number>();
@@ -389,8 +397,8 @@ async function main(dialout = false) {
   const githubBin = `${githubRoot}/bin`;
   const githubHome = execEnv.HOME ?? process.env.HOME ?? "/home/user";
   // Fixed before drivers/exec capture their environments. Installation contains no secrets.
-  for (const env of [config.claudeEnv, config.codexEnv, opencodeEnv])
-    Object.assign(env, githubRuntimeEnvironment(env, githubRoot));
+  for (const harness of activeHarnesses)
+    Object.assign(harnessEnvs[harness], githubRuntimeEnvironment(harnessEnvs[harness], githubRoot));
   Object.assign(process.env, githubRuntimeEnvironment({ PATH: process.env.PATH }, githubRoot));
   let githubSocket: Awaited<ReturnType<GitHubBroker["listen"]>> | undefined;
   let githubClosing = false;
@@ -420,13 +428,7 @@ async function main(dialout = false) {
       socket: githubSocket.socket,
       gh: "/usr/bin/gh",
       git: "/usr/bin/git",
-      homes: [
-        ...new Set(
-          [githubHome, config.claudeEnv.HOME, config.codexEnv.HOME, opencodeEnv.HOME].filter(
-            (home): home is string => !!home,
-          ),
-        ),
-      ],
+      homes: bootstrapGitHubHomes(githubHome, activeHarnesses, harnessEnvs),
       activation: githubSocket.activation,
       ...(identity ? { identity } : {}),
     };
@@ -449,60 +451,53 @@ async function main(dialout = false) {
   // Previous-epoch wrappers cannot point at a dead socket during native restore.
   // Rebind redaction-only IPC first; no GitHub credential authority is restored.
   if (enrolled) await ensureGitHubTools();
-  const opencodeExecutable =
-    opencodeEnv.OPENCODE_CONFIG_CONTENT || opencodeEnv.OPENCODE_API_KEY
-      ? await prepareOpenCode({
-          candidate: config.opencodeExecutable ?? "/usr/local/bin/opencode",
-          serverUrl: enrolled ? input.serverUrl : new URL(config.ingestUrl).origin,
-          cacheDir: `${config.root}/.harness-cache`,
-        })
-      : (config.opencodeExecutable ?? "/usr/local/bin/opencode");
+  const opencodeExecutable = shouldPrepareLocalOpenCode(Boolean(enrolled), opencodeEnv)
+    ? await prepareOpenCode({
+        candidate: config.opencodeExecutable ?? "/usr/local/bin/opencode",
+        serverUrl: new URL(config.ingestUrl).origin,
+        cacheDir: `${config.root}/.harness-cache`,
+      })
+    : (config.opencodeExecutable ?? "/usr/local/bin/opencode");
   const runtimeExecEnv = {
     ...(fenced ? {} : execEnv),
     PATH: `${githubBin}:${execEnv.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
   };
+  const drivers: ConstructorParameters<typeof Runner>[2] = {};
+  if (antigravity && !fenced)
+    drivers.antigravity = new AntigravityDriver({
+      ...antigravity,
+      readableVariables,
+      githubTools: { root: githubRoot, home: githubHome },
+      root: config.root,
+      cwd: config.cwd,
+      journal,
+      redactToolText: (text) => journal.redactLiteralText(text),
+    });
+  if (activeHarnessSet.has("opencode"))
+    drivers.opencode = new OpenCodeDriver({
+      executable: opencodeExecutable,
+      root: `${config.root}/opencode`,
+      cwd: config.cwd,
+      env: opencodeEnv,
+      redact: (text) => journal.redact(text, "transcript"),
+      redactToolText: (text) => journal.redactLiteralText(text),
+    });
+  if (activeHarnessSet.has("claude"))
+    drivers.claude = new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv });
+  if (activeHarnessSet.has("codex"))
+    drivers.codex = new CodexDriver({
+      cwd: config.cwd,
+      executable: config.codexExecutable,
+      env: config.codexEnv,
+      ...(refreshNativeSecrets ? { refreshSecrets: refreshNativeSecrets } : {}),
+      ...(channel ? { onStarted: () => void channel.progress("harness_started").catch(() => {}) } : {}),
+      exclusiveAuth: config.nativeAuthRevision !== undefined,
+      ...(subscriptionAccess ? { subscriptionAccess } : {}),
+    });
   const runner = new Runner(
     journal,
     config.grant,
-    {
-      ...(antigravity && !fenced
-        ? {
-            antigravity: new AntigravityDriver({
-              ...antigravity,
-              readableVariables,
-              githubTools: { root: githubRoot, home: githubHome },
-              root: config.root,
-              cwd: config.cwd,
-              journal,
-              redactToolText: (text) => journal.redactLiteralText(text),
-            }),
-          }
-        : {}),
-      opencode: new OpenCodeDriver({
-        executable: opencodeExecutable,
-        root: `${config.root}/opencode`,
-        cwd: config.cwd,
-        env: opencodeEnv,
-        redact: (text) => journal.redact(text, "transcript"),
-        redactToolText: (text) => journal.redactLiteralText(text),
-      }),
-      claude: new ClaudeDriver({ cwd: config.cwd, executable: config.claudeExecutable, env: config.claudeEnv }),
-      codex: new CodexDriver({
-        cwd: config.cwd,
-        executable: config.codexExecutable,
-        env: config.codexEnv,
-        refreshSecrets: refreshNativeSecrets,
-        ...(channel
-          ? {
-              onStarted: () => {
-                void channel.progress("harness_started").catch(() => {});
-              },
-            }
-          : {}),
-        exclusiveAuth: config.nativeAuthRevision !== undefined,
-        ...(subscriptionAccess ? { subscriptionAccess } : {}),
-      }),
-    },
+    drivers,
     channel ?? {
       async append(batch) {
         const response = await fetch(config.ingestUrl, {
@@ -565,7 +560,7 @@ async function main(dialout = false) {
       },
       readableVariables: fenced ? {} : readableVariables,
       execEnv: runtimeExecEnv,
-      refreshNativeSecrets,
+      ...(refreshNativeSecrets ? { refreshNativeSecrets } : {}),
       publishNativeAuth,
       exclusiveNativeAuth: config.nativeAuthRevision !== undefined,
       credentialFreeBuilder: config.credentialFreeBuilder ?? false,
@@ -620,6 +615,8 @@ async function main(dialout = false) {
     const relay = createRuntimeRelay(input.serverUrl, enrolled, {
       cwd: config.cwd,
       execEnv: runtimeExecEnv,
+      ghConfigDir: `${config.root}/exec-transient/gh`,
+      githubToolsRoot: githubRoot,
       credentialFreeBuilder: config.credentialFreeBuilder,
     });
     const closeNative = () => {

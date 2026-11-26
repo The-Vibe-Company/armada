@@ -57,6 +57,9 @@ test("rm --yes deletes the selected sandbox in the selected organization", async
   expect(result.stderr).toBe("");
   expect(result.requests).toEqual([{ method: "DELETE", path: `/api/v1/sandboxes/${sandboxId}?org=${orgId}` }]);
   expect(JSON.parse(result.stdout)).toEqual({ id: sandboxId, status: "deleted" });
+  const namedOrg = await runRm([sandboxId, "--yes", "--org", "my-team"], { includeId: false });
+  expect(namedOrg.exit).toBe(0);
+  expect(namedOrg.requests).toEqual([{ method: "DELETE", path: `/api/v1/sandboxes/${sandboxId}?org=my-team` }]);
 });
 
 test("rm --yes requires an explicit sandbox ID and never falls back to ARMADA_SANDBOX or .armada/sandbox", async () => {

@@ -7,7 +7,7 @@ export default {
   name: "login",
   summary: "Sign in to Armada",
   usage: {
-    session: "  armada login [--url <url>] [--org NAME|UUID|none]        Sign in and authorize the CLI in your browser",
+    auth: "  armada login [--url <url>] [--org NAME|UUID|none]\n                                           Sign in and authorize the CLI in your browser",
   },
   help: `Usage: armada login [--json] [--url <server-origin>] [--org NAME|UUID|none]
 Open the dashboard link, sign in there and authorize the CLI. The browser can

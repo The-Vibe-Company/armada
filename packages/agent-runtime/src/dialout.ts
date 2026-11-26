@@ -25,6 +25,7 @@ export interface DialoutIo {
   socket(url: URL, headers: Record<string, string>): Socket;
   after(ms: number, callback: () => void): () => void;
   every(ms: number, callback: () => void): () => void;
+  now?: () => number;
 }
 const nativeIo: DialoutIo = {
   fetch: (url, options) => fetch(url, options),
@@ -37,6 +38,7 @@ const nativeIo: DialoutIo = {
     const timer = setInterval(callback, ms);
     return () => clearInterval(timer);
   },
+  now: () => performance.now(),
 };
 function origin(value: string): URL {
   const url = new URL(value);
@@ -403,14 +405,16 @@ export class RuntimeDialout implements IngestClient {
         });
       }
       let backoff = 1000;
+      const now = () => (this.io.now ? this.io.now() : performance.now());
       while (!signal.aborted) {
         try {
           await this.acknowledge(signal);
+          const startedAt = now();
           const body = await this.post("poll", { epoch: this.session.epoch }, signal);
           if (!object(body)) throw Error("invalid_runtime_poll");
           this.epoch(body.epoch);
           if (body.command !== null) await this.execute(this.command(body.command), handle, signal);
-          else await this.wait(1000, signal); // Also bound a server that returns idle polls immediately.
+          else if (now() - startedAt < 500) await this.wait(1000, signal); // Also bound a server that returns idle polls immediately.
           backoff = 1000;
         } catch {
           if (!signal.aborted) await this.wait(backoff, signal);

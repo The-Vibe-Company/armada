@@ -49,17 +49,47 @@ export function findCommand(name: string) {
 
 export function sandboxUsage(group: UsageGroup): string {
   return commands
-    .map(({ usage }) => (typeof usage === "string" ? (group === "sandbox" ? usage : undefined) : usage[group]))
+    .map(({ usage }) => (typeof usage === "string" ? (group === "sandboxes" ? usage : undefined) : usage[group]))
     .filter(Boolean)
     .join("\n");
 }
 
-export function focusedHelp(argv: readonly string[]) {
-  if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
-  const parts = argv.slice(0, -1);
+const KNOWN_BOOLEAN_FLAGS = new Set(
+  "--private --json --no-browser --no-connections --page-info --yes --live --setup --wait --turn --after --steer --replace --auto --unlimited --armada-access --keep-after-merge -f --follow --global".split(
+    " ",
+  ),
+);
+
+export function helpForPath(parts: readonly string[]) {
+  if (!parts.length) return undefined;
   const path = parts.join(" ");
   const command = byName.get(path);
   if (command) return command.help;
-  const nested = byName.get(path.split(" ", 1)[0] ?? "")?.subcommandHelp;
+  const nested = byName.get(parts[0] ?? "")?.subcommandHelp;
   return nested && Object.hasOwn(nested, path) ? nested[path] : undefined;
+}
+
+export function focusedHelp(argv: readonly string[]) {
+  if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
+  const before = argv.slice(0, -1);
+  if (before.includes("--")) return undefined;
+  const direct = helpForPath(before);
+  if (direct) return direct;
+  const path: string[] = [];
+  let index = 0;
+  while (index < before.length && !before[index]!.startsWith("-")) {
+    path.push(before[index]!);
+    index++;
+  }
+  const matched = helpForPath(path);
+  if (!matched || index === before.length) return undefined;
+  for (; index < before.length; index++) {
+    const token = before[index]!;
+    if (!token.startsWith("-") || token === "--help" || token === "-h") return undefined;
+    if (token.includes("=") || KNOWN_BOOLEAN_FLAGS.has(token)) continue;
+    const next = before[index + 1];
+    if (next === undefined || next.startsWith("-")) return undefined;
+    index++;
+  }
+  return matched;
 }

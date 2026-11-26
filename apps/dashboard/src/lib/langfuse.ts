@@ -64,7 +64,13 @@ export function parseLangfuseTest(input: unknown): LangfuseTest {
 
 export type LangfuseEditable = Pick<LangfuseAdmin, "host" | "publicKey" | "contentMode">;
 
-export function readLangfuseForm(form: FormData, baseline?: LangfuseEditable): LangfuseInput | null {
+export const LANGFUSE_MISSING_FIELDS_ERROR = "Enter the host and keys from your Langfuse project settings.";
+export const LANGFUSE_HOST_CHANGE_ERROR =
+  "Changing the Langfuse host requires replacing the Secret key. Click Replace and enter the secret key for the new host.";
+
+export type LangfuseFormResult = { ok: true; input: LangfuseInput } | { ok: false; error: string };
+
+export function readLangfuseForm(form: FormData, baseline?: LangfuseEditable): LangfuseFormResult {
   const host = form.get("host");
   const publicKey = form.get("publicKey");
   const secretKey = form.get("secretKey");
@@ -77,17 +83,20 @@ export function readLangfuseForm(form: FormData, baseline?: LangfuseEditable): L
     (secretKey !== null && (typeof secretKey !== "string" || !secretKey.trim())) ||
     (contentMode !== "metadata" && contentMode !== "full")
   )
-    return null;
+    return { ok: false, error: LANGFUSE_MISSING_FIELDS_ERROR };
   const hostValue = host.trim();
   const url = URL.canParse(hostValue) ? new URL(hostValue) : null;
   const origin = url && url.href === `${url.origin}/` ? url.origin : hostValue;
   const hostChanged = origin !== baseline?.host;
   // The API binds stored secrets to their origin. A host move always needs an explicit replacement.
-  if (baseline && hostChanged && secretKey === null) return null;
+  if (baseline && hostChanged && secretKey === null) return { ok: false, error: LANGFUSE_HOST_CHANGE_ERROR };
   return {
-    ...(hostChanged ? { host: hostValue } : {}),
-    ...(hostChanged || publicKey.trim() !== baseline?.publicKey ? { publicKey: publicKey.trim() } : {}),
-    ...(secretKey === null ? {} : { secretKey: secretKey.trim() }),
-    ...(contentMode === baseline?.contentMode ? {} : { contentMode }),
+    ok: true,
+    input: {
+      ...(hostChanged ? { host: hostValue } : {}),
+      ...(hostChanged || publicKey.trim() !== baseline?.publicKey ? { publicKey: publicKey.trim() } : {}),
+      ...(secretKey === null ? {} : { secretKey: secretKey.trim() }),
+      ...(contentMode === baseline?.contentMode ? {} : { contentMode }),
+    },
   };
 }

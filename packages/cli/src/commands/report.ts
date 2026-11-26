@@ -3,7 +3,8 @@ import { sandboxOperation } from "./sandbox-operation.ts";
 export default sandboxOperation({
   name: "report",
   summary: "Report a finished turn outcome",
-  usage: `  armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]`,
+  usage: `  armada report [sandbox-id] ready|blocked --prompt-id ID [options]
+                                           Report an explicit outcome for the latest finished turn`,
   help: `Usage: armada report [sandbox-id] ready|blocked --prompt-id <id> [--org UUID] [--json]
   ready: [--pr-number <N>] [--pr-url <URL>] [--head-sha <SHA>]
   blocked: --reason <text>

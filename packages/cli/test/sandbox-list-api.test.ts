@@ -87,12 +87,19 @@ test("safe sandbox list renders metadata-only access without interior lookups an
         hasMore: false,
       });
     else {
-      expect(out).toContain("Modal  —  running  —  2h  —  teammate  metadata only");
+      expect(out).toMatch(
+        /ID\s+LABEL\s+PROVIDER\s+PROVIDER ID\s+STATUS\s+OUTCOME\s+AGE\s+PRESERVATION\s+OWNER\s+ACCESS/,
+      );
+      expect(out).toMatch(/Modal\s+—\s+running\s+—\s+2h\s+—\s+teammate\s+metadata only/);
       expect(out).toContain(row.id);
       expect(out).toContain("UNKNOWN (server reauthorizes)");
-      expect(out).toContain(
-        "Boat  bx_display  Paused — wakes on your next message  ready  2h  —  teammate  open/manage",
+      expect(out).toMatch(
+        /Boat\s+bx_display\s+Paused — wakes on your next message\s+ready\s+2h\s+—\s+teammate\s+open\/manage/,
       );
+      const lines = out.trimEnd().split("\n");
+      const statusCol = lines[0]!.indexOf("STATUS");
+      expect(lines[1]!.slice(statusCol).startsWith("running")).toBe(true);
+      expect(lines[2]!.slice(statusCol).startsWith("Paused")).toBe(true);
     }
   }
 });

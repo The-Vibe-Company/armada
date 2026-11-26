@@ -65,11 +65,24 @@ test.each([
   [500, "internal", "unavailable", 1, "may already have been accepted"],
   [400, canary, "invalid_request", 2, "COMMAND --help"],
 ])("sandbox HTTP %s / %s keeps a closed reason and next step", async (status, server, code, exit, step) => {
-  const result = await capture(["prompt", "--steer", id, "hello", "--json"], status as number, server);
+  const msg = server === "invalid_request" ? "" : canary;
+  const result = await capture(["prompt", "--steer", id, "hello", "--json"], status as number, server, msg);
   expect(result.exit).toBe(exit);
   const failure = JSON.parse(result.err).error;
   expect(failure.code).toBe(code);
   expect(failure.message).toContain(step as string);
+});
+
+test("sandbox 400 invalid_request preserves specific server validation message and hides internal issue refs", async () => {
+  const validation = await capture(
+    ["info", id, "--json"],
+    400,
+    "invalid_request",
+    "request_id is supported only for runtime control.",
+  );
+  expect(validation.exit).toBe(2);
+  expect(JSON.parse(validation.err).error.message).toBe("request_id is supported only for runtime control.");
+  expect((await capture(["info", id, "--json"], 409, "credential_binding_unsupported")).err).not.toContain("#1579");
 });
 
 test("human error guidance is stderr-only and does not retry a stop rejection", async () => {

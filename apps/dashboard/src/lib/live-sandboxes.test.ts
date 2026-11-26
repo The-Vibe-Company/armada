@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createClient } from "@supabase/supabase-js";
 import { createControlClient } from "./control";
+import { readRecordedTurns } from "./data/sandbox-inventory";
 import { liveSandboxLook } from "./live-sandbox-view";
 import { queryLiveSandboxes } from "./live-sandboxes";
 import type { Database } from "./supabase/types";
@@ -90,4 +91,18 @@ test("queryLiveSandboxes enriches live fleet with sandbox/list-turns, wakes stop
   }
   expect(liveSandboxLook({ status: "ready", working: false })).toMatchObject({ tone: "warning", pulse: false });
   expect(liveSandboxLook({ status: "running", working: false })).toMatchObject({ tone: "neutral", pulse: false });
+
+  const malformed = createControlClient({
+    serverUrl: "https://armada.test",
+    token: "placeholder",
+    fetch: makeFetch(async () => Response.json({ ok: "running", bad: "unknown", num: 42 })),
+  });
+  expect(await readRecordedTurns("org-2", malformed)).toEqual({ ok: "running" });
+  const nonObject = createControlClient({
+    serverUrl: "https://armada.test",
+    token: "placeholder",
+    fetch: makeFetch(async () => Response.json(["not-a-map"])),
+  });
+  expect(await readRecordedTurns("org-3", nonObject)).toEqual({});
+  expect(await readRecordedTurns("org-3", null)).toEqual({});
 });

@@ -20,6 +20,34 @@ import { createClient, type Supabase } from "../supabase/server";
 
 const DELETED_SEARCH_COLUMNS = "id,providerSandboxId,displayLabel,harness,createdAt";
 
+const recordedTurnsCache = cache(() => new Map<string, Promise<Record<string, RecordedTurn>>>());
+
+async function fetchRecordedTurns(organizationId: string, control: ControlClient) {
+  const turns: Record<string, RecordedTurn> = {};
+  try {
+    const result = await control.post<unknown>("sandbox/list-turns", { org: organizationId });
+    if (result && typeof result === "object" && !Array.isArray(result)) {
+      for (const [id, state] of Object.entries(result)) {
+        if (state === "queued" || state === "running" || state === "finished") turns[id] = state;
+      }
+    }
+  } catch {
+    console.error("Recorded sandbox activity is unavailable.");
+  }
+  return turns;
+}
+
+export function readRecordedTurns(organizationId: string, control: ControlClient | null) {
+  if (!control) return Promise.resolve({} as Record<string, RecordedTurn>);
+  const pending = recordedTurnsCache();
+  let read = pending.get(organizationId);
+  if (!read) {
+    read = fetchRecordedTurns(organizationId, control);
+    pending.set(organizationId, read);
+  }
+  return read;
+}
+
 export async function loadSandboxInventory(
   supabase: Supabase,
   orgId: string,
@@ -29,14 +57,11 @@ export async function loadSandboxInventory(
   control: ControlClient | null,
   metadata: ReturnType<typeof readSandboxMetadata>,
 ) {
-  const turnsRead = control?.post<Record<string, RecordedTurn>>("sandbox/list-turns", { org: orgId }).catch(() => {
-    console.error("Recorded sandbox activity is unavailable.");
-    return {};
-  });
+  const turnsRead = readRecordedTurns(orgId, control);
   const includeDeleted = sandboxInventoryIncludesDeleted(filters);
   const [{ inventory, skipped }, turns, deletedFacetCount] = await Promise.all([
     metadata,
-    turnsRead ?? {},
+    turnsRead,
     includeDeleted ? null : countDeletedSandboxes(supabase, orgId, filters, viewerId),
   ]);
   const now = new Date();

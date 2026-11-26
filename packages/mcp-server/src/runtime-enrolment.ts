@@ -12,6 +12,7 @@ import {
 } from "@armada/core/server";
 import type { Route } from "./http.ts";
 import { resumeDispatchBlocked } from "./jobs/resume-authority.ts";
+import { recordLaunchStage } from "./launch-stage-record.ts";
 import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { runtimeHealthMatches } from "./runtime-health.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
@@ -351,6 +352,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!updated) throw new RuntimeEnrolmentDenied();
+      await recordLaunchStage(tx, sandbox.id, "enrolled");
       if (
         sandbox.status === "starting" &&
         (await publishRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap")) === "conflict"

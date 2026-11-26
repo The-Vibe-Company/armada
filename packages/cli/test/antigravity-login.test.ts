@@ -94,12 +94,12 @@ function fixture() {
   return { fetch, post, submitted, saved, logs, shutdown: login.shutdown };
 }
 
-async function signIn(server: ReturnType<typeof fixture>, paste: string) {
+async function signIn(server: ReturnType<typeof fixture>, paste: string, extraArgs: string[] = []) {
   const output: string[] = [];
   const opened: string[] = [];
   const write = (chunk: string) => output.push(chunk);
   const exit = await run(
-    ["account", "login", "antigravity", "--name", "google"],
+    ["account", "login", "antigravity", "--name", "google", ...extraArgs],
     { out: write, err: write },
     {
       readStdin: async () => paste,
@@ -131,6 +131,7 @@ test("the CLI exchanges a pasted Google code through the authenticated routes an
   expect(text).toContain(account);
   for (const value of [code, ...Object.values(credential.token)])
     expect(text + server.logs.join("")).not.toContain(value);
+  expect((await signIn(server, code, ["--json"])).exit).toBe(0);
 });
 
 test("the HTTP boundary refuses unauthenticated start and a different user's completion", async () => {

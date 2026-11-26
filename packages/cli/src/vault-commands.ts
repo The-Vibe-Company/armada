@@ -180,7 +180,7 @@ export async function modelAccountCommand(
       } else raw = await readValue(args, io);
       const value = kind === "antigravity" ? importAntigravityToken(raw) : parseCredentialValue(kind, raw);
       if (kind === "codex_auth") validateNativeCodexAuth(value, false);
-      await control(io.auth, "creds/accounts/set", {
+      const result = await control(io.auth, "creds/accounts/set", {
         scope,
         org,
         kind: credentialName(kind),
@@ -189,6 +189,10 @@ export async function modelAccountCommand(
         ...(id ? { id, expectedVersion: Number(revision) } : {}),
         ...(maxAgents !== undefined ? { maxAgents } : {}),
       });
+      if (flag(args, "--json")) {
+        io.auth.out(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
       io.auth.out("Imported native credential account, encrypted. Allowance may be unavailable.\n");
       return 0;
     }
@@ -488,7 +492,7 @@ function importAntigravityToken(raw: string) {
 }
 
 async function antigravityLogin(args: ReturnType<typeof parseArgs>, { auth, readStdin }: VaultIo) {
-  acceptedOptions(args, "account login antigravity", ["--name", "--id", "--expected-version", "--org"]);
+  acceptedOptions(args, "account login antigravity", ["--name", "--id", "--expected-version", "--org", "--json"]);
   const { startAntigravityLogin: start, completeAntigravityLogin: complete } = antigravityLoginOperations;
   const revision = single(args, "--expected-version");
   const name = single(args, "--name");

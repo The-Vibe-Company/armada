@@ -259,6 +259,7 @@ export class AcpDriver implements Driver {
               const name = toolIdentifier(label, u.sessionUpdate === "tool_call_update" ? "tool_result" : "tool");
               const id = toolCallIdentifier(redactIdentifier(u.toolCallId));
               const terminal = u.status === "completed" || u.status === "failed";
+              const isToolResult = u.sessionUpdate === "tool_call_update" && (terminal || !label);
               const longTitle = label.length > name.length ? redact(title) : undefined;
               const retained = longToolTitles.get(id)?.title;
               if (terminal) releaseLongToolTitle(id);
@@ -275,6 +276,7 @@ export class AcpDriver implements Driver {
                 kind: "message",
                 text: "",
                 partial: false,
+                ...(isToolResult ? { responseKind: "tool_result" as const } : {}),
                 tools: [
                   {
                     id,

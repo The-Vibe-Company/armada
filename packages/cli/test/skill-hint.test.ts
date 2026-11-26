@@ -40,37 +40,42 @@ test("terminal-only skill advice is occasional, silenceable and stops after disc
     }
   }
   for (const [args, tty, env] of [
-    [["--version"], false, {}],
-    [["--version", "--json"], true, {}],
-    [["--version"], true, { ARMADA_NO_SKILL_HINT: "1" }],
+    [["ls"], false, {}],
+    [["ls", "--json"], true, {}],
+    [["ls"], true, { ARMADA_NO_SKILL_HINT: "1" }],
     [["skill", "--help"], true, {}],
+    [["--profile", "staging", "skill", "install", "--global", "--yes"], true, {}],
+    [["--version"], true, {}],
+    [["-v"], true, {}],
+    [["completion", "bash"], true, {}],
+    [["shell", "11111111"], true, {}],
   ] as const) {
     expect(cli([...args], tty, env)).not.toContain("silence:");
     expect(await Bun.file(receipt).exists()).toBe(false);
   }
-  expect(cli(["--version"])).toContain("armada skill install --global --yes");
+  expect(cli(["ls"])).toContain("armada skill install --global --yes");
   expect(await readFile(receipt, "utf8")).toBe("");
-  expect(cli(["--version"])).not.toContain("silence:");
+  expect(cli(["ls"])).not.toContain("silence:");
   await utimes(receipt, new Date(0), new Date(0));
-  expect(cli(["--version"])).toContain("silence:");
+  expect(cli(["ls"])).toContain("silence:");
   await rm(receipt);
   for (const base of [home, join(root, "project")]) {
     for (const discovery of SKILL_PACKAGE.discoveryRoots) {
       const skill = join(base, discovery, SKILL_PACKAGE.names[0]);
       await mkdir(skill, { recursive: true });
       await writeFile(join(skill, "SKILL.md"), "fixture");
-      expect(cli(["--version"])).not.toContain("silence:");
+      expect(cli(["ls"])).not.toContain("silence:");
       expect(await Bun.file(receipt).exists()).toBe(false);
       await rm(skill, { recursive: true });
     }
   }
   expect(Bun.spawnSync(["mkfifo", receipt]).exitCode).toBe(0);
   await utimes(receipt, new Date(0), new Date(0));
-  expect(cli(["--version"])).not.toContain("silence:");
+  expect(cli(["ls"])).not.toContain("silence:");
   await rm(receipt);
   await rm(join(state, "armada"), { recursive: true });
   await writeFile(join(state, "armada"), "not a directory");
-  expect(cli(["--version"])).not.toContain("silence:");
+  expect(cli(["ls"])).not.toContain("silence:");
 });
 
 test("entrypoint prints advice only on a terminal and keeps stdout clean", async () => {
@@ -120,11 +125,11 @@ sys.exit(p.wait())
     expect(child.exitCode).toBe(0);
     return child.stdout.toString();
   }
-  const piped = cli(["--version"], false);
+  const piped = cli(["--help"], false);
   expect(piped).not.toContain("Armada skills:");
   expect(await Bun.file(join(state, "armada/skill-hint")).exists()).toBe(false);
-  const terminal = cli(["--version"]);
-  expect(terminal).toContain(piped.trim());
+  expect(cli(["--version"])).not.toContain("Armada skills:");
+  const terminal = cli(["--help"]);
   expect(terminal).toContain("armada skill install --global --yes");
 });
 
