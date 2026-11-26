@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { affectedWorkspaces } from "./verify-changed.ts";
+import { affectedWorkspaces, verificationCommands } from "./verify-changed.ts";
 
 test("changed verification includes transitive consumers, isolates leaves and broadens unknown inputs", () => {
   const workspaces = [
@@ -19,4 +19,22 @@ test("changed verification includes transitive consumers, isolates leaves and br
     workspaces.map((w) => w.path).sort(),
   );
   expect(affectedWorkspaces([], workspaces)).toEqual([]);
+});
+
+test("verificationCommands prepares runtime only when tests run and manifest is missing", () => {
+  expect(verificationCommands(["./packages/mcp-server/test/a.test.ts"], false)).toEqual([
+    ["bun", "run", "lint"],
+    ["bun", "run", "typecheck"],
+    ["bun", "run", "prepare-runtime"],
+    ["bun", "test", "./packages/mcp-server/test/a.test.ts"],
+  ]);
+  expect(verificationCommands(["./packages/mcp-server/test/a.test.ts"], true)).toEqual([
+    ["bun", "run", "lint"],
+    ["bun", "run", "typecheck"],
+    ["bun", "test", "./packages/mcp-server/test/a.test.ts"],
+  ]);
+  expect(verificationCommands([], false)).toEqual([
+    ["bun", "run", "lint"],
+    ["bun", "run", "typecheck"],
+  ]);
 });

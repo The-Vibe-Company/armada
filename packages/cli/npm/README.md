@@ -4,7 +4,7 @@ The `armada` command line: launch Claude Code, Codex and OpenCode agents into Bo
 
 ```sh
 npx @the-vibe-company/armada --help
-bun x @the-vibe-company/armada --help
+bun x --bun @the-vibe-company/armada --help
 npm install --global @the-vibe-company/armada && armada --help
 ```
 

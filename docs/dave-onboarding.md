@@ -46,7 +46,7 @@ The package ships a prebuilt binary for linux and macOS (x64 and arm64), so it n
 
 ```sh
 npx @the-vibe-company/armada --help        # run once, with Node 18 or later
-bun x @the-vibe-company/armada --help      # or with Bun
+bun x --bun @the-vibe-company/armada --help # or with Bun
 npm install --global @the-vibe-company/armada
 armada --version
 ```

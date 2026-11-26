@@ -50,7 +50,7 @@ npm install --global @the-vibe-company/armada
 armada --version
 ```
 
-Or run it once without installing: `npx @the-vibe-company/armada --help` (or `bun x @the-vibe-company/armada --help`).
+Or run it once without installing: `npx @the-vibe-company/armada --help` (or `bun x --bun @the-vibe-company/armada --help`).
 
 The package ships a prebuilt binary for Linux and macOS, x64 and arm64, so it needs Node 18 or later and nothing else. Do not install with `--omit=optional`: the binary is the optional dependency that matches your machine.
 
@@ -67,16 +67,16 @@ The dashboard sidebar has **Running**, **Launch from**, **What agents have** and
 build a workspace at **Launch from → Snapshots → New**. **Sandboxes → Launch a sandbox** opens the launch dialog. [Dashboard navigation and terminology](docs/dave-onboarding.md#find-your-way-around-the-dashboard)
 covers Tools, template versions and routines. CLI command names below are unchanged.
 
-**1. Sign in.** The browser opens (GitHub by default, `--provider google` for Google); `--email <address>` signs you in with a code from an email instead. Use `--url <armada-url>` (or `ARMADA_URL`) for another deployment.
+**1. Sign in.** Open the dashboard link printed by the CLI, sign in with an enabled dashboard method, and authorize the terminal. Use `--url <armada-url>` (or `ARMADA_URL`) for another deployment.
 
 ```sh
 armada login
 ```
 
-**2. Choose an organization and connect a sandbox provider.** Create one in the dashboard (you become its admin) or ask an admin to invite you. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
+**2. Choose an organization and connect a sandbox provider.** Create one in the dashboard (you become its admin) or ask an admin to invite you, then select it with `armada org use <name>` (no second browser login needed). An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
 
 ```sh
-armada login --org acme
+armada org use acme
 printenv BOAT_API_KEY | armada org connect boat --org acme
 # Modal instead: printf '%s %s' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" | armada org connect modal --org acme
 armada org setup --org acme
@@ -185,14 +185,6 @@ Snapshots and sandboxes follow two separate rules. A private snapshot is visible
 
 See [Embed Armada](docs/api/README.md) for the HTTP API and the [glossary](docs/glossary.md) for shared terminology. Start with the [Use / Develop / Operate reader map](docs/README.md) for canonical guides, contracts and operational runbooks. The [v2 specification](https://github.com/The-Vibe-Company/armada/issues/455) records the original design, not a promise that every proposal is shipped.
 
-## Armada v1
-
-This repository used to hold Armada v1, a fleet coordinator (Linear, merge queue, desktop app; npm versions up to 0.2.73). Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final), and its history and release tags stay here. v2 replaces it under the same `@the-vibe-company/armada` package: installing the latest version upgrades the global CLI.
-
-## License
-
-[MIT](LICENSE)
-
 ### Reading events and outputs
 
 `armada events [ID]` reads one page. Use `--tail N` for recent events or
@@ -226,10 +218,10 @@ ends stderr with one JSON line, for example
 `{"error":{"code":"not_found","message":"Sandbox not found or not accessible.","hint":null}}`.
 Read the final line because stderr can also carry progress or recovery details.
 The exit code remains the script's success signal. Exit 2 means a usage/invalid-request
-failure. Exit 3 means authentication is required: any command exits 3 with
+failure. Exit 3 means authentication is required: an authenticated command exits 3 with
 `unauthorized` when there is no valid session or service token (or the API
 answers HTTP 401) and no interactive sign-in took place. For example, signed-out
-`armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
+`armada ls` and `armada ls --json` exit 3 (bare `armada` prints help and exits 0).
 Exit 1 means access denial, state, unsupported operation or service failure.
 Check `armada ls --json` for visible IDs and state; verify your org selection
 with `armada info --setup` or pass `--org UUID`.
@@ -240,7 +232,7 @@ retry once after HTTP401. On a transport/server failure,
 check its outcome before retrying: a prompt or stop may already have been
 accepted. If status/detail cannot be read during a transition, inspect
 `armada ls --json` instead; this guidance does not repair a stuck provider
-lifecycle. `recovery --help` also works before login.
+lifecycle.
 
 Scripts sending a bearer directly to `/mcp` do not use the CLI session store or its refresh/retry path. They must manage their own credential lifecycle: refresh OAuth credentials or renew expiring credentials, and replace revoked service tokens.
 
@@ -252,4 +244,12 @@ for scripts.
 
 ## Contributing
 
-See [Dashboard browser tests](docs/e2e-retirement.md) for the fixture dashboard and browser journeys.
+See the [Contribution quickstart](docs/self-hosting.md#contribute-quickstart) for local setup, credential-free dashboard development, and validation.
+
+## Armada v1
+
+This repository used to hold Armada v1, a fleet coordinator (Linear, merge queue, desktop app; npm versions up to 0.2.73). Its last commit is tagged [`armada-v1-final`](https://github.com/The-Vibe-Company/armada/tree/armada-v1-final), and its history and release tags stay here. v2 replaces it under the same `@the-vibe-company/armada` package: installing the latest version upgrades the global CLI.
+
+## License
+
+[MIT](LICENSE)

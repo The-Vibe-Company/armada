@@ -31,6 +31,17 @@ export function affectedWorkspaces(changed: string[], workspaces: Workspace[]): 
     .sort();
 }
 
+export const RUNTIME_MANIFEST_PATH = "packages/agent-runtime/dist/manifest.json";
+
+export function verificationCommands(tests: readonly string[], hasRuntimeManifest: boolean) {
+  return [
+    ["bun", "run", "lint"],
+    ["bun", "run", "typecheck"],
+    ...(tests.length && !hasRuntimeManifest ? [["bun", "run", "prepare-runtime"]] : []),
+    ...(tests.length ? [["bun", "test", ...tests]] : []),
+  ];
+}
+
 async function git(...args: string[]): Promise<string[]> {
   const result = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "inherit" });
   const output = await new Response(result.stdout).text();
@@ -96,11 +107,8 @@ async function main(): Promise<void> {
     console.log(tests.join("\n"));
     return;
   }
-  for (const command of [
-    ["bun", "run", "lint"],
-    ["bun", "run", "typecheck"],
-    ...(tests.length ? [["bun", "test", ...tests]] : []),
-  ]) {
+  const hasRuntimeManifest = await Bun.file(RUNTIME_MANIFEST_PATH).exists();
+  for (const command of verificationCommands(tests, hasRuntimeManifest)) {
     const result = Bun.spawn(command, { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
     const code = await result.exited;
     if (code !== 0) {

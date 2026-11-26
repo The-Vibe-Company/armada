@@ -39,7 +39,9 @@ function invocations(markdown: string): string[] {
       continue;
     }
     if (fenced) {
-      if (/^\s*armada\s/.test(line)) result.push(line.trim());
+      if (/^\s*#/.test(line)) continue;
+      const match = line.match(/(?:^|\|\s*)(armada\s.+)$/);
+      if (match?.[1]) result.push(match[1].trim());
     } else {
       for (const match of line.matchAll(/`(armada\s[^`]+)`/g)) result.push(match[1] ?? "");
     }
@@ -49,8 +51,11 @@ function invocations(markdown: string): string[] {
 
 function validate(invocation: string, contract: Command[]): string | undefined {
   // Quoted prompt/exec text is data, not a set of Armada options.
-  const tokens = (invocation.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g) ?? []).slice(1);
+  const rawTokens = (invocation.match(/"(?:\\.|[^"\\])*"|'[^']*'|[^\s]+/g) ?? []).slice(1);
+  const stop = rawTokens.findIndex((token) => ["|", "&&", "||", ";"].includes(token) || token.startsWith("#"));
+  const tokens = (stop >= 0 ? rawTokens.slice(0, stop) : rawTokens).filter((token) => token !== "\\");
   if (tokens.length === 1 && ["--help", "--version"].includes(tokens[0] ?? "")) return;
+  if (tokens.length === 2 && /^[A-Z][A-Z_-]*$/.test(tokens[0] ?? "") && tokens[1] === "--help") return;
   if (
     tokens.at(-1) === "--help" &&
     contract.some((candidate) => tokens.slice(0, -1).every((word, index) => candidate.path[index] === word))
@@ -78,10 +83,11 @@ async function markdownFiles(directory: string): Promise<string[]> {
   return files;
 }
 
-test("published Armada skill commands and flags match the live CLI usage contract", async () => {
+async function liveContract() {
   const contract: Command[] = [];
   for (const prefix of [
     [],
+    ["prompt"],
     ...["ls", "add", "login", "import", "default", "limits", "rm", "test"].map((action) => ["account", action]),
     ["template"],
     ...["list", "get", "launch"].map((action) => ["template", action]),
@@ -110,8 +116,19 @@ test("published Armada skill commands and flags match the live CLI usage contrac
     );
     expect(status, err).toBe(0);
     // Focused leaf pages use a Usage heading; legacy family pages use rows.
-    contract.push(...commands(prefix.length === 2 ? out.replace(/^Usage: armada /gm, "  armada ") : out));
+    for (const entry of commands(
+      prefix.length === 2 || prefix[0] === "prompt" ? out.replace(/^Usage: armada /gm, "  armada ") : out,
+    )) {
+      const existing = contract.find((candidate) => candidate.path.join(" ") === entry.path.join(" "));
+      if (existing) for (const flag of entry.flags) existing.flags.add(flag);
+      else contract.push(entry);
+    }
   }
+  return contract;
+}
+
+test("published Armada skill commands and flags match the live CLI usage contract", async () => {
+  const contract = await liveContract();
   const errors: string[] = [];
   let count = 0;
   for (const file of await markdownFiles(skill)) {
@@ -133,4 +150,19 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada template list --request-key accidental", contract)).toContain("Unknown flag");
   expect(validate("armada new example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");
+});
+
+test("README.md CLI examples match the live CLI usage contract", async () => {
+  const contract = await liveContract();
+  const markdown = await Bun.file(join(root, "README.md")).text();
+  const examples = invocations(markdown);
+  const errors = examples.flatMap((invocation) => {
+    const error = validate(invocation, contract);
+    return error ? [`README.md: ${error}`] : [];
+  });
+  expect(examples.length).toBeGreaterThan(15);
+  expect(errors).toEqual([]);
+  expect(validate("armada login --provider google", contract)).toContain("Unknown flag");
+  expect(validate("armada login --email user@example.com", contract)).toContain("Unknown flag");
+  expect(validate("armada recovery --help", contract)).toContain("Unknown command");
 });
