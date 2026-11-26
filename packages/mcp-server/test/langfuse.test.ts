@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
+import { AuthUnavailable } from "../src/caller.ts";
 import { createJobsRunner, type JobStore } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createLangfuse } from "../src/langfuse.ts";
@@ -150,7 +151,6 @@ test("partial Langfuse settings updates preserve encrypted keys and disconnect c
   expect(await read()).toEqual({
     enabled: false,
     contentMode: "full",
-    content_mode: "full",
     host: "https://cloud.langfuse.com",
     publicKey: "new_public",
     configured: true,
@@ -753,4 +753,190 @@ test("langfuseTurnScores are deterministic and score delivery failures never fai
     ["https://langfuse.test/api/public/scores", { name: "pr_linked", value: 1, dataType: "BOOLEAN" }],
   ]);
   expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
+});
+
+test("usage_details exports disjoint buckets per harness without double counting", () => {
+  const turnEvents: AgentEvent[] = [
+    { id: "s", at: 1000, promptId: "p1", kind: "prompt", status: "running", text: "hi" },
+    { id: "e", at: 1200, promptId: "p1", kind: "prompt", status: "finished", text: "hi" },
+  ];
+  const usageFor = (harness: string, row: Parameters<typeof langfuseSpans>[2][number]) =>
+    JSON.parse(
+      attr(
+        langfuseSpans("sb", turnEvents, [row], false, {}, { harness }).find(
+          (s) => attr(s, "langfuse.observation.type") === "generation",
+        )!,
+        "langfuse.observation.usage_details",
+      )!,
+    );
+  const full = {
+    promptId: "p1",
+    model: "m1",
+    inputTokens: 1000,
+    outputTokens: 200,
+    cachedTokens: 600,
+    cacheWriteTokens: 100,
+    reasoningTokens: 80,
+  };
+  const shared = { cache_read_input_tokens: 600, cache_creation_input_tokens: 100, reasoning: 80 };
+  expect(usageFor("codex", full)).toEqual({ input: 300, output: 120, ...shared });
+  expect(usageFor("claude", full)).toEqual({ input: 1000, output: 120, ...shared });
+  expect(usageFor("opencode", full)).toEqual({ input: 1000, output: 120, ...shared });
+  expect(usageFor("antigravity", full)).toEqual({ input: 1000, output: 200, ...shared });
+  expect(
+    usageFor("codex", { promptId: "p1", model: "m1", inputTokens: 300, outputTokens: 60, cachedTokens: 90 }),
+  ).toEqual({ input: 210, output: 60, cache_read_input_tokens: 90 });
+  expect(
+    usageFor("codex", {
+      promptId: "p1",
+      model: "m1",
+      inputTokens: 50,
+      outputTokens: 10,
+      cachedTokens: 80,
+      reasoningTokens: 20,
+    }),
+  ).toEqual({ cache_read_input_tokens: 80, reasoning: 20 });
+});
+
+test("ACP tool updates preserve invoked tool names and skip empty tool-only frames in rootOut and TTFT", () => {
+  const msg = (id: string, at: number, text: string, tools: Extract<AgentEvent, { kind: "message" }>["tools"]) =>
+    ({
+      id,
+      at,
+      promptId: "p1",
+      kind: "message",
+      partial: false,
+      text,
+      tools,
+    }) satisfies AgentEvent;
+  const acpEvents: AgentEvent[] = [
+    { id: "s", at: 1000, promptId: "p1", kind: "prompt", status: "running", text: "check" },
+    msg("t1-call", 1100, "", [{ id: "tc1", name: "run_command", input: { cmd: "ls" } }]),
+    msg("t1-res", 1200, "", [{ id: "tc1", name: "tool_result", result: { isError: false, output: "ok" } }]),
+    msg("t2-call", 1250, "", [{ id: "tc2", name: "read_file", input: { path: "a.ts" } }]),
+    msg("t2-res", 1300, "", [{ id: "tc2", name: "tool", result: { isError: false, output: "data" } }]),
+    msg("reply", 1400, "All done.", []),
+    { id: "e", at: 1500, promptId: "p1", kind: "prompt", status: "finished", text: "check" },
+  ];
+  const spans = langfuseSpans("sb", acpEvents, [], true, {}, { harness: "antigravity" });
+  const root = spans.find((s) => attr(s, "langfuse.observation.type") === "agent")!;
+  expect(spans.filter((s) => attr(s, "langfuse.observation.type") === "tool").map((s) => s.name)).toEqual([
+    "run_command",
+    "read_file",
+  ]);
+  expect([attr(root, "langfuse.observation.output"), attr(root, "langfuse.trace.metadata.ttft_ms")]).toEqual([
+    "All done.",
+    "400",
+  ]);
+  expect(langfuseTurnScores("sb", acpEvents).find((s) => s.name === "ttft_ms")?.value).toBe(400);
+
+  const toolOnlyRoot = langfuseSpans("sb", [...acpEvents.slice(0, 3), acpEvents.at(-1)!], [], true).find(
+    (s) => attr(s, "langfuse.observation.type") === "agent",
+  )!;
+  expect([
+    attr(toolOnlyRoot, "langfuse.observation.output"),
+    attr(toolOnlyRoot, "langfuse.trace.metadata.ttft_ms"),
+  ]).toEqual([undefined, undefined]);
+});
+
+test("Langfuse logs secret-free failures, retries 5xx/429/timeout with capped backoff, and fails fast on 400/401/403", async () => {
+  const baseMs = 1_700_000_000_000;
+  const { db, counters, org } = await settledBoatTurn("transient");
+  const logs: string[] = [];
+  const replies: (() => Response)[] = [
+    () => new Response("err", { status: 503 }),
+    () => new Response("slow", { status: 429 }),
+    () => {
+      throw new DOMException("secret_placeholder timed out", "TimeoutError");
+    },
+    () => new Response("gw", { status: 502 }),
+    () => new Response("down", { status: 500 }),
+  ];
+  let idx = 0;
+  const exporter = createLangfuse(db, key, (async (_u, _i) => replies[idx++]!()) as typeof fetch, {
+    logError: (line) => logs.push(line),
+    now: () => baseMs,
+  });
+  const jobState = async () =>
+    (
+      await db.query<{ state: string; run_after: Date }>(
+        "select state, run_after from jobs where kind='langfuse_export' and org_id=$1",
+        [org],
+      )
+    ).rows[0]!;
+  for (const delay of [10_000, 20_000, 40_000, 60_000]) {
+    expect(await runExport(db, exporter)).toBe(true);
+    const st = await jobState();
+    expect([st.state, st.run_after.getTime() - baseMs]).toEqual(["queued", delay]);
+    expect(await counters()).toEqual([]);
+    await db.query("update jobs set run_after=now()-interval '1 second' where kind='langfuse_export'");
+  }
+  expect(await runExport(db, exporter)).toBe(true);
+  expect((await jobState()).state).toBe("failed");
+  expect(await counters()).toEqual([{ exported: "0", failed: "1" }]);
+  expect(logs).toHaveLength(5);
+  expect([logs[0], logs[1], logs[2]]).toEqual([
+    expect.stringContaining(`status=503 orgId=${org} sandboxId=`),
+    expect.stringContaining("status=429"),
+    expect.stringContaining("reason=TimeoutError"),
+  ]);
+  expect(logs.join("\n")).not.toContain("secret_placeholder");
+  expect(logs.join("\n")).not.toContain("public_placeholder");
+
+  for (const status of [400, 401, 403]) {
+    const ff = await settledBoatTurn(`ff-${status}`);
+    const ffLogs: string[] = [];
+    const ffExporter = createLangfuse(
+      ff.db,
+      key,
+      (async (_u, _i) => new Response("nope", { status })) as typeof fetch,
+      {
+        logError: (line) => ffLogs.push(line),
+        now: () => baseMs,
+      },
+    );
+    expect(await runExport(ff.db, ffExporter)).toBe(true);
+    const row = (
+      await ff.db.query<{ state: string; attempts: number }>(
+        "select state, attempts from jobs where kind='langfuse_export' and org_id=$1",
+        [ff.org],
+      )
+    ).rows[0]!;
+    expect(row).toEqual({ state: "failed", attempts: 1 });
+    expect(await ff.counters()).toEqual([{ exported: "0", failed: "1" }]);
+    expect(ffLogs[0]).toContain(`status=${status}`);
+  }
+});
+
+test("Langfuse settings route maps AuthUnavailable and DB errors to 503 and oversized bodies to 413", async () => {
+  const { db, people } = await database();
+  const adminAuth = async () => ({
+    ok: true as const,
+    caller: { userId: people.admin, via: "service" as const, orgs: [{ orgId: people.org, role: "admin" as const }] },
+  });
+  const unavailRoute = createLangfuse(db, key).route(async () => {
+    throw new AuthUnavailable("down");
+  });
+  expect((await unavailRoute(settingsRequest(people.org, "GET")))?.status).toBe(503);
+
+  const dbLogs: string[] = [];
+  const brokenSql: Sql = {
+    query: async () => {
+      throw new Error("db secret_placeholder boom");
+    },
+  };
+  const brokenRoute = createLangfuse(brokenSql, key, fetch, { logError: (l) => dbLogs.push(l) }).route(adminAuth);
+  expect((await brokenRoute(settingsRequest(people.org, "GET")))?.status).toBe(503);
+  expect(dbLogs[0]).toContain(`orgId=${people.org}`);
+  expect(dbLogs[0]).not.toContain("secret_placeholder");
+
+  const route = createLangfuse(db, key).route(adminAuth);
+  const big = JSON.stringify({ publicKey: "a".repeat(20_000), secretKey: "b" });
+  const req = (method: string, body: string, suffix = "") =>
+    route(new Request(`https://armada.test/api/v1/orgs/${people.org}/langfuse${suffix}`, { method, body }));
+  expect([
+    (await req("PUT", big))?.status,
+    (await req("POST", big, "/test"))?.status,
+    (await req("PUT", "bad"))?.status,
+  ]).toEqual([413, 413, 400]);
 });

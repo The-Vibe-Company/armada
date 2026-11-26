@@ -277,6 +277,20 @@ test("remaps stream IDs, enforces mode/port scope, tears down on disconnect/stop
       Buffer.from(encodeRelayMessage({ type: RELAY_OPCODE.CLOSE, streamId: 1, code: 1000, reason: "eof" })),
     );
     await f.timer.advance(60_000);
+    expect(f.hub.hasActiveRelay(f.id)).toBe(true);
+    expect(c1.frames.some((b) => b instanceof Uint8Array && decodeRelayMessage(b).type === RELAY_OPCODE.PING)).toBe(
+      true,
+    );
+    expect(c2.frames.some((b) => b instanceof Uint8Array && decodeRelayMessage(b).type === RELAY_OPCODE.PING)).toBe(
+      true,
+    );
+    idleNow += 60_000;
+    await idle.reconcileOne(new AbortController().signal);
+    expect(checkpoint).not.toHaveBeenCalled();
+    f.hub.websocket.message(
+      c2.ws,
+      Buffer.from(encodeRelayMessage({ type: RELAY_OPCODE.CLOSE, streamId: 1, code: 1000, reason: "eof" })),
+    );
     expect(f.hub.hasActiveRelay(f.id)).toBe(false);
     idleNow += 60_000;
     await idle.reconcileOne(new AbortController().signal);
@@ -302,6 +316,9 @@ test("remaps stream IDs, enforces mode/port scope, tears down on disconnect/stop
     await f.timer.advance(30_000);
     expect(await adminClient.closed).toBe(4401);
     expect(ownerClient.code()).toBeUndefined();
+    expect(
+      ownerClient.frames.some((b) => b instanceof Uint8Array && decodeRelayMessage(b).type === RELAY_OPCODE.PING),
+    ).toBe(true);
     const pingFrame = Buffer.from(encodeRelayMessage({ type: RELAY_OPCODE.PING }));
     const ping1 = f.hub.websocket.message(rt2.ws, pingFrame);
     f.hub.websocket.message(rt2.ws, pingFrame);

@@ -1,6 +1,7 @@
+import { BodyTooLargeError } from "@armada/auth";
 import { type AgentEvent, isFinalPromptStatus, reportedTurnUsage, type Sql, type TurnTokenUsage } from "@armada/core";
-import { decryptSecret, encryptSecret } from "@armada/core/server";
-import type { CallerResult } from "./caller.ts";
+import { decryptSecret, encryptSecret, VaultError } from "@armada/core/server";
+import { AuthUnavailable, type CallerResult } from "./caller.ts";
 import { readBody } from "./control-body.ts";
 import type { Route } from "./http.ts";
 import type { createJobsRunner } from "./jobs/runner.ts";
@@ -17,32 +18,42 @@ interface SettingsRow {
   content_mode: ContentMode | null;
   config_enc: Uint8Array<ArrayBuffer> | null;
 }
+export interface LangfuseOptions {
+  logError?: (line: string) => void;
+  now?: () => number;
+}
+class LangfuseInputError extends Error {}
 
 const DEFAULT_HOST = "https://cloud.langfuse.com";
 const REQUEST_TIMEOUT_MS = 5000;
+const BASE_BACKOFF_MS = 10_000;
+const MAX_BACKOFF_MS = 60_000;
+
+function errorReason(error: unknown) {
+  if (error instanceof Error && error.name) return error.name.replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 64);
+  return "error";
+}
 
 function resolveConfig(input: Record<string, unknown>, stored: Config | null): Config {
-  const host = new URL(String(input.host === undefined ? (stored?.host ?? DEFAULT_HOST) : input.host));
-  if (
-    (input.host !== undefined && typeof input.host !== "string") ||
-    host.protocol !== "https:" ||
-    host.username ||
-    host.password ||
-    host.search ||
-    host.hash ||
-    host.pathname !== "/"
-  )
-    throw Error("invalid Langfuse host");
+  if (input.host !== undefined && typeof input.host !== "string") throw new LangfuseInputError("invalid Langfuse host");
+  let host: URL;
+  try {
+    host = new URL(String(input.host === undefined ? (stored?.host ?? DEFAULT_HOST) : input.host));
+  } catch {
+    throw new LangfuseInputError("invalid Langfuse host");
+  }
+  if (host.protocol !== "https:" || host.username || host.password || host.search || host.hash || host.pathname !== "/")
+    throw new LangfuseInputError("invalid Langfuse host");
 
   // A write-only key must stay bound to its configured origin.
   if (stored && host.origin !== stored.host && (input.publicKey === undefined || input.secretKey === undefined))
-    throw Error("changing Langfuse host requires both keys");
+    throw new LangfuseInputError("changing Langfuse host requires both keys");
 
   const publicKey = input.publicKey === undefined ? stored?.publicKey : input.publicKey;
   const secretKey = input.secretKey === undefined ? stored?.secretKey : input.secretKey;
   const validKey = (value: unknown): value is string =>
     typeof value === "string" && value.trim().length > 0 && value.length <= 4096 && !/[\r\n:]/.test(value);
-  if (!validKey(publicKey) || !validKey(secretKey)) throw Error("invalid Langfuse keys");
+  if (!validKey(publicKey) || !validKey(secretKey)) throw new LangfuseInputError("invalid Langfuse keys");
   return { host: host.origin, publicKey, secretKey };
 }
 
@@ -70,7 +81,9 @@ interface ExportJob {
   docker_request_enc: Uint8Array<ArrayBuffer> | null;
 }
 
-export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch) {
+export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch, options: LangfuseOptions = {}) {
+  const logError = options.logError;
+  const now = options.now ?? (() => Date.now());
   async function history(job: ExportJob): Promise<AgentEvent[] | null> {
     if (job.runtime_ack === null) return [];
     // Read only this turn's window: from its first archived reference (the sparse
@@ -116,7 +129,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     job: ExportJob,
     signal: AbortSignal,
     canDispatch: () => Promise<boolean>,
-  ): Promise<"exported" | "failed" | "dropped"> {
+  ): Promise<"exported" | "failed" | "retry" | "dropped"> {
     if (!job.config_enc) return "dropped";
     const events = await history(job);
     if (!events) return "dropped";
@@ -186,30 +199,57 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     const config = JSON.parse(await decryptSecret(job.config_enc, key)) as Config;
     if (!(await canDispatch())) return "dropped";
     signal.throwIfAborted();
-    const response = await send(`${config.host}/api/public/otel/v1/traces`, {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-      headers: {
-        "content-type": "application/json",
-        "x-langfuse-ingestion-version": "4",
-        authorization: authorization(config),
-      },
-      body,
-    });
+    let response: Response;
+    try {
+      response = await send(`${config.host}/api/public/otel/v1/traces`, {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+        headers: {
+          "content-type": "application/json",
+          "x-langfuse-ingestion-version": "4",
+          authorization: authorization(config),
+        },
+        body,
+      });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      logError?.(
+        `armada: langfuse trace export error reason=${errorReason(error)} orgId=${job.org_id} sandboxId=${job.sandbox_id}`,
+      );
+      return "retry";
+    }
     await response.body?.cancel().catch(() => {});
-    if (!response.ok) return "failed";
+    if (!response.ok) {
+      logError?.(
+        `armada: langfuse trace export failed status=${response.status} orgId=${job.org_id} sandboxId=${job.sandbox_id}`,
+      );
+      return response.status === 429 || response.status >= 500 ? "retry" : "failed";
+    }
     const scores = langfuseTurnScores(job.sandbox_id, turnEvents, sandbox, marks);
     await Promise.allSettled(
       scores.map(async (score) => {
-        const res = await send(`${config.host}/api/public/scores`, {
-          method: "POST",
-          redirect: "error",
-          signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-          headers: { "content-type": "application/json", authorization: authorization(config) },
-          body: JSON.stringify(score),
-        });
-        await res.body?.cancel().catch(() => {});
+        try {
+          const res = await send(`${config.host}/api/public/scores`, {
+            method: "POST",
+            redirect: "error",
+            signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+            headers: { "content-type": "application/json", authorization: authorization(config) },
+            body: JSON.stringify(score),
+          });
+          await res.body?.cancel().catch(() => {});
+          if (!res.ok) {
+            logError?.(
+              `armada: langfuse score export failed status=${res.status} orgId=${job.org_id} sandboxId=${job.sandbox_id}`,
+            );
+          }
+        } catch (error) {
+          if (!signal.aborted) {
+            logError?.(
+              `armada: langfuse score export error reason=${errorReason(error)} orgId=${job.org_id} sandboxId=${job.sandbox_id}`,
+            );
+          }
+        }
       }),
     );
     return "exported";
@@ -242,13 +282,25 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
       ).rows[0];
       if (!job) return { status: "done" };
 
+      const effectiveAttempts = claim.attempts - historyRetries;
       const outcome =
-        claim.attempts - historyRetries > MAX_ABANDONED_ATTEMPTS || claim.attempts > claim.max_attempts
+        effectiveAttempts > MAX_ABANDONED_ATTEMPTS || claim.attempts > claim.max_attempts
           ? "failed"
-          : await exportTurn(job, signal, canDispatch).catch(() => "failed");
+          : await exportTurn(job, signal, canDispatch).catch((error: unknown) => {
+              if (signal.aborted) throw error;
+              logError?.(
+                `armada: langfuse trace export error reason=${errorReason(error)} orgId=${job.org_id} sandboxId=${job.sandbox_id}`,
+              );
+              return "failed" as const;
+            });
       signal.throwIfAborted();
+      if (outcome === "retry" && effectiveAttempts < MAX_ABANDONED_ATTEMPTS && claim.attempts < claim.max_attempts) {
+        const delay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** Math.max(0, effectiveAttempts - 1));
+        return { status: "retry", after: new Date(now() + delay) };
+      }
+      const finalOutcome = outcome === "retry" ? "failed" : outcome;
       return {
-        ...(outcome === "failed" ? { status: "fail", reason: "langfuse_export_failed" } : { status: "done" }),
+        ...(finalOutcome === "failed" ? { status: "fail", reason: "langfuse_export_failed" } : { status: "done" }),
         async commit(tx) {
           await tx.query(
             `insert into public.org_langfuse_export_stats as stats(org_id,exported,failed,dropped,last_export_at)
@@ -257,7 +309,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
               on conflict(org_id) do update set exported=stats.exported+excluded.exported,
                 failed=stats.failed+excluded.failed,dropped=stats.dropped+excluded.dropped,
                 last_export_at=greatest(stats.last_export_at,excluded.last_export_at)`,
-            [job.org_id, outcome],
+            [job.org_id, finalOutcome],
           );
         },
       };
@@ -348,7 +400,6 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
             {
               enabled: row?.enabled ?? false,
               contentMode: row?.content_mode ?? "metadata",
-              ...(row?.content_mode ? { content_mode: row.content_mode } : {}),
               host: config?.host ?? DEFAULT_HOST,
               publicKey: config?.publicKey ?? null,
               configured: config !== null,
@@ -383,7 +434,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
           const enabled = input.enabled === undefined ? (row?.enabled ?? false) : input.enabled;
           const contentMode = input.contentMode === undefined ? (row?.content_mode ?? "metadata") : input.contentMode;
           if (typeof enabled !== "boolean" || (contentMode !== "metadata" && contentMode !== "full"))
-            throw Error("invalid Langfuse settings");
+            throw new LangfuseInputError("invalid Langfuse settings");
           const config = await resolveSettingsConfig(input, row);
           const encrypted = await encryptSecret(JSON.stringify(config), key);
           await tx.query(
@@ -393,8 +444,18 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
           );
           return Response.json({ enabled, contentMode }, { headers });
         });
-      } catch {
-        return Response.json({ error: "langfuse_configuration_unavailable" }, { status: 400, headers });
+      } catch (error) {
+        if (error instanceof BodyTooLargeError) {
+          return Response.json({ error: "request_too_large" }, { status: 413, headers });
+        }
+        if (error instanceof LangfuseInputError || error instanceof VaultError) {
+          return Response.json({ error: "langfuse_configuration_unavailable" }, { status: 400, headers });
+        }
+        if (error instanceof AuthUnavailable) {
+          return Response.json({ error: "service_unavailable" }, { status: 503, headers });
+        }
+        logError?.(`armada: langfuse settings error reason=${errorReason(error)} orgId=${orgId}`);
+        return Response.json({ error: "service_unavailable" }, { status: 503, headers });
       }
     };
   }

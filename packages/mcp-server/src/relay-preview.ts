@@ -363,8 +363,14 @@ export function createRelayPreview(options: RelayPreviewOptions) {
   };
   const bridges = new Map<number, WsBridge>();
   const activeStreams = new Set<() => void>();
+  const pending = new Set<Promise<unknown>>();
   let nextBridgeId = 1;
   let stopping = false;
+  const track = <T>(p: Promise<T>) => {
+    pending.add(p);
+    void p.finally(() => pending.delete(p)).catch(() => {});
+    return p;
+  };
 
   async function readCookie(request: Request, sandboxId: string, port: number) {
     if (!encryptionKey) return null;
@@ -817,19 +823,30 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     return headDone.promise;
   }
 
+  function removeBridge(b: WsBridge) {
+    b.cancelOpenGrace();
+    b.cancelOpenGrace = () => {};
+    bridges.delete(b.id);
+  }
+
   function closeBridge(b: WsBridge, code: number, reason = "", notifyTcp: RelayCloseReason | null = "eof") {
     if (b.closed) return;
     b.closed = true;
     b.cancel();
-    b.cancelOpenGrace();
     b.writer.close();
     if (notifyTcp) b.tcp.close(code, notifyTcp);
     if (b.ws) {
-      bridges.delete(b.id);
+      removeBridge(b);
       try {
         b.ws.close(code, reason);
       } catch {}
-    } else b.earlyClose = { code, reason };
+    } else if (stopping) {
+      removeBridge(b);
+    } else {
+      b.earlyClose = { code, reason };
+      b.cancelOpenGrace();
+      b.cancelOpenGrace = clock.after(WS_OPEN_GRACE_MS, () => removeBridge(b));
+    }
   }
 
   function ackWsPending(b: WsBridge) {
@@ -1098,11 +1115,11 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     const live = result.bridge;
     if (stopping || request.signal.aborted) {
       closeBridge(live, stopping ? 1012 : 1000, "", "eof");
-      bridges.delete(live.id);
+      removeBridge(live);
       return empty(stopping ? 503 : 499);
     }
     if (live.closed) {
-      bridges.delete(live.id);
+      removeBridge(live);
       return empty(502);
     }
     if (
@@ -1112,15 +1129,15 @@ export function createRelayPreview(options: RelayPreviewOptions) {
       )
     ) {
       closeBridge(live, 1000, "", "eof");
-      bridges.delete(live.id);
+      removeBridge(live);
       return empty(400);
     }
     if (!live.closed) {
-      live.cancel = clock.every(TIMEOUT_MS, () => void revalidateBridge(live));
+      live.cancel = clock.every(TIMEOUT_MS, () => void track(revalidateBridge(live)));
       live.cancelOpenGrace = clock.after(WS_OPEN_GRACE_MS, () => {
         if (!live.ws) {
           closeBridge(live, 1001, "", "eof");
-          bridges.delete(live.id);
+          removeBridge(live);
         }
       });
     }
@@ -1131,13 +1148,15 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     open(socket) {
       const b = bridges.get(socket.data.id);
       if (!b || b.closed || stopping) {
-        bridges.delete(socket.data.id);
+        if (b) removeBridge(b);
+        else bridges.delete(socket.data.id);
         try {
           socket.close(b?.earlyClose?.code ?? 1012, b?.earlyClose?.reason ?? "");
         } catch {}
         return;
       }
       b.cancelOpenGrace();
+      b.cancelOpenGrace = () => {};
       b.ws = socket;
       if (b.buf.byteLength || b.unacked > 0) drainWs(b);
     },
@@ -1169,8 +1188,9 @@ export function createRelayPreview(options: RelayPreviewOptions) {
     for (const fn of [...activeStreams]) fn();
     for (const b of [...bridges.values()]) {
       closeBridge(b, 1012, "", "eof");
-      bridges.delete(b.id);
+      removeBridge(b);
     }
+    while (pending.size) await Promise.allSettled([...pending]);
   }
 
   return { route, upgradeWebSocket, websocket, isPreviewPath: (pathname: string) => PREVIEW_RE.test(pathname), stop };
