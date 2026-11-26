@@ -12,11 +12,11 @@ not establish a successful agent outcome.
 - Private skill failure: check exact pin, package authorization and the stored
   Skillpack credential. Do not retry with a public lookalike or silently omit the
   requested skill. A local installation is not proof remote launch can fetch it.
-- Provider/capacity failure: inspect provider-specific golden availability and
+- Provider/capacity failure: inspect provider-specific snapshot availability and
   capabilities. Do not change provider or size without checking cost and intent.
 - Unknown launch outcome: list your visible sandboxes and correlate returned IDs
   before creating another. For template launches, reuse the exact request key,
-  resolved ID and body. For golden builds, inspect durable build status.
+  resolved ID and body. For snapshot builds, inspect durable build status.
 - Running but unresponsive: inspect logs, steer or interrupt deliberately. A
   transport timeout does not mean the agent stopped; avoid duplicate sends.
 - Stopped/expired with unpushed work: do not delete. Record sandbox/provider IDs,
@@ -36,10 +36,15 @@ not establish a successful agent outcome.
   Use info and events for the prompt/conversation and resulting work;
   do not blindly replay the instruction. Once running, verify accessible commits
   and a pushed branch/PR independently before claiming recovery or stopping again.
-  A new golden launch is a new environment, not recovery of the old disk.
+  A new snapshot launch is a new environment, not recovery of the old disk.
 
-There is no standalone sandbox resume/recover command or general archive
-extraction command. Escalate unsupported recovery paths rather than inventing
+There is no standalone CLI `resume`/`recover` command or general archive
+extraction command. For a retained stopped Docker sandbox restart without
+starting a new prompt turn, use the owner REST route `POST /api/v1/sandbox/resume`
+with `id` and a `request_id` UUID (reusing that UUID after an uncertain outcome).
+For explicit runtime checkpoint resume that queues a prompt turn, use
+`POST /api/v1/sandbox/resume-runtime-v1` (`id`, `request_id`, `runtimeVersion: 1`,
+`prompt`). Escalate other unsupported recovery paths rather than inventing CLI
 flags or calling undocumented endpoints.
 
 `armada exec SANDBOX -- "git status --short"` can inspect an accessible running
