@@ -139,8 +139,8 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       sql: { query: async () => ({ rows: [] }) },
       jobs: {
         async enqueue() {},
-        async claim(kind: string) {
-          claimed.add(kind);
+        async claimNext(kinds: readonly string[]) {
+          for (const kind of kinds) claimed.add(kind);
         },
       },
       langfuse: { exportJob: { concurrency: 1, run: neverCalled } },
