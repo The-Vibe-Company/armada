@@ -109,8 +109,10 @@ export function createMcpHttpIntegration(options: {
     canonical.host = publicAddress.host;
     return new Request(canonical.href, request);
   }
-  const redirectUri = `${dashboardOrigin(options.dashboardUrl, options.development === true)}/auth/mcp/callback`;
-  const clientMetadataUrl = `${origin}/.well-known/armada-mcp-client.json`;
+  const dashboard = dashboardOrigin(options.dashboardUrl, options.development === true);
+  const redirectUri = `${dashboard}/auth/mcp/callback`;
+  const clientMetadataUrl = `${dashboard}/.well-known/armada-mcp-client.json`;
+  const publicMetadataUrl = `${origin}/.well-known/armada-mcp-client.json`;
   const metadata = createClientMetadataHandler({ redirectUri, clientMetadataUrl });
   async function definition(id: string, allowRevoked = false) {
     const r = await sql.query<{
@@ -685,11 +687,13 @@ export function createMcpHttpIntegration(options: {
     async route(request: Request): Promise<Response | null> {
       const path = new URL(request.url).pathname;
       if (path === "/.well-known/armada-mcp-client.json") {
-        // Bun sees HTTP behind TLS termination; keep the strict CIMD handler bound to
-        // the configured HTTPS identity, never a forwarded or caller-selected origin.
+        // Bun sees HTTP behind TLS termination; enforce public authority ingress while
+        // serving the dashboard-origin client_id matching redirect_uris.
+        if (request.method !== "GET") return new Response(null, { status: 404 });
         const host = request.headers.get("host");
         const canonical = !host || host === publicAddress.host ? gatewayIngress(request) : null;
-        return canonical ? metadata(canonical) : new Response(null, { status: 404 });
+        if (!canonical || canonical.url !== publicMetadataUrl) return new Response(null, { status: 404 });
+        return metadata(new Request(clientMetadataUrl, { method: "GET" }));
       }
       if (path.startsWith("/mcp/gateway/")) {
         const canonical = gatewayIngress(request);
