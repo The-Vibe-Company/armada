@@ -33,9 +33,11 @@ import {
 import { warmChatCache } from "@/lib/chat-cache";
 import {
   INLINE_LIVE_LIMIT,
+  LIVE_FLEET_CHANGE_EVENT,
   LIVE_FLEET_REFRESH_EVENT,
   LIVE_SANDBOXES_HREF,
   type LiveSandboxes,
+  liveSandboxesFingerprint,
   liveSandboxLook,
 } from "@/lib/live-sandbox-view";
 import { isActiveLink, NAV_GROUPS, type NavIcon } from "@/lib/navigation";
@@ -69,6 +71,7 @@ function useLiveSandboxes(
     const url = `/api/fleet/live?organizationId=${encodeURIComponent(organizationId)}`;
     let pending: AbortController | undefined;
     let queuedRefresh = false;
+    let lastFingerprint = liveSandboxesFingerprint(initialLive);
     const active = () => document.visibilityState === "visible" && document.hasFocus();
     async function poll() {
       if (!active()) return;
@@ -87,7 +90,13 @@ function useLiveSandboxes(
         const parsedTotal = rawTotal === null ? Number.NaN : Number(rawTotal);
         const total = Number.isFinite(parsedTotal) ? parsedTotal : rows.length;
         if (active() && !request.signal.aborted) {
-          setUpdate({ initial: initialLive, organizationId: scope, live: { rows, total } });
+          const next = { rows, total };
+          setUpdate({ initial: initialLive, organizationId: scope, live: next });
+          const nextFingerprint = liveSandboxesFingerprint(next);
+          if (nextFingerprint !== lastFingerprint) {
+            lastFingerprint = nextFingerprint;
+            window.dispatchEvent(new CustomEvent(LIVE_FLEET_CHANGE_EVENT, { detail: { organizationId: scope } }));
+          }
         }
       } catch {
         return;
@@ -107,7 +116,7 @@ function useLiveSandboxes(
       }
     }
 
-    void poll();
+    if (initialLive === null) void poll();
     const interval = window.setInterval(poll, 30_000);
     window.addEventListener("focus", onActivity);
     window.addEventListener("blur", onActivity);

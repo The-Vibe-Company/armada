@@ -5,12 +5,10 @@ import { cn } from "@/lib/utils";
 
 const ACTIVITY_LABELS = {
   all: "All",
-  mine: "Mine",
-  working: "Working",
-  need: "Waiting for you",
+  active: "Active",
+  need: "Waiting",
   stopped: "Stopped",
   failed: "Failed",
-  deleted: "Deleted",
 } satisfies Record<SandboxActivity, string>;
 
 export const sandboxRowGrid =
@@ -30,16 +28,17 @@ export function SandboxListTabs({
   page: number;
   search: string;
 }) {
-  function href(activity: string, nextPage = 1) {
+  function href(activity: SandboxActivity, nextPage = 1) {
     const params = new URLSearchParams(search);
-    params.set("activity", activity);
+    if (activity === "all") params.delete("activity");
+    else params.set("activity", activity);
     params.delete("page");
     if (nextPage > 1) params.set("page", String(nextPage));
-    return `?${params}`;
+    return params.size ? `?${params}` : "/sandboxes";
   }
   const pages = Math.max(1, Math.ceil(counts[tab] / 50));
   return (
-    <section className="min-w-0 space-y-3">
+    <section className="min-w-0 space-y-3 transition-opacity duration-150 ease-(--ease-out) motion-reduce:transition-none peer-data-[pending]:opacity-60">
       <section aria-label={ACTIVITY_LABELS[tab]} className="divide-y overflow-hidden rounded-[10px] border bg-card">
         <div
           aria-hidden="true"
@@ -83,45 +82,5 @@ export function SandboxListTabs({
         </nav>
       )}
     </section>
-  );
-}
-
-export function SandboxActivityTabs({
-  counts,
-  tab,
-  search,
-}: {
-  counts: Record<SandboxActivity, number>;
-  tab: SandboxActivity;
-  search: string;
-}) {
-  function href(activity: string) {
-    const params = new URLSearchParams(search);
-    params.set("activity", activity);
-    params.delete("page");
-    return `?${params}`;
-  }
-  return (
-    <nav
-      className="inline-flex max-w-full flex-wrap gap-0.5 rounded-[10px] border bg-muted/50 p-[3px]"
-      aria-label="Sandbox activity"
-    >
-      {(Object.keys(ACTIVITY_LABELS) as SandboxActivity[]).map((id) => (
-        <Link
-          key={id}
-          href={href(id)}
-          aria-current={tab === id ? "page" : undefined}
-          className={cn(
-            "inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium whitespace-nowrap outline-offset-[-2px] focus-visible:outline-2 focus-visible:outline-ring",
-            tab === id
-              ? "bg-background text-foreground shadow-sm"
-              : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
-          )}
-        >
-          {ACTIVITY_LABELS[id]}
-          <span className="text-[11px] text-muted-foreground tabular-nums">{counts[id]}</span>
-        </Link>
-      ))}
-    </nav>
   );
 }

@@ -18,12 +18,16 @@ export function sandboxListAttention(row: SandboxListMetadata, now: Date) {
   ).attention;
 }
 
-export type SandboxActivity = "all" | "mine" | "working" | "need" | "stopped" | "failed" | "deleted";
+export type SandboxActivity = "all" | "active" | "need" | "stopped" | "failed";
 
 export type RecordedTurn = "queued" | "running" | "finished";
 
 function beforeDeadline(expiresAt: string | null, now: Date) {
   return expiresAt === null || Date.parse(expiresAt) > now.getTime();
+}
+
+function isLiveStatus(status: SandboxListMetadata["status"]) {
+  return status === "starting" || status === "ready" || status === "running" || status === "stopping";
 }
 
 function canHaveActiveTurn(status: SandboxListMetadata["status"], expiresAt: string | null, now: Date) {
@@ -55,7 +59,6 @@ export function sandboxActivityPage(
   requestedPage: number,
   turns: Readonly<Record<string, RecordedTurn>>,
   now: Date,
-  deleted: { rows: SandboxListMetadata[]; count: number },
 ) {
   const workingIds = new Set<string>();
   const waitingIds = new Set<string>();
@@ -75,28 +78,25 @@ export function sandboxActivityPage(
   }
   const predicates = {
     all: (_row: SandboxListMetadata) => true,
-    mine: (row: SandboxListMetadata) => row.ownerId === viewerId,
-    working: (row: SandboxListMetadata) => workingIds.has(row.id),
+    active: (row: SandboxListMetadata) => isLiveStatus(row.status) || workingIds.has(row.id),
     need: (row: SandboxListMetadata) => waitingIds.has(row.id),
     stopped: (row: SandboxListMetadata) => row.status === "stopped" && !workingIds.has(row.id),
     failed: (row: SandboxListMetadata) => row.status === "failed",
-  } satisfies Record<Exclude<SandboxActivity, "deleted">, (row: SandboxListMetadata) => boolean>;
+  } satisfies Record<SandboxActivity, (row: SandboxListMetadata) => boolean>;
   const activity: SandboxActivity =
-    requestedActivity === "deleted"
-      ? "deleted"
-      : typeof requestedActivity === "string" && Object.hasOwn(predicates, requestedActivity)
-        ? (requestedActivity as keyof typeof predicates)
-        : "all";
+    typeof requestedActivity === "string" && Object.hasOwn(predicates, requestedActivity)
+      ? (requestedActivity as SandboxActivity)
+      : "all";
   const counts = Object.fromEntries(
     Object.entries(predicates).map(([key, matches]) => [key, rows.filter(matches).length]),
-  ) as Record<keyof typeof predicates, number>;
+  ) as Record<SandboxActivity, number>;
 
-  const activeRows = activity === "deleted" ? deleted.rows : rows.filter(predicates[activity]);
+  const activeRows = rows.filter(predicates[activity]);
   const page = Math.min(requestedPage, Math.max(1, Math.ceil(activeRows.length / 50)));
   return {
     rows: activeRows.slice((page - 1) * 50, page * 50),
     activity,
-    counts: { ...counts, deleted: deleted.count },
+    counts,
     page,
     workingIds,
     waitingIds,
