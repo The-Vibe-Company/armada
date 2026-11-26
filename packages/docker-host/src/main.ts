@@ -10,7 +10,7 @@ import {
   dockerResourceLimits,
 } from "../../core/src/docker-resources.ts";
 import { VERSION } from "../../core/src/version.ts";
-import { sharedArtifactDirectory, sharedArtifactWarmer } from "./artifact-cache.ts";
+import { sharedArtifactDirectory, sharedArtifactWarmer, warmCachedRuntimeArtifacts } from "./artifact-cache.ts";
 import { createAvailabilitySampler } from "./availability.ts";
 import {
   createExpiryOutputSweep,
@@ -236,6 +236,14 @@ async function main(args: string[]) {
     const state = await store.load();
     let limits = dockerResourceLimits(dockerHostResources());
     const sharedArtifacts = await sharedArtifactDirectory(directory);
+    const runtimeCacheDir = join(directory, "runtime-cache");
+    const warmSharedArtifacts = sharedArtifacts
+      ? sharedArtifactWarmer({
+          serverUrl: state.server,
+          privateDir: join(directory, "artifact-cache-private"),
+          sharedDir: sharedArtifacts.dir,
+        })
+      : undefined;
     const machineOptions = {
       installationId: state.installationId,
       hostId: state.hostId,
@@ -261,16 +269,8 @@ async function main(args: string[]) {
         },
         startRuntime: dockerRuntimeStarter(executor, {
           serverUrl: state.server,
-          cacheDir: join(directory, "runtime-cache"),
-          ...(sharedArtifacts
-            ? {
-                warmSharedArtifacts: sharedArtifactWarmer({
-                  serverUrl: state.server,
-                  privateDir: join(directory, "artifact-cache-private"),
-                  sharedDir: sharedArtifacts.dir,
-                }),
-              }
-            : {}),
+          cacheDir: runtimeCacheDir,
+          ...(warmSharedArtifacts ? { warmSharedArtifacts } : {}),
         }),
       },
       sampleDisk,
@@ -295,6 +295,7 @@ async function main(args: string[]) {
       notified = true;
     });
     if (updater && !notified) await notifyServiceReady();
+    if (warmSharedArtifacts) void warmCachedRuntimeArtifacts(runtimeCacheDir, warmSharedArtifacts);
     let stopping = false;
     let updating = false;
     const stop = () => {

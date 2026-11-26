@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import * as fs from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dockerRuntimeInstaller, dockerRuntimeStarter } from "../src/runtime-install.ts";
@@ -15,10 +16,11 @@ const machine = {
   ttlSeconds: 3600,
 };
 
-test("host installs the verified runtime through its owned machine port and reuses the private warm cache", async () => {
+test("host installs the verified runtime through its owned machine port and reads the warm cache once", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-host-runtime-"));
   try {
     const cacheDir = join(directory, "cache");
+    const target = join(cacheDir, artifact.sha256);
     const copied: Uint8Array[] = [];
     const urls: string[] = [];
     let offline = false;
@@ -40,11 +42,29 @@ test("host installs the verified runtime through its owned machine port and reus
     const input = { machine, serverUrl: "https://staging.example", cacheDir, artifact };
     await install(input);
     offline = true;
-    await install(input);
+    const openSpy = spyOn(fs, "open");
+    const bunFileSpy = spyOn(Bun, "file");
+    let targetReads = 0;
+    try {
+      await install(input);
+      targetReads =
+        openSpy.mock.calls.filter(([path]) => String(path) === target).length +
+        bunFileSpy.mock.calls.filter(([path]) => String(path) === target).length;
+    } finally {
+      openSpy.mockRestore();
+      bunFileSpy.mockRestore();
+    }
+    expect(targetReads).toBe(1);
     expect(urls).toEqual([`https://staging.example/api/runtime/artifacts/${artifact.sha256}`]);
     expect(copied).toEqual([executable, executable]);
-    expect(new Uint8Array(await readFile(join(cacheDir, artifact.sha256)))).toEqual(executable);
-    await writeFile(join(cacheDir, artifact.sha256), "corrupt runtime");
+    expect(new Uint8Array(await readFile(target))).toEqual(executable);
+    await expect(install({ ...input, serverUrl: "http://staging.example" })).rejects.toThrow(
+      "Docker runtime installation failed",
+    );
+    await writeFile(target, "corrupt runtime");
+    await expect(install(input)).rejects.toThrow("Docker runtime installation failed");
+    await rm(target);
+    await symlink(join(directory, "elsewhere"), target);
     await expect(install(input)).rejects.toThrow("Docker runtime installation failed");
     expect(copied).toHaveLength(2);
   } finally {
@@ -118,11 +138,11 @@ test("runtime starter delivers only enrolment on private stdin and detaches runt
       (async () => new Response(executable)) as unknown as typeof fetch,
     );
     await start(machine, { serverUrl: "https://staging.example", artifact, enrolmentToken: token });
-    expect(events).toEqual(["install", "start", `warm:${artifact.sha256}`]);
+    expect(events).toEqual([`warm:${artifact.sha256}`, "install", "start"]);
     await expect(
       start(machine, { serverUrl: "https://other.example", artifact, enrolmentToken: token }),
     ).rejects.toThrow("Docker runtime bootstrap failed");
-    expect(events).toEqual(["install", "start", `warm:${artifact.sha256}`]);
+    expect(events).toEqual([`warm:${artifact.sha256}`, "install", "start"]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
