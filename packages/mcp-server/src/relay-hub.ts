@@ -217,7 +217,9 @@ export function createRelayHub(options: RelayHubOptions) {
     return Boolean(
       rt &&
         !rt.closed &&
-        (countKind(rt, "pty") > 0 || (rt.lastTcpAt !== undefined && time.now() - rt.lastTcpAt < MS.idle)),
+        (countKind(rt, "pty") > 0 ||
+          countKind(rt, "tcp") > 0 ||
+          (rt.lastTcpAt !== undefined && time.now() - rt.lastTcpAt < MS.idle)),
     );
   };
   async function mintTicket(
@@ -348,14 +350,16 @@ export function createRelayHub(options: RelayHubOptions) {
   async function revalidateClient(c: ClientConn) {
     if (c.closed || stopping || !c.authed || !c.claims || c.revalidating) return;
     c.revalidating = true;
+    let ok = false;
     try {
       if (!isConnected(c.claims.sandboxId, c.claims.epoch)) closeClient(c, 1012, null);
-      else await checkClientClaims(c, c.claims, "revoked");
+      else ok = await checkClientClaims(c, c.claims, "revoked");
     } catch {
       closeClient(c, 1012, "revoked");
     } finally {
       c.revalidating = false;
     }
+    if (ok && !c.closed && !stopping && !send(c.socket, encodeRelayMessage({ type: PING }))) closeClient(c, 1012);
   }
   function attachClient(c: ClientConn, claims: RelayTicketClaims) {
     const rt = runtimes.get(claims.sandboxId);

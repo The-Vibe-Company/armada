@@ -577,7 +577,9 @@ export async function createServerServices(env: Record<string, string | undefine
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   control.eventFeed = createEventFeed(sql, delegatedAccess.authority, config.encryptionKey);
-  const langfuse = createLangfuse(sql, config.encryptionKey);
+  const langfuse = createLangfuse(sql, config.encryptionKey, fetch, {
+    logError: options.logError ?? console.error,
+  });
   const runtimeEvents = createRuntimeEvents(
     runtimeEnrolments,
     config.encryptionKey,

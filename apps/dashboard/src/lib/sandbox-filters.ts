@@ -53,8 +53,8 @@ export function hasSandboxFilters(filters: SandboxFilters): boolean {
 }
 export const SANDBOX_INVENTORY_HEADER = "x-armada-sandbox-inventory";
 
-export function sandboxInventoryIncludesDeleted(filters: SandboxFilters, activity: Params[string]) {
-  return filters.status.includes("deleted") || (activity === "deleted" && !filters.status.length);
+export function sandboxInventoryIncludesDeleted(filters: SandboxFilters) {
+  return filters.status.includes("deleted");
 }
 
 export type SandboxSearchRow = Pick<
@@ -97,7 +97,7 @@ export function sandboxInventoryScope(path: string, search: URLSearchParams) {
       return [key, values.length === 1 ? values[0] : values];
     }),
   );
-  return sandboxInventoryIncludesDeleted(parseSandboxFilters(params), params.activity) ? "all" : "active";
+  return sandboxInventoryIncludesDeleted(parseSandboxFilters(params)) ? "all" : "active";
 }
 
 function facetValue(row: SandboxListMetadata, key: Facet): string {
