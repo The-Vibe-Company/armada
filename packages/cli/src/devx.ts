@@ -13,6 +13,7 @@ import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
 import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
+import { formatTable } from "./table.ts";
 export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Promise<readonly string[]> {
   if (!auth.interactive || !auth.chooseLaunch || argv.includes("--json") || argv.includes("--")) return argv;
   const args = parseArgs(
@@ -255,7 +256,10 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
   auth.out(
     json
       ? `${JSON.stringify({ checks: rows }, null, 2)}\n`
-      : `CHECK\tSTATUS\tDETAIL / NEXT STEP\n${rows.map((r) => `${r.check}\t${r.status}\t${r.detail.replace(/[\t\r\n]/g, " ")}`).join("\n")}\n`,
+      : formatTable(
+          ["CHECK", "STATUS", "DETAIL / NEXT STEP"],
+          rows.map((r) => [r.check, r.status, r.detail.replace(/[\t\r\n]/g, " ")]),
+        ),
   );
   return rows.some((r) => r.status === "failed") ? 1 : 0;
 }

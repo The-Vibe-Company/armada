@@ -80,6 +80,10 @@ export function createFakeTerminal(isTTY: boolean) {
       ev.on("data", fn);
       return () => {};
     },
+    onStdinEnd(fn) {
+      ev.on("end", fn);
+      return () => {};
+    },
     onResize(fn) {
       ev.on("resize", ([c, r]: [number, number]) => fn(c, r));
       return () => {};
@@ -91,6 +95,7 @@ export function createFakeTerminal(isTTY: boolean) {
     written,
     state,
     stdin: (d: Uint8Array) => ev.emit("data", d),
+    endStdin: () => ev.emit("end"),
     drain: () => ev.emit("drain"),
     resize: (c: number, r: number) => ev.emit("resize", [c, r]),
   };
@@ -122,10 +127,19 @@ export function createFakeSocket() {
   return { socket, state, written, emit: ev.emit };
 }
 
-export function createFakeServer(onConn: (s: RelayTcpSocket) => void, onListen: () => void) {
-  const state = { bound: undefined as { host: string; port: number } | undefined, closed: false };
+export function createFakeServer(
+  onConn: (s: RelayTcpSocket) => void,
+  onListen: () => void,
+  listenError?: NodeJS.ErrnoException,
+) {
+  const ev = bus(),
+    state = { bound: undefined as { host: string; port: number } | undefined, closed: false };
   const server: RelayTcpServer = {
     listen(port, host, cb) {
+      if (listenError) {
+        queueMicrotask(() => ev.emit("error", listenError));
+        return;
+      }
       state.bound = { host, port };
       cb();
       queueMicrotask(onListen);
@@ -135,7 +149,7 @@ export function createFakeServer(onConn: (s: RelayTcpSocket) => void, onListen: 
       state.closed = true;
       cb?.();
     },
-    on() {},
+    on: ev.on,
   };
   return { server, state, accept: onConn };
 }

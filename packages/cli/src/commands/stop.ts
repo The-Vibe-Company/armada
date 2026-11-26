@@ -3,7 +3,8 @@ import { sandboxOperation } from "./sandbox-operation.ts";
 export default sandboxOperation({
   name: "stop",
   summary: "Stop the sandbox machine or interrupt its current turn",
-  usage: `  armada stop [sandbox-id] [--turn | --after [--timeout SECONDS]] [--org UUID] [--json]`,
+  usage: `  armada stop [sandbox-id] [--turn | --after [--timeout S]] [--org ORG] [--json]
+                                           Stop the sandbox machine or interrupt its current turn`,
   help: `Usage: armada stop [sandbox-id] [--turn | --after [--timeout SECONDS]] [--org UUID] [--json]
 Without options, stop the machine now. Omit the ID to use the current sandbox.
 --turn interrupts the running turn and keeps the machine up, where supported.

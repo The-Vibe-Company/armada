@@ -4,6 +4,7 @@ import { memorySessionStore } from "../src/session.ts";
 
 test.each(["info", "events"])("%s explains provider backoff in plain text", async (command) => {
   let output = "";
+  let errors = "";
   const wait = { message: "Rate limited by the model provider, retrying in 20 s", retryCount: 2, totalWaitMs: 21_000 };
   const result =
     command === "info"
@@ -31,14 +32,18 @@ test.each(["info", "events"])("%s explains provider backoff in plain text", asyn
       out: (text) => {
         output += text;
       },
-      err: () => {},
+      err: (text) => {
+        errors += text;
+      },
     },
     {
       auth: {
         out: (text) => {
           output += text;
         },
-        err: () => {},
+        err: (text) => {
+          errors += text;
+        },
         env: { ARMADA_TOKEN: "test_placeholder" },
         fetch: async () => Response.json(result),
         now: () => new Date(2000),
@@ -48,5 +53,10 @@ test.each(["info", "events"])("%s explains provider backoff in plain text", asyn
     },
   );
   expect(code).toBe(0);
-  expect(output).toContain("Rate limited by the model provider, retrying in 20 s (retry 2, total wait 21 s)");
+  if (command === "info") {
+    expect(errors).toContain("Rate limited by the model provider, retrying in 20 s (retry 2, total wait 21 s)");
+    expect(JSON.parse(output)).toEqual(result);
+  } else {
+    expect(output).toContain("Rate limited by the model provider, retrying in 20 s (retry 2, total wait 21 s)");
+  }
 });

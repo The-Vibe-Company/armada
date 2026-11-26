@@ -139,8 +139,6 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
       catalogAuthentication,
       dashboardUrl: "https://dashboard.example",
       publicUrl: "https://armada.example",
-      authStore,
-      supabase,
       fetch: network,
     });
     const options = {
@@ -150,7 +148,7 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
       store: createSqlVaultStore(db),
       mcp: { registry: integration.registry, broker: integration.controlBroker },
     };
-    const post = async (action: string, body: Record<string, unknown>, control = false, browser = false) => {
+    const post = async (action: string, body: Record<string, unknown>, browser = false) => {
       const request = new Request(`https://armada.example/api/v1/mcp/${action}`, {
         method: "POST",
         headers: {
@@ -159,7 +157,7 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
         },
         body: JSON.stringify({ org, ...body }),
       });
-      const response = await (control ? handleControlRequest(request, options) : integration!.route(request));
+      const response = (await integration!.route(request)) ?? (await handleControlRequest(request, options));
       if (!response) throw Error("Missing route");
       return {
         status: response.status,
@@ -170,10 +168,10 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
         },
       };
     };
-    for (const control of [false, true])
-      expect((await post("catalog", {}, control)).body.services.find((s) => s.id === "slack")?.availability).toBe(
-        "available",
-      );
+    expect(
+      await integration.route(new Request("https://armada.example/api/v1/mcp/catalog", { method: "POST" })),
+    ).toBeNull();
+    expect((await post("catalog", {})).body.services.find((s) => s.id === "slack")?.availability).toBe("available");
     const first = await post("create", {
       serviceId: "slack",
       name: "First",
@@ -181,14 +179,14 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
       url: "https://untrusted.example",
       authentication: "untrusted",
     });
-    const second = await post("create", { serviceId: "slack", name: "Second", scope: "personal" }, true);
+    const second = await post("create", { serviceId: "slack", name: "Second", scope: "personal" });
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(first.body.connection.url).toBe(SLACK_OAUTH_BINDING.endpoint);
     expect(first.body.connection.id).not.toBe(second.body.connection.id);
     const starts = await Promise.all([
       post("connect", { id: first.body.connection.id }),
-      post("connect", { id: second.body.connection.id }, true),
+      post("connect", { id: second.body.connection.id }),
     ]);
     const states = starts.map((start) => {
       expect(start.status).toBe(200);
@@ -202,14 +200,14 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
     });
     expect(states[0]).not.toBe(states[1]);
     signedIn = other;
-    expect((await post("oauth/callback", { state: states[0], code: "first" }, false, true)).status).not.toBe(200);
+    expect((await post("oauth/callback", { state: states[0], code: "first" }, true)).status).not.toBe(200);
     expect(tokenCalls).toBe(0);
     signedIn = user;
     // Complete in reverse order: account identity must follow UUID/state, not catalog ID.
-    expect((await post("oauth/callback", { state: states[1], code: "second" }, true, true)).status).toBe(200);
-    expect((await post("oauth/callback", { state: states[0], code: "first" }, false, true)).status).toBe(200);
-    expect((await post("oauth/callback", { state: states[0], code: "replay" }, false, true)).status).not.toBe(200);
-    expect((await post("oauth/callback", { state: states[1], code: "replay" }, true, true)).status).toBe(403);
+    expect((await post("oauth/callback", { state: states[1], code: "second" }, true)).status).toBe(200);
+    expect((await post("oauth/callback", { state: states[0], code: "first" }, true)).status).toBe(200);
+    expect((await post("oauth/callback", { state: states[0], code: "replay" }, true)).status).not.toBe(200);
+    expect((await post("oauth/callback", { state: states[1], code: "replay" }, true)).status).toBe(403);
     expect(tokenCalls).toBe(2);
     for (const [created, code] of [
       [first, "first"],
@@ -246,25 +244,20 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
     expect(tokenCalls).toBe(3);
     maliciousTokenEndpoint = true;
     expect((await post("connect", { id: second.body.connection.id })).status).toBe(400);
-    expect((await post("connect", { id: second.body.connection.id }, true)).status).toBe(400);
     expect(tokenCalls).toBe(3);
     maliciousTokenEndpoint = false;
     unavailableMetadata = true;
-    expect((await post("connect", { id: second.body.connection.id }, true)).status).toBe(502);
     expect((await post("connect", { id: second.body.connection.id })).status).toBe(502);
     unavailableMetadata = false;
     await post("revoke", { id: first.body.connection.id });
-    expect((await post("connect", { id: first.body.connection.id }, true)).status).toBe(200);
+    expect((await post("connect", { id: first.body.connection.id })).status).toBe(200);
     const shared = await post("create", { serviceId: "slack", name: "Shared", scope: "org" });
     expect(shared.status).toBe(200);
     await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [org, other]);
-    // A committed demotion after route authorization must still be a typed refusal on both surfaces.
-    for (const control of [true, false]) {
-      await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [org, user]);
-      demoteBeforeLiveRoleCheck = true;
-      expect((await post("connect", { id: shared.body.connection.id }, control)).status).toBe(403);
-    }
-    expect(demotions).toBe(2);
+    // A committed demotion after route authorization must still be a typed refusal.
+    demoteBeforeLiveRoleCheck = true;
+    expect((await post("connect", { id: shared.body.connection.id })).status).toBe(403);
+    expect(demotions).toBe(1);
   } finally {
     await integration?.close();
     await db.close();

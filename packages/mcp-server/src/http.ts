@@ -33,6 +33,23 @@ import { createArmadaServer, type ToolContext } from "./tools.ts";
 export const MCP_PATH = "/mcp";
 export const HEALTH_PATH = "/healthz";
 
+function mcpCorsHeaders() {
+  return new Headers({
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
+    "access-control-allow-headers":
+      "content-type, authorization, accept, mcp-protocol-version, mcp-session-id, last-event-id",
+    "access-control-expose-headers": "mcp-session-id, www-authenticate",
+    "access-control-max-age": "600",
+  });
+}
+
+function withMcpCors(response: Response) {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of mcpCorsHeaders()) headers.set(name, value);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
@@ -172,6 +189,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
       if (answer) return answer;
     }
     if (url.pathname !== MCP_PATH) return Response.json({ error: "not_found" }, { status: 404 });
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: mcpCorsHeaders() });
 
     let auth: CallerResult;
     try {
@@ -183,9 +201,11 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     } catch (error) {
       if (!(error instanceof AuthUnavailable)) throw error;
       recordOperatorFailure("mcp.authentication", error);
-      return Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } });
+      return withMcpCors(
+        Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "retry-after": "5" } }),
+      );
     }
-    if (!auth.ok) return oauthChallenge(options.publicUrl);
+    if (!auth.ok) return withMcpCors(oauthChallenge(options.publicUrl));
     const caller = auth.caller;
 
     const server = createArmadaServer(
@@ -228,7 +248,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const transport = createObservedMcpTransport();
     await server.connect(transport);
     try {
-      return await transport.handleRequest(request);
+      return withMcpCors(await transport.handleRequest(request));
     } finally {
       await server.close();
     }

@@ -1,5 +1,4 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
-import { createSqlAuthStore } from "@armada/auth";
 import { retryDatabaseBoot } from "../src/database-boot.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 
@@ -66,11 +65,9 @@ test("deferred MCP startup leaves background SQL idle until boot admission succe
   const interval = spyOn(globalThis, "setInterval");
   const mcp = createMcpHttpIntegration({
     sql,
-    authStore: createSqlAuthStore(sql),
     deferBackground: true,
     encryptionKey: undefined,
     publicUrl: "https://gateway.example",
-    supabase: { supabaseUrl: "https://auth.example", anonKey: "public" },
   });
   try {
     expect(interval).not.toHaveBeenCalled();

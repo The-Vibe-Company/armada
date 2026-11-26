@@ -35,23 +35,26 @@ Quick start / common examples:
   armada stop SANDBOX_ID
   eval "$(armada completion bash)"
 
-Usage:
-${sandboxUsage("host")}
-${sandboxUsage("docker-launch")}
-${sandboxUsage("setup")}
-  armada --version                         Print the version
-  armada --help                            Show this help (also -h or help); no login required
-  armada skill install (--project <directory> | --global) --yes [--revision <commit>]
-                                           Public GitHub Armada tool-knowledge skill; no login. See skill --help.
-${sandboxUsage("snapshots")}
-${sandboxUsage("new")}
-${sandboxUsage("ls")}
-${sandboxUsage("bind-credential")}
-${sandboxUsage("sandbox")}
-${sandboxUsage("session")}
-${sandboxUsage("org")}
-${sandboxUsage("account")}
-${sandboxUsage("automation")}
+Usage: armada [global options] <command> [arguments]
+
+Sandboxes:
+${sandboxUsage("sandboxes")}
+
+Interactive & Relay:
+${sandboxUsage("interactive")}
+
+Templates & Snapshots:
+${sandboxUsage("templates")}
+
+Hosts & Accounts:
+${sandboxUsage("hosts")}
+
+Auth & API:
+${sandboxUsage("auth")}
+  armada skill install (--project <dir> | --global) --yes [--revision <sha>]
+                                           Install Armada tool-knowledge skill from GitHub (no login)
+  armada --version                         Print the CLI version
+  armada --help                            Show this help (also -h, help [command]); no login required
 
 Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.
