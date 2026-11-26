@@ -227,10 +227,14 @@ test.each(["bash", "zsh", "fish"])(
     if (shell === "fish") {
       expect(f.output()).toContain("__fish_seen_subcommand_from org");
       expect(f.output()).toContain("-a 'list use setup connect'");
-      expect(f.output()).toContain("__fish_seen_subcommand_from ls' -l 'wide'");
+      expect(f.output()).toContain("-r -l 'profile'");
+      expect(f.output()).toMatch(
+        /__fish_seen_subcommand_from ls; and not __fish_seen_subcommand_from [^']*host[^']*' -l 'wide'/,
+      );
     } else {
       expect(f.output()).toContain('"org:use")');
       expect(f.output()).toContain('"ls:"*)');
+      expect(f.output()).not.toContain("--short");
     }
     expect(f.paths).toEqual([]);
   },

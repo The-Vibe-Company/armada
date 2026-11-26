@@ -218,18 +218,24 @@ test("logs is an unknown command", async () => {
   expect(stderr).toContain("unknown command 'logs'");
 });
 
-test("events -f streams live events over SSE without sleep polling and exits on settlement", async () => {
+test("events -f streams live events over SSE without sleep polling and preserves same-id updates", async () => {
   const calls: string[] = [];
   let sleeps = 0,
     out = "";
   const frame = (frameId: string, body: Record<string, unknown>) =>
-    `id: ${frameId}\ndata: ${JSON.stringify({ id: frameId, sandboxId: id, ref: "1", createdAt: "2026-11-20T00:00:00.000Z", ...body })}\n\n`;
+    `id: ${frameId}\ndata: ${JSON.stringify({ id: frameId, sandboxId: id, ref: String(body.sequence ?? "1"), createdAt: "2026-11-20T00:00:00.000Z", ...body })}\n\n`;
   const sse =
     frame("10", {
       kind: "runtime_event",
       sequence: "1",
-      event: { id: "e2", at: 2, kind: "message", text: "live update", partial: false, tools: [] },
-    }) + frame("11", { kind: "transition", sequence: null, status: "stopped" });
+      event: { id: "e1", at: 1, kind: "message", text: "initial" },
+    }) +
+    frame("11", {
+      kind: "runtime_event",
+      sequence: "2",
+      event: { id: "e1", at: 2, kind: "message", text: "live update", partial: false, tools: [] },
+    }) +
+    frame("12", { kind: "transition", sequence: null, status: "stopped" });
   const code = await run(
     ["events", id, "-f"],
     { out: (t) => (out += t), err: () => {} },
@@ -252,7 +258,7 @@ test("events -f streams live events over SSE without sleep polling and exits on 
     },
   );
   expect([code, sleeps, out]).toEqual([0, 0, "initial\nlive update\n"]);
-  expect(calls).toEqual(["/api/v1/logs/read", `/api/v1/events?sandbox=${id}&cursor=tail`]);
+  expect(calls).toEqual([`/api/v1/events?sandbox=${id}&cursor=tail`, "/api/v1/logs/read"]);
 });
 
 test("events formats tool_use and tool_result concisely in TTY mode while keeping --json as NDJSON", async () => {

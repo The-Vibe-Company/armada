@@ -263,7 +263,10 @@ export function compareSemver(a: string, b: string) {
   const l = SEMVER.exec(a.trim()),
     r = SEMVER.exec(b.trim());
   if (!l || !r) return null;
-  for (const i of [1, 2, 3] as const) if (l[i] !== r[i]) return Number(l[i]) > Number(r[i]) ? 1 : -1;
+  for (const i of [1, 2, 3] as const) {
+    const diff = Number(l[i]) - Number(r[i]);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
   if (!l[4] && !r[4]) return 0;
   if (!l[4] || !r[4]) return l[4] ? -1 : 1;
   const lp = l[4].split("."),
@@ -276,25 +279,26 @@ export function compareSemver(a: string, b: string) {
     const aNum = /^\d+$/.test(aPart),
       bNum = /^\d+$/.test(bPart);
     if (aNum && bNum) return Number(aPart) > Number(bPart) ? 1 : -1;
-    return aNum !== bNum ? (aNum ? -1 : 1) : aPart > bPart ? 1 : -1;
+    if (aNum !== bNum) return aNum ? -1 : 1;
+    return aPart > bPart ? 1 : -1;
   }
   return 0;
 }
 
 function serverVersionCheck(origin: string, serverVersion: string | undefined) {
-  if (!serverVersion)
-    return ["unknown", "Server version unavailable. Ask the server operator to update Armada."] as const;
-  const compared = serverVersion === VERSION ? 0 : compareSemver(VERSION, serverVersion);
-  if (compared === 0) return ["ok", `${origin} · ${serverVersion}`] as const;
+  const trimmed = serverVersion?.trim();
+  if (!trimmed) return ["unknown", "Server version unavailable. Ask the server operator to update Armada."] as const;
+  const compared = trimmed === VERSION ? 0 : compareSemver(VERSION, trimmed);
+  if (compared === 0) return ["ok", `${origin} · ${trimmed}`] as const;
   if (compared !== null && compared > 0)
     return [
       "info",
-      `${origin} · CLI ${VERSION} is ahead of server ${serverVersion}. Ask the server operator to update Armada.`,
+      `${origin} · CLI ${VERSION} is ahead of server ${trimmed}. Ask the server operator to update Armada.`,
     ] as const;
   if (compared !== null && compared < 0)
     return [
       "warning",
-      `${origin} · CLI ${VERSION}; server ${serverVersion}. Update CLI: npm i -g @the-vibe-company/armada@${serverVersion}`,
+      `${origin} · CLI ${VERSION}; server ${trimmed}. Update CLI: npm i -g @the-vibe-company/armada@${trimmed}`,
     ] as const;
-  return ["warning", `${origin} · CLI ${VERSION}; server ${serverVersion}.`] as const;
+  return ["warning", `${origin} · CLI ${VERSION}; server ${trimmed}.`] as const;
 }

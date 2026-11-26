@@ -21,7 +21,11 @@ export function stripControl(input: string) {
     const code = input.codePointAt(i) ?? 0;
     if (code === 0x1b && input[i + 1] === "[") {
       i += 2;
-      while (i < input.length && !/[A-Za-z]/.test(input[i] ?? "")) i++;
+      while (i < input.length) {
+        const b = input.charCodeAt(i);
+        if (b >= 0x40 && b <= 0x7e) break;
+        i++;
+      }
       continue;
     }
     if (code > 0xffff) {

@@ -80,7 +80,8 @@ export const commandWords = [
   ]),
 ];
 function optionFlags(help: string) {
-  return [...help.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]);
+  const unquoted = help.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, "");
+  return [...unquoted.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]);
 }
 
 type CompletionNode = { subs: Map<string, CompletionNode>; options: Set<string> };
@@ -109,6 +110,7 @@ function buildCompletionTree() {
     add([cmd.name], optionFlags(cmd.help));
     for (const [path, text] of Object.entries(cmd.subcommandHelp ?? {})) add(path.split(" "), optionFlags(text));
   }
+  add(["events"], ["--follow"]);
   add(["host", "install"], ["--server"]);
   add(["skill"], []);
   add(["skill", "install"], ["--project", "--global", "--yes", "--revision"]);
@@ -125,8 +127,10 @@ function allSubOptions(node: CompletionNode) {
 function scopedCases(root: CompletionNode) {
   const cases: { pattern: string; words: string }[] = [];
   for (const [name, node] of root.subs) {
-    for (const [sub, subNode] of node.subs)
-      cases.push({ pattern: `"${name}:${sub}"`, words: [...subNode.subs.keys(), ...allSubOptions(subNode)].join(" ") });
+    for (const [sub, subNode] of node.subs) {
+      const words = [...subNode.subs.keys(), ...allSubOptions(subNode)].join(" ");
+      if (words) cases.push({ pattern: `"${name}:${sub}"`, words });
+    }
     cases.push({ pattern: `"${name}:"*`, words: [...node.subs.keys(), ...node.options].join(" ") });
   }
   return cases;
@@ -151,15 +155,22 @@ export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">) {
     );
     return 0;
   }
+  const familyNames = [...root.subs.entries()]
+    .filter(([, node]) => node.subs.size > 0)
+    .map(([name]) => name)
+    .join(" ");
   const lines = [
     `complete -c armada -f -n '__fish_use_subcommand' -a '${[...root.subs.keys()].join(" ")}'`,
-    ...[...root.options].map((flag) => `complete -c armada -n '__fish_use_subcommand' -l '${flag.slice(2)}'`),
+    ...[...root.options].map(
+      (flag) =>
+        `complete -c armada -n '__fish_use_subcommand' ${flag === "--profile" ? "-r " : ""}-l '${flag.slice(2)}'`,
+    ),
   ];
   for (const [name, node] of root.subs) {
     const subNames = [...node.subs.keys()].join(" ");
     const baseCond = subNames
       ? `__fish_seen_subcommand_from ${name}; and not __fish_seen_subcommand_from ${subNames}`
-      : `__fish_seen_subcommand_from ${name}`;
+      : `__fish_seen_subcommand_from ${name}; and not __fish_seen_subcommand_from ${familyNames}`;
     if (subNames) lines.push(`complete -c armada -f -n '${baseCond}' -a '${subNames}'`);
     for (const flag of node.options) lines.push(`complete -c armada -n '${baseCond}' -l '${flag.slice(2)}'`);
     for (const [sub, subNode] of node.subs) {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse } from "node:path";
-import { GoldenError, shellQuote } from "@armada/core";
+import { GoldenError, redact, shellQuote } from "@armada/core";
 import { hostInstallClient } from "@armada/sdk/host-install";
 import { parseArgs, single } from "./args.ts";
 import type { Io } from "./run.ts";
@@ -411,7 +411,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
 }
 
 const SENSITIVE_PATTERN =
-  /(?:bearer\s+\S+|armada_(?:sk|epoch)_[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|https?:\/\/[^/\s]+:[^/\s]+@\S+|[a-f0-9]{32,}|(?:token|secret|password|authorization|api[_-]?key|credential)\s*[:=]\s*\S+)/gi;
+  /(?:authorization\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?\S+|(?:bearer|basic)\s+\S+|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|armada_[a-z]+_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+|https?:\/\/[^/\s]+:[^/\s]+@\S+|[a-f0-9]{32,}|(?:token|secret|password|api[_-]?key|credential)\s*[:=]\s*\S+)/gi;
 
 function safePreflightLines(stderr: string | undefined, token: string) {
   if (!stderr) return "";
@@ -420,12 +420,13 @@ function safePreflightLines(stderr: string | undefined, token: string) {
   const safe: string[] = [];
   for (const rawLine of stderr.split(/\r?\n/)) {
     if (safe.length >= 3) break;
-    const trimmed = rawLine.trim();
-    if (!trimmed || /^\s*(?:at\s+|[{[])/.test(trimmed)) continue;
-    let clean = stripControl(trimmed).replace(/\s+/g, " ").trim();
+    let clean = stripControl(rawLine).replace(/\s+/g, " ").trim();
+    if (!clean || /^(?:at\s+|[{[])/.test(clean)) continue;
+    clean = redact(clean, [token]);
     if (tokenRe) clean = clean.replace(tokenRe, "[REDACTED]");
     clean = clean.replace(SENSITIVE_PATTERN, "[REDACTED]");
-    if (!clean || clean === "[REDACTED]" || (lowerToken && clean.toLowerCase().includes(lowerToken))) continue;
+    if (!clean || clean === "[REDACTED]" || clean === "***" || (lowerToken && clean.toLowerCase().includes(lowerToken)))
+      continue;
     safe.push(clean.length > 200 ? `${clean.slice(0, 199)}…` : clean);
   }
   return safe.join(" ");

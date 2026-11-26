@@ -33,6 +33,19 @@ async function hasGitRoot(dir: string) {
   }
 }
 
+async function isTrustedParent(dir: string) {
+  try {
+    const info = await lstat(dir);
+    if (!info.isDirectory() || info.isSymbolicLink()) return false;
+    if (typeof process.getuid === "function") {
+      if (info.uid !== process.getuid() || (info.mode & 0o002) !== 0) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function currentSandboxFile(cwd: string, home = homedir()) {
   const root = resolve(cwd);
   const homeDir = home ? resolve(home) : undefined;
@@ -68,7 +81,7 @@ export function currentSandboxFile(cwd: string, home = homedir()) {
         if (value !== undefined) return value;
         if (current === homeDir || (await hasGitRoot(current))) return undefined;
         const parent = dirname(current);
-        if (parent === current) return undefined;
+        if (parent === current || !(await isTrustedParent(parent))) return undefined;
         current = parent;
       }
     },

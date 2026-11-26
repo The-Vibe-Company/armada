@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentSandboxFile } from "../src/current-sandbox.ts";
@@ -201,6 +201,14 @@ test("currentSandboxFile walks parent directories up to git root or home", async
     const homeSub = join(fakeHome, "work");
     await mkdir(homeSub, { recursive: true });
     expect(await currentSandboxFile(homeSub, fakeHome).read()).toBeUndefined();
+
+    const shared = join(root, "shared");
+    const sharedSub = join(shared, "work");
+    await mkdir(join(shared, ".armada"), { recursive: true });
+    await writeFile(join(shared, ".armada", "sandbox"), `${second}\n`);
+    await mkdir(sharedSub, { recursive: true });
+    await chmod(shared, 0o777);
+    expect(await currentSandboxFile(sharedSub, "/nonexistent-home").read()).toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

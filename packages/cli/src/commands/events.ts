@@ -33,87 +33,117 @@ const events: Command["run"] = async (argv, { io, deps, auth }) => {
   const base: LogsInput = { id, follow, ...(org === undefined ? {} : { org }) };
   const seen = new Set<string>();
   const emit = (event: LogsResult["events"][number]) => {
-    if (seen.has(event.id)) return;
-    seen.add(event.id);
-    io.out(`${json ? JSON.stringify(event) : eventText(event)}\n`);
+    const key = JSON.stringify(event);
+    if (seen.has(key)) return;
+    seen.add(key);
+    io.out(`${json ? key : eventText(event)}\n`);
   };
-  let firstTail = tail !== undefined;
-  let cursor: string | null = null;
-  let triedSse = false;
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  if (follow) process.once("SIGINT", stop);
+  let preopenedSse: { response: Response; session: Awaited<ReturnType<typeof authenticatedSession>> } | undefined;
+  try {
+    if (follow) preopenedSse = await probeSse(id, apiIo, controller.signal);
+    if (controller.signal.aborted) return 0;
+    let firstTail = tail !== undefined;
+    let cursor: string | null = null;
 
-  while (true) {
-    const page: LogsResult = await client.sandboxes.logs<LogsResult>(
-      { ...base, ...(firstTail ? { direction: "backward", limit } : {}), ...(cursor === null ? {} : { cursor }) },
-      { signal: AbortSignal.timeout(600_000) },
-    );
-    for (const event of page.events) emit(event);
-    const hasMore = !firstTail && page.hasMore;
-    firstTail = false;
-    const next: string | null = page.cursor ?? cursor;
-    if (!follow || (!hasMore && page.settled)) return 0;
-    if (hasMore && next === cursor)
-      throw new AuthError("Armada events response has more events but did not advance its cursor.", "unavailable");
-    cursor = next;
-    if (!hasMore) {
-      if (!triedSse) {
-        triedSse = true;
-        if (await streamLiveEvents(id, apiIo, emit)) return 0;
+    while (true) {
+      const page: LogsResult = await client.sandboxes.logs<LogsResult>(
+        { ...base, ...(firstTail ? { direction: "backward", limit } : {}), ...(cursor === null ? {} : { cursor }) },
+        { signal: AbortSignal.timeout(600_000) },
+      );
+      for (const event of page.events) emit(event);
+      const hasMore = !firstTail && page.hasMore;
+      firstTail = false;
+      const next: string | null = page.cursor ?? cursor;
+      if (!follow || (!hasMore && page.settled)) return 0;
+      if (hasMore && next === cursor)
+        throw new AuthError("Armada events response has more events but did not advance its cursor.", "unavailable");
+      cursor = next;
+      if (!hasMore) {
+        if (preopenedSse) {
+          const live = preopenedSse;
+          preopenedSse = undefined;
+          if (await consumeLiveEvents(id, apiIo, live, emit, controller.signal)) return 0;
+        }
+        if (controller.signal.aborted) return 0;
+        await (deps.sleep ?? Bun.sleep)(1000);
       }
-      await (deps.sleep ?? Bun.sleep)(1000);
     }
+  } finally {
+    if (follow) process.removeListener("SIGINT", stop);
+    await preopenedSse?.response.body?.cancel().catch(() => {});
+    controller.abort();
   }
 };
 
-async function streamLiveEvents(
-  sandbox: string,
-  apiIo: Parameters<typeof authenticatedSession>[0],
-  emit: (event: LogsResult["events"][number]) => void,
-) {
+async function probeSse(sandbox: string, apiIo: Parameters<typeof authenticatedSession>[0], signal: AbortSignal) {
   const session = await authenticatedSession(apiIo);
   const probeUrl = `${session.origin}/api/v1/events?${new URLSearchParams({ sandbox, cursor: "tail" })}`;
-  const controller = new AbortController();
-  const stop = () => controller.abort();
-  process.once("SIGINT", stop);
-  try {
-    let initial: Response | undefined;
-    for (let attempt = 0; attempt < 2 && !initial; attempt++) {
-      let res: Response;
-      try {
-        res = await apiIo.fetch(probeUrl, {
-          method: "GET",
-          headers: { accept: "text/event-stream", authorization: `Bearer ${session.token()}` },
-          signal: controller.signal,
-        });
-      } catch {
-        return false;
-      }
-      if (res.status === 401) {
-        await res.body?.cancel().catch(() => {});
-        if (attempt === 0 && session.renewToken) {
-          await session.renewToken();
-          continue;
-        }
-        throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
-      }
-      const media = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-      if (!res.ok || media !== "text/event-stream" || !res.body) {
-        await res.body?.cancel().catch(() => {});
-        return false;
-      }
-      initial = res;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let res: Response;
+    try {
+      res = await apiIo.fetch(probeUrl, {
+        method: "GET",
+        redirect: "error",
+        headers: { accept: "text/event-stream", authorization: `Bearer ${session.token()}` },
+        signal,
+      });
+    } catch {
+      return undefined;
     }
-    if (!initial) return false;
-    let first: Response | undefined = initial;
+    if (res.status === 401) {
+      await res.body?.cancel().catch(() => {});
+      if (attempt === 0 && session.renewToken) {
+        await session.renewToken(signal);
+        continue;
+      }
+      throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
+    }
+    const media = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    if (!res.ok || media !== "text/event-stream" || !res.body) {
+      await res.body?.cancel().catch(() => {});
+      return undefined;
+    }
+    return { response: res, session };
+  }
+  return undefined;
+}
+
+async function consumeLiveEvents(
+  sandbox: string,
+  apiIo: Parameters<typeof authenticatedSession>[0],
+  live: { response: Response; session: Awaited<ReturnType<typeof authenticatedSession>> },
+  emit: (event: LogsResult["events"][number]) => void,
+  signal: AbortSignal,
+) {
+  let first: Response | undefined = live.response;
+  const { session } = live;
+  try {
     const stream = new Armada({
       url: session.origin,
       token: session.token(),
       fetch: async (input, init) => {
-        if (!first) return apiIo.fetch(input, init);
-        const res = first;
-        first = undefined;
+        if (first) {
+          const res = first;
+          first = undefined;
+          return res;
+        }
+        const send = () => {
+          const headers = new Headers(init?.headers);
+          headers.set("authorization", `Bearer ${session.token()}`);
+          return apiIo.fetch(input, { ...init, redirect: "error", headers });
+        };
+        const res = await send();
+        if (res.status === 401 && session.renewToken) {
+          await res.body?.cancel().catch(() => {});
+          await session.renewToken(signal);
+          return send();
+        }
         return res;
       },
-    }).events.stream({ sandbox, cursor: "tail" }, { signal: controller.signal });
+    }).events.stream({ sandbox, cursor: "tail" }, { signal, timeoutMs: 2_147_483_647 });
     for await (const frame of stream) {
       if (frame.kind === "runtime_event" && frame.event) {
         emit(frame.event);
@@ -127,12 +157,12 @@ async function streamLiveEvents(
     }
     return true;
   } catch (error) {
+    if (signal.aborted) return true;
     if (error instanceof ArmadaError && error.status === 401)
       throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
     return false;
   } finally {
-    process.removeListener("SIGINT", stop);
-    controller.abort();
+    await first?.body?.cancel().catch(() => {});
   }
 }
 
@@ -151,14 +181,20 @@ function summarize(value: unknown, max = 160) {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+function safeLabel(value: string) {
+  return stripControl(value).replace(/\s+/g, " ").trim();
+}
+
 function formatTool(tool: ToolCall, fallback: string, forceResult: boolean) {
+  const toolName = safeLabel(tool.name);
   if (forceResult || tool.result !== undefined || tool.name === "tool_result") {
-    const tag = `${tool.name && tool.name !== "tool_result" ? ` ${tool.name}` : ""}${tool.result?.isError ? " error" : ""}`;
+    const tag = `${toolName && toolName !== "tool_result" ? ` ${toolName}` : ""}${tool.result?.isError ? " error" : ""}`;
     const body = summarize(tool.result?.output ?? fallback);
     return `[tool_result${tag}]${body ? ` ${body}` : ""}`;
   }
   const body = summarize(tool.input);
-  return `[tool ${tool.server ? `${tool.server}/${tool.name}` : tool.name}]${body ? ` ${body}` : ""}`;
+  const fullName = tool.server ? `${safeLabel(tool.server)}/${toolName}` : toolName;
+  return `[tool ${fullName}]${body ? ` ${body}` : ""}`;
 }
 
 function eventText(event: LogsResult["events"][number]) {
@@ -171,7 +207,11 @@ function eventText(event: LogsResult["events"][number]) {
       const lines = tools.map((t) => formatTool(t, text, isResult));
       return !isResult && text.trim() ? `${text}\n${lines.join("\n")}` : lines.join("\n");
     }
-    return isResult ? `[tool_result]${summarize(text) ? ` ${summarize(text)}` : ""}` : text;
+    if (isResult) {
+      const body = summarize(text);
+      return `[tool_result]${body ? ` ${body}` : ""}`;
+    }
+    return text;
   }
   if (event.kind === "other" && event.data && typeof event.data === "object") {
     const data = event.data as Record<string, unknown>;
@@ -179,10 +219,12 @@ function eventText(event: LogsResult["events"][number]) {
       return `${data.message} (retry ${data.retryCount}, total wait ${Number(data.totalWaitMs) / 1000} s)`;
     if (event.type === "tool_use") {
       const body = summarize(data.input ?? data.arguments ?? data);
-      return `[tool ${typeof data.name === "string" ? data.name : "tool"}]${body ? ` ${body}` : ""}`;
+      const name = typeof data.name === "string" ? safeLabel(data.name) : "tool";
+      return `[tool ${name || "tool"}]${body ? ` ${body}` : ""}`;
     }
     if (event.type === "tool_result") {
-      const tag = `${typeof data.name === "string" && data.name !== "tool_result" ? ` ${data.name}` : ""}${data.isError === true || data.is_error === true ? " error" : ""}`;
+      const name = typeof data.name === "string" ? safeLabel(data.name) : "";
+      const tag = `${name && name !== "tool_result" ? ` ${name}` : ""}${data.isError === true || data.is_error === true ? " error" : ""}`;
       const body = summarize(data.output ?? data.content ?? data.result ?? data);
       return `[tool_result${tag}]${body ? ` ${body}` : ""}`;
     }
