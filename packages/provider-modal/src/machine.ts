@@ -6,6 +6,7 @@ import {
   type MachineIdentity,
   type MachineIncarnation,
   type RetainedMachine,
+  SHARED_ARTIFACT_CACHE_PATH,
 } from "@armada/core/server";
 import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
 import { boundModalApp, modalStopTimeout } from "./client.ts";
@@ -36,7 +37,9 @@ export interface ModalMachineJournal {
 }
 
 export interface ModalMachineOptions {
-  client: Pick<ModalClient, "apps" | "sandboxes" | "images" | "cpClient">;
+  client: Pick<ModalClient, "apps" | "sandboxes" | "images" | "cpClient"> & {
+    volumes?: ModalClient["volumes"] | undefined;
+  };
   appName: string;
   binding: ModalBinding;
   deploymentId: string;
@@ -199,8 +202,19 @@ export async function deleteModalRecoveryImage(client: Pick<ModalClient, "images
 
 export function createModalMachine(options: ModalMachineOptions) {
   const { client, journal, binding, appName, deploymentId, prepareCheckpoint, resolveRuntimeTicket } = options;
-  const bound = () => boundModalApp(client, appName, binding);
+  let verifiedApp: Promise<App> | undefined;
+  const bound = () => {
+    if (!verifiedApp) {
+      verifiedApp = boundModalApp(client, appName, binding).catch((error) => {
+        verifiedApp = undefined;
+        throw error;
+      });
+    }
+    return verifiedApp;
+  };
   const key = (id: MachineIncarnation) => digest([binding.appId, deploymentId, id.sandboxId, id.generation]);
+  const handleKey = (id: MachineIdentity) => `${key(id)}:${id.machineId}`;
+  const createdSandboxes = new Map<string, Sandbox>();
   const name = (id: MachineIncarnation) => `armada-${key(id).slice(0, 48)}`;
   const tags = (id: MachineIncarnation) => ({
     armada_deployment: deploymentId,
@@ -208,6 +222,16 @@ export function createModalMachine(options: ModalMachineOptions) {
     armada_generation: String(id.generation),
     armada_machine_key: key(id),
   });
+  function lookupArtifactVolume() {
+    const volumes = client.volumes;
+    if (!volumes) return Promise.resolve(undefined);
+    return optional(() =>
+      volumes.fromName("armada-runtime-artifacts", {
+        environment: binding.environment,
+        createIfMissing: false,
+      }),
+    );
+  }
   async function verify(sandbox: Sandbox, id: MachineIncarnation) {
     verifyModalComputeOwnership(await sandbox.getTags(), tags(id));
     return sandbox;
@@ -262,30 +286,46 @@ export function createModalMachine(options: ModalMachineOptions) {
     )
       throw refusal("invalid_request", "Invalid Modal machine allocation.");
     const intent = digest([operation, source.kind, source.ref, size, computeTtlSeconds]);
-    const app = await bound();
     let entry = await journal.read(key(request));
     let sandbox: Sandbox | undefined;
+    let freshlyCreated = false;
     if (entry) {
+      await bound();
       if (entry.intent !== intent) throw conflict("Modal allocation intent differs from the original request.");
       if (entry.machineId) return identity(request, entry.machineId);
       sandbox = await named(request);
       if (!sandbox) throw refusal("unavailable", "Modal create outcome is uncertain.");
     } else {
       await validateSource?.();
-      const image = await client.images.fromId(source.ref);
+      const [app, image, artifactVolume] = await Promise.all([
+        bound(),
+        client.images.fromId(source.ref),
+        lookupArtifactVolume(),
+      ]);
       signal?.throwIfAborted();
       entry = await save(request, undefined, { operation, intent, phase: "creating" });
       signal?.throwIfAborted();
-      sandbox = await allocateModalCompute(client.sandboxes.experimentalCreate.bind(client.sandboxes), app, image, {
-        name: name(request),
-        tags: tags(request),
-        runtime: "vm",
-        computeTtlSeconds,
-        size,
-      });
+      try {
+        sandbox = await allocateModalCompute(client.sandboxes.experimentalCreate.bind(client.sandboxes), app, image, {
+          name: name(request),
+          tags: tags(request),
+          runtime: "vm",
+          computeTtlSeconds,
+          size,
+          ...(artifactVolume
+            ? { volumes: { [SHARED_ARTIFACT_CACHE_PATH]: artifactVolume.withMountOptions({ readOnly: true }) } }
+            : {}),
+        });
+      } catch (error) {
+        verifiedApp = undefined;
+        throw error;
+      }
+      freshlyCreated = true;
     }
     await save(request, entry, { ...entry, phase: "allocated", machineId: sandbox.sandboxId });
-    return identity(request, sandbox.sandboxId);
+    const result = identity(request, sandbox.sandboxId);
+    if (freshlyCreated) createdSandboxes.set(handleKey(result), sandbox);
+    return result;
   }
 
   return {
@@ -298,18 +338,27 @@ export function createModalMachine(options: ModalMachineOptions) {
       if (entry.phase !== "allocated" || (entry.runtimeBinding && entry.runtimeBinding !== runtimeBinding))
         throw conflict("Modal machine conflicts with the runtime binding.");
       if (!entry.runtimeBinding) await save(request, entry, { ...entry, runtimeBinding });
-      await bound();
-      const sb = await exact(request, request.signal);
-      const ticket = await resolveRuntimeTicket(request);
-      request.signal?.throwIfAborted();
-      if (ticket)
-        await bootstrapModalRuntime(
-          sb,
-          request.machineId,
-          validateRuntimeTicket(ticket),
-          ticket,
-          "Enrolled Modal bootstrap failed; reconcile the runtime binding.",
-        );
+      const cacheKey = handleKey(request);
+      try {
+        await bound();
+        request.signal?.throwIfAborted();
+        const cached = createdSandboxes.get(cacheKey);
+        const sb = cached?.sandboxId === request.machineId ? cached : await exact(request, request.signal);
+        const ticket = await resolveRuntimeTicket(request);
+        request.signal?.throwIfAborted();
+        if (ticket)
+          await bootstrapModalRuntime(
+            sb,
+            request.machineId,
+            validateRuntimeTicket(ticket),
+            ticket,
+            "Enrolled Modal bootstrap failed; reconcile the runtime binding.",
+          );
+      } catch (error) {
+        createdSandboxes.delete(cacheKey);
+        verifiedApp = undefined;
+        throw error;
+      }
     },
     async stop(request) {
       let entry = await current(request);
@@ -318,30 +367,37 @@ export function createModalMachine(options: ModalMachineOptions) {
       if ((entry.phase !== "stopping" && entry.phase !== "stopped") || entry.retain !== request.retain)
         throw conflict("Modal stop intent conflicts with the existing receipt.");
       if (entry.phase === "stopping") {
-        await bound();
-        const sb = await exact(request, request.signal);
-        const needsSnapshot = request.retain && !entry.recoveryImageId;
-        if (needsSnapshot && entry.snapshotDispatched)
-          throw refusal("unavailable", "Modal snapshot outcome is uncertain.");
-        await stopModalCompute(sb, {
-          wait: false,
-          signal: request.signal,
-          ...(needsSnapshot && {
-            checkpoint: {
-              async prepare() {
-                if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
-                if (!prepareCheckpoint) throw conflict("Modal checkpoint preparation is unavailable.");
-                await prepareCheckpoint(request, sb);
+        const cacheKey = handleKey(request);
+        createdSandboxes.delete(cacheKey);
+        try {
+          await bound();
+          const sb = await exact(request, request.signal);
+          const needsSnapshot = request.retain && !entry.recoveryImageId;
+          if (needsSnapshot && entry.snapshotDispatched)
+            throw refusal("unavailable", "Modal snapshot outcome is uncertain.");
+          await stopModalCompute(sb, {
+            wait: false,
+            signal: request.signal,
+            ...(needsSnapshot && {
+              checkpoint: {
+                async prepare() {
+                  if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
+                  if (!prepareCheckpoint) throw conflict("Modal checkpoint preparation is unavailable.");
+                  await prepareCheckpoint(request, sb);
+                },
+                async recordIntent() {
+                  entry = await save(request, entry, { ...entry, snapshotDispatched: true });
+                },
+                async recordImage(recoveryImageId) {
+                  entry = await save(request, entry, { ...entry, recoveryImageId });
+                },
               },
-              async recordIntent() {
-                entry = await save(request, entry, { ...entry, snapshotDispatched: true });
-              },
-              async recordImage(recoveryImageId) {
-                entry = await save(request, entry, { ...entry, recoveryImageId });
-              },
-            },
-          }),
-        });
+            }),
+          });
+        } catch (error) {
+          verifiedApp = undefined;
+          throw error;
+        }
         await save(request, entry, { ...entry, phase: "stopped" });
       }
       return entry.recoveryImageId ? retained(request, entry.recoveryImageId) : null;
@@ -368,6 +424,8 @@ export function createModalMachine(options: ModalMachineOptions) {
       request.signal?.throwIfAborted();
       let entry = await current(request, "adopt-create");
       request.signal?.throwIfAborted();
+      const cacheKey = handleKey(request);
+      createdSandboxes.delete(cacheKey);
       if (entry.phase === "deleted") {
         if (entry.deleteScope === request.scope || entry.deleteScope === "physical-and-retained") return;
       } else if (entry.phase === "stopping" || (entry.phase === "deleting" && entry.deleteScope !== request.scope)) {
@@ -375,12 +433,17 @@ export function createModalMachine(options: ModalMachineOptions) {
       }
       if (entry.phase !== "deleting")
         entry = await save(request, entry, { ...entry, phase: "deleting", deleteScope: request.scope });
-      await bound();
-      await deleteModalCompute(() => exact(request, request.signal), { wait: false, signal: request.signal });
-      const image = entry.recoveryImageId;
-      if (request.scope === "physical-and-retained" && image) {
-        request.signal?.throwIfAborted();
-        await deleteModalRecoveryImage(client, image);
+      try {
+        await bound();
+        await deleteModalCompute(() => exact(request, request.signal), { wait: false, signal: request.signal });
+        const image = entry.recoveryImageId;
+        if (request.scope === "physical-and-retained" && image) {
+          request.signal?.throwIfAborted();
+          await deleteModalRecoveryImage(client, image);
+        }
+      } finally {
+        createdSandboxes.delete(cacheKey);
+        verifiedApp = undefined;
       }
       await save(request, entry, { ...entry, phase: "deleted" });
     },

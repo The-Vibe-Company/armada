@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { capabilities, type MachineIdentity } from "@armada/core/server";
-import { ModalClient, NotFoundError } from "modal";
+import { capabilities, type MachineIdentity, SHARED_ARTIFACT_CACHE_PATH } from "@armada/core/server";
+import { ModalClient, NotFoundError, Volume } from "modal";
 import { type MachineConformanceFixture, testMachineConformance } from "../../core/test-support/machine-conformance.ts";
 import { createModalMachine, type ModalMachineJournal, type ModalMachineOptions } from "../src/machine.ts";
 
@@ -300,6 +300,11 @@ test("Modal Machine recovers a lost create reply with the SDK profile set to V1"
         ...sdk,
         apps: { fromName: async () => ({ appId: "app-id" }) } as unknown as SDK["apps"],
         images: { fromId: async () => ({ imageId: "source", async build() {} }) } as unknown as SDK["images"],
+        volumes: {
+          fromName: async () => {
+            throw new NotFoundError("Volume missing");
+          },
+        } as unknown as ModalClient["volumes"],
       },
       appName: "app",
       binding: { appId: "app-id", workspace: "workspace", environment: "test" },
@@ -334,4 +339,182 @@ test("Modal Machine recovers a lost create reply with the SDK profile set to V1"
   } finally {
     sdk.close();
   }
+});
+
+function createDirectMachineHarness(options: {
+  volumeLookup?: (name: string, params?: { environment?: string; createIfMissing?: boolean }) => Promise<Volume>;
+  onLookup?: (kind: "app" | "image" | "volume") => Promise<void>;
+  failBootstrapOnce?: boolean;
+}) {
+  const entries = new Map<string, Entry>();
+  const counts = { appFromName: 0, imageFromId: 0, volumeFromName: 0, sandboxFromId: 0, getTags: 0, exec: 0 };
+  const createParams: CreateParams[] = [];
+  let tags: Record<string, string> = {};
+  let exited = false;
+  let failBootstrap = options.failBootstrapOnce ?? false;
+
+  const sandbox = {
+    sandboxId: "sb-direct-1",
+    getTags: async () => {
+      counts.getTags++;
+      return tags;
+    },
+    poll: async () => (exited ? 0 : null),
+    terminate: async () => {
+      exited = true;
+    },
+    exec: async () => {
+      counts.exec++;
+      if (failBootstrap) {
+        failBootstrap = false;
+        throw new Error("Transient bootstrap exec failure");
+      }
+      return {
+        stdin: { writeText: async () => {}, close: async () => {} },
+        wait: async () => 0,
+      };
+    },
+  };
+
+  const client = {
+    apps: {
+      fromName: async (appName: string, params?: { environment?: string; createIfMissing?: boolean }) => {
+        counts.appFromName++;
+        expect(appName).toBe("app");
+        expect(params).toEqual({ environment: "prod", createIfMissing: false });
+        await options.onLookup?.("app");
+        return { appId: "app-id" };
+      },
+    },
+    images: {
+      fromId: async (imageId: string) => {
+        counts.imageFromId++;
+        await options.onLookup?.("image");
+        return { imageId };
+      },
+      delete: async () => {},
+    },
+    volumes: {
+      fromName: async (name: string, params?: { environment?: string; createIfMissing?: boolean }) => {
+        counts.volumeFromName++;
+        await options.onLookup?.("volume");
+        if (options.volumeLookup) return options.volumeLookup(name, params);
+        throw new NotFoundError("Volume missing");
+      },
+    },
+    sandboxes: {
+      experimentalCreate: async (_app: unknown, _image: unknown, params: CreateParams) => {
+        createParams.push(params);
+        tags = params.tags ?? {};
+        return sandbox;
+      },
+      fromName: async () => sandbox,
+      fromId: async () => {
+        counts.sandboxFromId++;
+        return sandbox;
+      },
+    },
+    cpClient: { sandboxListV2: async () => ({ sandboxes: [] }) },
+  } as unknown as SDK;
+
+  const machine = createModalMachine({
+    client,
+    appName: "app",
+    binding: { appId: "app-id", workspace: "workspace", environment: "prod" },
+    deploymentId: "deployment",
+    journal: {
+      read: async (key) => entries.get(key),
+      compareAndSet: async (key, revision, next) => {
+        if (entries.get(key)?.revision !== revision) return false;
+        entries.set(key, next);
+        return true;
+      },
+    },
+    resolveRuntimeTicket: async () => ({
+      serverUrl: "https://armada.invalid",
+      artifact: { sha256: "a".repeat(64), bytes: 1 },
+      cacheDir: "/home/user/runtime-cache",
+      enrolmentToken: `armada_enrol_${"b".repeat(64)}`,
+    }),
+    prepareCheckpoint: async () => {},
+  });
+
+  return {
+    machine,
+    counts,
+    createParams,
+    request: {
+      sandboxId: "sandbox-1",
+      generation: 1,
+      source: { kind: "image" as const, ref: "im-source" },
+      size: null,
+      computeTtlSeconds: 60,
+    },
+  };
+}
+
+test("Modal machine create mounts armada-runtime-artifacts read-only when present and proceeds on NotFoundError", async () => {
+  const volume = new Volume("vo_runtime_artifacts");
+  const withVolume = createDirectMachineHarness({
+    volumeLookup: async (name, params) => {
+      expect(name).toBe("armada-runtime-artifacts");
+      expect(params).toEqual({ environment: "prod", createIfMissing: false });
+      return volume;
+    },
+  });
+  await withVolume.machine.create(withVolume.request);
+  expect(withVolume.counts.volumeFromName).toBe(1);
+  expect(withVolume.createParams[0]?.volumes).toEqual({
+    [SHARED_ARTIFACT_CACHE_PATH]: volume.withMountOptions({ readOnly: true }),
+  });
+
+  const withoutVolume = createDirectMachineHarness({
+    volumeLookup: async () => {
+      throw new NotFoundError("No shared artifact volume");
+    },
+  });
+  await withoutVolume.machine.create(withoutVolume.request);
+  expect(withoutVolume.counts.volumeFromName).toBe(1);
+  expect(withoutVolume.createParams[0]?.volumes).toBeUndefined();
+
+  const failingVolume = createDirectMachineHarness({
+    volumeLookup: async () => {
+      throw Object.assign(new Error("Modal volume lookup unavailable"), { name: "TimeoutError" });
+    },
+  });
+  await expect(failingVolume.machine.create(failingVolume.request)).rejects.toThrow("Modal volume lookup unavailable");
+});
+
+test("Modal machine create and bootstrap overlap lookups, reuse verified app and sandbox handles, and invalidate on error or delete", async () => {
+  const started: string[] = [];
+  let releaseLookups!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseLookups = resolve;
+  });
+
+  const happy = createDirectMachineHarness({
+    onLookup: async (kind) => {
+      started.push(kind);
+      if (started.length === 3) releaseLookups();
+      await gate;
+    },
+  });
+  const created = await happy.machine.create(happy.request);
+  expect(started).toEqual(["app", "image", "volume"]);
+  await happy.machine.bootstrap({ ...created, bindingRef: "runtime-binding" });
+  expect(happy.counts).toMatchObject({ appFromName: 1, sandboxFromId: 0, getTags: 0, exec: 1 });
+
+  await happy.machine.delete({ ...created, scope: "physical-only" });
+  expect(happy.counts).toMatchObject({ appFromName: 1, sandboxFromId: 1, getTags: 1 });
+  expect(await happy.machine.observe(created)).toEqual({ kind: "absent", receipt: { operation: "delete" } });
+  expect(happy.counts.appFromName).toBe(2);
+
+  const retry = createDirectMachineHarness({ failBootstrapOnce: true });
+  const retryCreated = await retry.machine.create(retry.request);
+  await expect(retry.machine.bootstrap({ ...retryCreated, bindingRef: "runtime-binding" })).rejects.toThrow(
+    "Enrolled Modal bootstrap failed",
+  );
+  expect(retry.counts).toMatchObject({ appFromName: 1, sandboxFromId: 0 });
+  await retry.machine.bootstrap({ ...retryCreated, bindingRef: "runtime-binding" });
+  expect(retry.counts).toMatchObject({ appFromName: 2, sandboxFromId: 1, getTags: 1, exec: 2 });
 });
