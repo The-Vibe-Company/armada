@@ -4,7 +4,7 @@ import { capabilities } from "@armada/core/machine-capabilities";
 import { CopyIcon, ExternalLinkIcon, Loader2Icon, MoreHorizontalIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useActionState, useCallback, useState } from "react";
 import { deleteSandbox, stopSandbox } from "@/app/actions/sandboxes";
 import {
   AlertDialog,
@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/toast";
+import type { ActionResult } from "@/lib/action";
 import { clientMutation } from "@/lib/client-mutation";
 import { toastFromResult } from "@/lib/toast";
 
@@ -47,29 +48,31 @@ export function SandboxRowMenu({
 }) {
   const router = useRouter();
   const toast = useToast();
-  const [confirm, setConfirm] = useState<"stop" | "delete" | null>(null);
-  const [pending, startTransition] = useTransition();
+  const [dialog, setDialog] = useState<{ open: boolean; kind: "stop" | "delete" }>({ open: false, kind: "stop" });
 
   const caps = capabilities(provider);
   const canStop = canManage && CAN_STOP.includes(status);
   const canDelete = canManage && caps.launchSource === "host" && CAN_DELETE.includes(status);
 
-  function submitConfirm() {
-    if (!confirm || pending) return;
-    const actionKind = confirm;
-    startTransition(async () => {
-      const data = new FormData();
-      data.set("sandbox", id);
-      const result = await clientMutation(() =>
-        actionKind === "stop" ? stopSandbox(null, data) : deleteSandbox(null, data),
-      );
-      toast(
-        toastFromResult(result, actionKind === "stop" ? "Stop request not confirmed" : "Delete request not confirmed"),
-      );
-      setConfirm(null);
-      if (result.ok) router.refresh();
-    });
-  }
+  const runAction = useCallback(
+    async (previous: ActionResult | null, data: FormData) => {
+      const kind = data.get("kind") === "delete" ? "delete" : "stop";
+      try {
+        const result = await clientMutation(() =>
+          kind === "stop" ? stopSandbox(previous, data) : deleteSandbox(previous, data),
+        );
+        toast(toastFromResult(result, kind === "stop" ? "Stop request not confirmed" : "Delete request not confirmed"));
+        setDialog((cur) => ({ ...cur, open: false }));
+        if (result.ok) router.refresh();
+        return result;
+      } catch (error) {
+        setDialog((cur) => ({ ...cur, open: false }));
+        throw error;
+      }
+    },
+    [router, toast],
+  );
+  const [, submitAction, pending] = useActionState(runAction, null);
 
   return (
     <>
@@ -105,13 +108,13 @@ export function SandboxRowMenu({
           </DropdownMenuItem>
           {(canStop || canDelete) && <DropdownMenuSeparator />}
           {canStop && (
-            <DropdownMenuItem variant="destructive" onSelect={() => setConfirm("stop")}>
+            <DropdownMenuItem variant="destructive" onSelect={() => setDialog({ open: true, kind: "stop" })}>
               <SquareIcon />
               Stop sandbox…
             </DropdownMenuItem>
           )}
           {canDelete && (
-            <DropdownMenuItem variant="destructive" onSelect={() => setConfirm("delete")}>
+            <DropdownMenuItem variant="destructive" onSelect={() => setDialog({ open: true, kind: "delete" })}>
               <Trash2Icon />
               Delete sandbox…
             </DropdownMenuItem>
@@ -120,16 +123,22 @@ export function SandboxRowMenu({
       </DropdownMenu>
 
       <AlertDialog
-        open={confirm !== null}
+        open={dialog.open}
         onOpenChange={(open) => {
-          if (!open && !pending) setConfirm(null);
+          if (!open && !pending) setDialog((cur) => ({ ...cur, open: false }));
         }}
       >
-        <AlertDialogContent>
+        <AlertDialogContent
+          onEscapeKeyDown={(event) => {
+            if (pending) event.preventDefault();
+          }}
+        >
           <AlertDialogHeader>
-            <AlertDialogTitle>{confirm === "delete" ? "Delete this sandbox?" : "Stop this sandbox?"}</AlertDialogTitle>
+            <AlertDialogTitle>
+              {dialog.kind === "delete" ? "Delete this sandbox?" : "Stop this sandbox?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              {confirm === "delete"
+              {dialog.kind === "delete"
                 ? "Its container and workspace are removed from the host for good. This cannot be undone."
                 : caps.stopRetention === "container"
                   ? "The container stops and its workspace stays on the host."
@@ -138,10 +147,14 @@ export function SandboxRowMenu({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
-            <Button type="button" variant="destructive" disabled={pending} onClick={submitConfirm}>
-              {pending && <Loader2Icon className="animate-spin" />}
-              {confirm === "delete" ? "Delete sandbox" : "Stop sandbox"}
-            </Button>
+            <form action={submitAction} className="w-full sm:w-auto">
+              <input type="hidden" name="sandbox" value={id} />
+              <input type="hidden" name="kind" value={dialog.kind} />
+              <Button type="submit" variant="destructive" disabled={pending} className="w-full sm:w-auto">
+                {pending && <Loader2Icon className="animate-spin" />}
+                {dialog.kind === "delete" ? "Delete sandbox" : "Stop sandbox"}
+              </Button>
+            </form>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

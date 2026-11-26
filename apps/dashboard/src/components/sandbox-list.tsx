@@ -85,7 +85,7 @@ export function SandboxListRows({ rows }: { rows: SandboxListRowItem[] }) {
         data-kb-focused={focused || undefined}
         className={cn(
           "outline-none last:rounded-b-xl max-md:first:rounded-t-xl [&>article]:last:rounded-b-xl max-md:[&>article]:first:rounded-t-xl",
-          focused && "bg-[var(--raised)]/80 ring-2 ring-ring ring-inset",
+          focused && "bg-[var(--raised)]/80 [&>article]:ring-2 [&>article]:ring-ring [&>article]:ring-inset",
         )}
       >
         {row.content}
