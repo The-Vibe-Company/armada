@@ -26,28 +26,82 @@ function paths(home = homedir(), instance?: string) {
     unit: join(home, ".config/systemd/user", serviceName(instance)),
   };
 }
+const USER_SERVICE_ERROR = "User service command failed; check systemd user services and linger permissions.";
+const LINGER_ACTION = "enable systemd user lingering with 'loginctl enable-linger' or ask an administrator.";
+
 async function command(args: string[]) {
-  const child = Bun.spawn(args, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-  const output = await new Response(child.stdout).text();
-  if ((await child.exited) !== 0)
-    throw new Error("User service command failed; check systemd user services and linger permissions.");
-  return output.trim();
+  try {
+    const child = Bun.spawn(args, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const output = await new Response(child.stdout).text();
+    if ((await child.exited) !== 0) throw new Error(USER_SERVICE_ERROR);
+    return output.trim();
+  } catch {
+    throw new Error(USER_SERVICE_ERROR);
+  }
 }
-export async function servicePreflight(instance?: string) {
-  if (process.platform !== "linux") throw new Error("Linux with systemd user services is required.");
-  if ((await dockerCli.run(["info"])).exitCode !== 0)
+interface ServiceIo {
+  home: string;
+  service(args: string[]): Promise<unknown>;
+}
+export interface ServicePreflightIo extends ServiceIo {
+  docker(args: readonly string[]): Promise<{ exitCode: number }>;
+  platform: NodeJS.Platform;
+  execPath: string;
+  uid: number | undefined;
+}
+const localService: () => ServiceIo = () => ({ home: homedir(), service: command });
+const localPreflight = () => ({
+  ...localService(),
+  docker: (args: readonly string[]) => dockerCli.run(args),
+  platform: process.platform,
+  execPath: process.execPath,
+  uid: process.getuid?.(),
+});
+async function runPreflight(service: ServiceIo["service"], args: string[], failureMessage: string) {
+  try {
+    const output = await service(args);
+    return typeof output === "string" ? output.trim() : "";
+  } catch {
+    throw new Error(failureMessage);
+  }
+}
+export async function servicePreflight(instance?: string, io: ServicePreflightIo = localPreflight()) {
+  if (io.platform !== "linux") throw new Error("Linux with systemd user services is required.");
+  let dockerReady = false;
+  try {
+    dockerReady = (await io.docker(["info"])).exitCode === 0;
+  } catch {}
+  if (!dockerReady)
     throw new Error(
-      "Docker access required: configure rootless Docker or ask the administrator for Docker access first.",
+      "Docker preflight failed: ensure Docker is installed, the Docker daemon is running and accessible, or ask an administrator for Docker access.",
     );
-  await command(["flock", "--version"]);
-  await command(["systemctl", "--user", "show-environment"]);
-  await command(["loginctl", "enable-linger"]);
-  if ((await command(["loginctl", "show-user", String(process.getuid?.()), "--property=Linger", "--value"])) !== "yes")
-    throw new Error("Linger is required for reboot persistence; ask the administrator to enable it for this account.");
-  const p = paths(homedir(), instance);
-  if (process.execPath !== p.binary)
+  await runPreflight(
+    io.service,
+    ["flock", "--version"],
+    "Missing required tool 'flock': install util-linux (flock) and retry.",
+  );
+  await runPreflight(
+    io.service,
+    ["systemctl", "--user", "show-environment"],
+    "Systemd user session unavailable: ensure systemd (systemctl) is installed and run from an active systemd user session.",
+  );
+  await runPreflight(
+    io.service,
+    ["loginctl", "enable-linger"],
+    `Failed to enable systemd user lingering: ensure loginctl is installed and ${LINGER_ACTION}`,
+  );
+  if (io.uid === undefined)
+    throw new Error(`Failed to verify systemd user lingering: Linux user ID unavailable; ${LINGER_ACTION}`);
+  const linger = await runPreflight(
+    io.service,
+    ["loginctl", "show-user", String(io.uid), "--property=Linger", "--value"],
+    `Failed to verify systemd user lingering: ensure loginctl is available and ${LINGER_ACTION}`,
+  );
+  if (linger !== "yes") throw new Error(`Systemd user lingering is not enabled: ${LINGER_ACTION}`);
+  const p = paths(io.home, instance);
+  if (io.execPath !== p.binary)
     throw new Error("Run the downloaded binary from its selected ~/.local/bin installation path.");
-  for (const file of [p.unit, join(stateDirectory(homedir(), instance), "managed.json")]) {
+  for (const file of [p.unit, join(stateDirectory(io.home, instance), "managed.json")]) {
     try {
       await lstat(file);
     } catch (error) {
@@ -61,12 +115,6 @@ function quoted(value: string) {
   if (/[\r\n\0]/.test(value)) throw new Error("Unsupported installation path.");
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$")}"`;
 }
-interface ServiceIo {
-  home: string;
-  service(args: string[]): Promise<unknown>;
-}
-
-const localService: () => ServiceIo = () => ({ home: homedir(), service: command });
 
 export async function installService(state: State, instance?: string, io = localService()) {
   const p = paths(io.home, instance);
