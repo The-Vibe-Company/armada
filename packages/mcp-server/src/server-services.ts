@@ -157,8 +157,6 @@ export async function createServerServices(env: Record<string, string | undefine
     publicUrl: config.publicUrl,
     dashboardUrl: config.dashboardUrl,
     development: config.development,
-    authStore,
-    supabase,
   });
   const runtimeMcp = createRuntimeMcp({
     sql,

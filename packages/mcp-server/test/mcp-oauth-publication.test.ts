@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
+import { createSqlVaultStore } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { handleControlRequest } from "../src/control.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { createMcpSecretBox } from "../src/mcp-integration.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -168,34 +170,40 @@ for (const change of cases)
         actor,
         other,
       ]);
+      const authStore = createSqlAuthStore(db);
+      const supabase = {
+        supabaseUrl: "https://auth.example",
+        anonKey: "public",
+        fetch: async (_input: string | URL | Request, init?: RequestInit) => {
+          const bearer = new Headers(init?.headers).get("authorization");
+          if (bearer === `Bearer ${actorSession}`) return Response.json({ id: actor });
+          if (bearer === `Bearer ${otherSession}`) return Response.json({ id: other });
+          return new Response(null, { status: 401 });
+        },
+      };
       integration = createMcpHttpIntegration({
         sql: db,
         encryptionKey,
         publicUrl: "https://gateway.example",
         dashboardUrl: "https://dashboard.example",
-        authStore: createSqlAuthStore(db),
         fetch: upstream,
-        supabase: {
-          supabaseUrl: "https://auth.example",
-          anonKey: "public",
-          fetch: async (_input, init) => {
-            const bearer = new Headers(init?.headers).get("authorization");
-            if (bearer === `Bearer ${actorSession}`) return Response.json({ id: actor });
-            if (bearer === `Bearer ${otherSession}`) return Response.json({ id: other });
-            return new Response(null, { status: 401 });
-          },
-        },
       });
       const service = integration;
+      const controlOptions = {
+        authStore,
+        supabase,
+        encryptionKey,
+        store: createSqlVaultStore(db),
+        mcp: { registry: service.registry, broker: service.controlBroker },
+      };
       const post = async (action: string, body: object, token = actorSession, signal?: AbortSignal) => {
-        const response = await service.route(
-          new Request(`https://gateway.example/api/v1/mcp/${action}`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}` },
-            body: JSON.stringify(body),
-            ...(signal ? { signal } : {}),
-          }),
-        );
+        const request = new Request(`https://gateway.example/api/v1/mcp/${action}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+          ...(signal ? { signal } : {}),
+        });
+        const response = (await service.route(request)) ?? (await handleControlRequest(request, controlOptions));
         if (!response) throw Error("Missing callback/control HTTP route");
         return response;
       };

@@ -1,6 +1,7 @@
 import type { ApplicationVault, Sql } from "@armada/core/server";
 import type { Job, JobResult } from "./jobs/runner.ts";
 import { type createJobsStore, rescheduleRecurringJob } from "./jobs/store.ts";
+import { pruneMcpInvalidations } from "./mcp-http-integration.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
 
 const INTERVAL_MS = 10 * 60_000;
@@ -26,6 +27,7 @@ export function retentionMaintenanceJob(
       const results = await Promise.allSettled([
         Promise.resolve().then(() => vault?.purgeExpired()),
         Promise.resolve().then(() => pruneResourceObservations(sql, cutoff)),
+        Promise.resolve().then(() => pruneMcpInvalidations(sql, cutoff)),
       ]);
       if (results.some((result) => result.status === "rejected"))
         log("armada: retention maintenance unavailable; retrying.");

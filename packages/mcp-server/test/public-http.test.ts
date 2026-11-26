@@ -110,6 +110,27 @@ test("mounted routes precede MCP and null falls through to its OAuth challenge",
   expect(mcp.headers.get("www-authenticate")).toContain(
     `resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource"`,
   );
+  expect(mcp.headers.get("access-control-allow-origin")).toBe("*");
+  expect(mcp.headers.get("access-control-expose-headers")).toContain("www-authenticate");
+});
+
+test("OPTIONS /mcp answers CORS preflight without authentication", async () => {
+  const response = await handler()(
+    new Request(`${PUBLIC_URL}/mcp`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://localhost:6274",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization, content-type, mcp-protocol-version",
+      },
+    }),
+  );
+  expect(response.status).toBe(204);
+  expect(response.headers.get("access-control-allow-origin")).toBe("*");
+  expect(response.headers.get("access-control-allow-methods")).toBe("GET, POST, DELETE, OPTIONS");
+  expect(response.headers.get("access-control-allow-headers")).toContain("authorization");
+  expect(response.headers.get("access-control-allow-headers")).toContain("mcp-protocol-version");
+  expect(response.headers.get("access-control-max-age")).toBe("600");
 });
 
 test.each([

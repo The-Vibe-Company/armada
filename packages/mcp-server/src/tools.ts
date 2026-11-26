@@ -70,10 +70,11 @@ function createToolServer(version: string) {
     { ...serverInfo, version },
     {
       instructions:
-        "Armada launches Claude Code, Codex and OpenCode agents in sandboxes. " +
-        "Provider and agent availability depend on server configuration. In these tools, a golden is a snapshot. " +
-        "Find a golden with the dashboard or POST /api/v1/golden/list. Then launch with a prompt, use status, and use logs to read " +
-        "what the agent did, send for the next instruction, and stop when done. Ids are Armada sandbox ids.",
+        "Armada launches Claude Code, Codex, OpenCode and Antigravity agents in sandboxes. " +
+        "Call launch_options to inspect configured providers, harnesses, models and machine sizes. In these tools, a golden is a snapshot. " +
+        "Find a golden with the dashboard or POST /api/v1/golden/list. Then launch with a prompt, use list and status to track progress, " +
+        "logs to read what the agent did, send for the next instruction (or steer a running turn), exec to run commands, " +
+        "outputs_list and output_read for output files, report to record a finished outcome, and stop when done. Ids are Armada sandbox ids.",
     },
   );
   return server;

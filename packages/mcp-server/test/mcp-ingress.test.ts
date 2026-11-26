@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { createSqlAuthStore } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 
@@ -14,10 +13,8 @@ test("gateway ingress challenges exact TLS-proxy authority without trusting forw
   };
   const service = createMcpHttpIntegration({
     sql,
-    authStore: createSqlAuthStore(sql),
     encryptionKey: undefined,
     publicUrl: "https://gateway.example",
-    supabase: { supabaseUrl: "https://auth.example", anonKey: "public" },
     deferBackground: true,
     fetch: async () => {
       throw Error("Ingress admission must not contact an upstream");

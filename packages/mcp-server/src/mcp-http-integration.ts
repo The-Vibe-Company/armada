@@ -1,4 +1,3 @@
-import type { AuthStore } from "@armada/auth";
 import {
   createSqlMcpGrantPort,
   createSqlMcpInvalidationPort,
@@ -6,13 +5,10 @@ import {
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
   decryptSecret,
-  type McpConnectionInput,
-  McpStdioError,
   parsePinnedMcpStdio,
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
   createClientMetadataHandler,
   createMcpGateway,
@@ -21,16 +17,36 @@ import {
   GatewayError,
   type GatewayLease,
   publicFetch,
-} from "../../mcp-gateway/src/index.ts";
-import { AuthUnavailable, authenticateCaller, bearerToken, type SupabaseProject } from "./caller.ts";
+} from "@armada/mcp-gateway";
+import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { bearerToken } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
-import { createSqlData } from "./data.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
 import { boundedOAuthFetch, probeRemoteMcp, withMcpDiscoveryBudget } from "./mcp-probe.ts";
 
 const sha = async (v: string) =>
   Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v))).toString("hex");
+const BASE_POLL_MS = 250;
+const MAX_POLL_BACKOFF_MS = 30_000;
+
+/** Server maintenance only: prune expired invalidations (cascades to mcp_invalidation_deliveries). */
+export async function pruneMcpInvalidations(sql: Sql, now: Date) {
+  if (!Number.isFinite(now.getTime())) throw new Error("Invalid retention cutoff.");
+  await sql.query("delete from public.mcp_invalidations where created_at < $1::timestamptz - interval '7 days'", [
+    now.toISOString(),
+  ]);
+}
+
+function probeFields(result: { toolCount?: number; resourceCount?: number; promptCount?: number; lastError?: string }) {
+  return {
+    ...(result.toolCount !== undefined ? { toolCount: result.toolCount } : {}),
+    ...(result.resourceCount !== undefined ? { resourceCount: result.resourceCount } : {}),
+    ...(result.promptCount !== undefined ? { promptCount: result.promptCount } : {}),
+    ...(result.lastError !== undefined ? { lastError: result.lastError } : {}),
+  };
+}
+
 /** Production HTTP adapter. Upstream grants never cross the gateway/native boundary. */
 export function createMcpHttpIntegration(options: {
   sql: Sql;
@@ -43,11 +59,21 @@ export function createMcpHttpIntegration(options: {
   development?: boolean;
   /** Trusted outbound transport, e.g. deployment egress proxy; endpoint policy remains enforced. */
   fetch?: typeof publicFetch;
-  authStore: AuthStore;
-  supabase: SupabaseProject;
   catalogAuthentication?: (serviceId: import("@armada/core").McpCatalogId) => Promise<string | undefined>;
+  logError?: (line: string) => void;
+  now?: () => number;
+  pollIntervalMs?: number;
+  schedule?: {
+    setInterval: (fn: () => void, ms: number) => ReturnType<typeof setInterval>;
+    clearInterval: (timer: ReturnType<typeof setInterval> | undefined) => void;
+  };
 }) {
   const { sql } = options;
+  const now = options.now ?? Date.now;
+  const logError = options.logError ?? console.error;
+  const pollIntervalMs = options.pollIntervalMs ?? BASE_POLL_MS;
+  const setPollInterval = options.schedule?.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
+  const clearPollInterval = options.schedule?.clearInterval ?? clearInterval;
   const networkFetch = options.fetch ?? publicFetch;
   const oauthFetch = boundedOAuthFetch(networkFetch);
   const registry = createSqlMcpRegistry(sql, options.encryptionKey, {
@@ -222,6 +248,7 @@ export function createMcpHttpIntegration(options: {
     }
     let authorizationUrl: string | undefined;
     let metadata: Awaited<ReturnType<typeof probe>> | undefined;
+    let discoveredOAuth: { resourceMetadataUrl?: string; scope?: string } | undefined;
     if (c.auth_type === "auto") {
       const discovered = await withMcpDiscoveryBudget(networkFetch, signal, (fetch) =>
         createRemoteAuthResolver({ fetch })({
@@ -233,6 +260,12 @@ export function createMcpHttpIntegration(options: {
       if (!(await grants.discovered(id, c.generation, discovered.authType)))
         throw new GatewayError("denied", "Connection changed during discovery. Reconnect.");
       c.auth_type = discovered.authType;
+      if (discovered.authType === "oauth") {
+        discoveredOAuth = {
+          ...(discovered.resourceMetadataUrl ? { resourceMetadataUrl: discovered.resourceMetadataUrl } : {}),
+          ...(discovered.scope ? { scope: discovered.scope } : {}),
+        };
+      }
     }
     if (c.auth_type === "oauth") {
       let client: Parameters<typeof broker.connect>[0]["client"];
@@ -272,6 +305,7 @@ export function createMcpHttpIntegration(options: {
             connectionId: id,
             resource: c.url,
             ...(client ? { client } : {}),
+            ...(discoveredOAuth ?? {}),
             ...(dto.catalogId === "slack"
               ? {
                   binding: SLACK_OAUTH_BINDING,
@@ -345,6 +379,41 @@ export function createMcpHttpIntegration(options: {
   }
   const hashes = new WeakMap<GatewayLease, string>();
   const activeLeases = new Map<string, { lease: GatewayLease; hash: string; orgId: string }>();
+  let cursorSeeded = false;
+  let seedEpoch = 0;
+  let pendingAuthentications = 0;
+  let seedingCursor: Promise<void> | undefined;
+  let consecutiveFailures = 0;
+  let nextPollAt = 0;
+  function resetIdlePollerState() {
+    if (activeLeases.size === 0 && pendingAuthentications === 0) {
+      cursorSeeded = false;
+      consecutiveFailures = 0;
+      nextPollAt = 0;
+    }
+  }
+  function seedInvalidationCursor() {
+    if (cursorSeeded || activeLeases.size > 0) return Promise.resolve();
+    if (seedingCursor) return seedingCursor;
+    seedEpoch++;
+    seedingCursor = sql
+      .query(
+        `insert into public.mcp_invalidation_deliveries(replica_id,event_id)
+         select $1::uuid,id from public.mcp_invalidations on conflict do nothing`,
+        [replica],
+      )
+      .then(() => {
+        cursorSeeded = true;
+      })
+      .finally(() => {
+        seedingCursor = undefined;
+      });
+    return seedingCursor;
+  }
+  function removeActiveLease(id: string) {
+    activeLeases.delete(id);
+    resetIdlePollerState();
+  }
   async function validate(lease: GatewayLease, op = "tools") {
     const hash = hashes.get(lease);
     if (!hash || !(await leases.validate(hash, op)))
@@ -389,9 +458,23 @@ export function createMcpHttpIntegration(options: {
           previous.lease.expiresAt = lease.expiresAt;
           return previous.lease;
         }
-        hashes.set(lease, hash);
-        activeLeases.set(lease.id, { lease, hash, orgId: claims.org_id });
-        return lease;
+        pendingAuthentications++;
+        try {
+          while (!cursorSeeded && activeLeases.size === 0) {
+            await seedInvalidationCursor();
+            const epoch = seedEpoch;
+            if (!(await leases.validate(hash, "tools")))
+              throw new GatewayError("denied", "Gateway token revoked or expired.");
+            if (epoch === seedEpoch) break;
+          }
+          hashes.set(lease, hash);
+          activeLeases.set(lease.id, { lease, hash, orgId: claims.org_id });
+          nextPollAt = 0;
+          return lease;
+        } finally {
+          pendingAuthentications--;
+          resetIdlePollerState();
+        }
       },
       assertActive: validate,
       async allow(lease, direction, message) {
@@ -477,7 +560,7 @@ export function createMcpHttpIntegration(options: {
       if (sandboxId && entry.lease.sandboxId !== sandboxId) continue;
       if (!(await leases.validate(entry.hash, "tools"))) {
         await gateway.invalidateLease(id);
-        activeLeases.delete(id);
+        removeActiveLease(id);
         continue;
       }
       const current = (
@@ -488,10 +571,12 @@ export function createMcpHttpIntegration(options: {
   }
   let draining: Promise<void> | undefined;
   function drainInvalidations(): Promise<void> {
+    if (activeLeases.size === 0) return Promise.resolve();
     if (draining) return draining;
     const work = async () => {
       for (const entry of activeLeases.values())
-        if (entry.lease.expiresAt <= Date.now()) await refreshActiveExpiries(entry.lease.sandboxId);
+        if (entry.lease.expiresAt <= now()) await refreshActiveExpiries(entry.lease.sandboxId);
+      if (activeLeases.size === 0) return;
       for (;;) {
         const events = await invalidations.pending(replica);
         if (!events.length) return;
@@ -509,7 +594,7 @@ export function createMcpHttpIntegration(options: {
             // generation's streams or another sandbox's active parallel conversation.
             if (!(await leases.validate(entry.hash, "tools"))) {
               await gateway.invalidateLease(id);
-              activeLeases.delete(id);
+              removeActiveLease(id);
             }
           }
         await invalidations.acknowledge(
@@ -526,10 +611,26 @@ export function createMcpHttpIntegration(options: {
   let timer: ReturnType<typeof setInterval> | undefined;
   const startBackground = () => {
     if (timer) return;
-    timer = setInterval(() => {
-      // Provider expiry I/O must never delay durable revoke/disable stream closure.
-      void drainInvalidations().catch(() => gateway.close());
-    }, 250);
+    timer = setPollInterval(() => {
+      if (activeLeases.size === 0) {
+        consecutiveFailures = 0;
+        nextPollAt = 0;
+        return;
+      }
+      if (draining || now() < nextPollAt) return;
+      void drainInvalidations().then(
+        () => {
+          consecutiveFailures = 0;
+          nextPollAt = 0;
+        },
+        () => {
+          consecutiveFailures++;
+          const delay = Math.min(pollIntervalMs * 2 ** (consecutiveFailures - 1), MAX_POLL_BACKOFF_MS);
+          nextPollAt = now() + delay;
+          logError("armada: MCP invalidation poller unavailable; backing off.");
+        },
+      );
+    }, pollIntervalMs);
     timer.unref();
   };
   if (!options.deferBackground) startBackground();
@@ -537,38 +638,49 @@ export function createMcpHttpIntegration(options: {
     registry,
     broker,
     controlBroker: {
-      async callback(actorId: string, state: string, code: string, issuer?: string) {
-        const connection = await completeCallback(actorId, state, code, issuer);
-        return { orgId: connection.orgId, connectionId: connection.id, status: connection.status };
+      async callback(actorId: string, state: string, code: string, issuer?: string, signal?: AbortSignal) {
+        const connection = await completeCallback(actorId, state, code, issuer, signal);
+        return {
+          orgId: connection.orgId,
+          connectionId: connection.id,
+          status: connection.status,
+          ...probeFields(connection),
+        };
       },
-      async connect(input: { userId: string; orgId: string; connectionId: string }) {
-        const result = await connectConnection(input.userId, input.orgId, input.connectionId);
+      async connect(input: { userId: string; orgId: string; connectionId: string; signal?: AbortSignal }) {
+        const result = await connectConnection(input.userId, input.orgId, input.connectionId, input.signal);
         return {
           status: result.connection.status,
+          ...probeFields(result.connection),
           ...("authorizationUrl" in result && result.authorizationUrl
             ? { authorizationUrl: result.authorizationUrl }
             : {}),
         };
       },
-      async status(input: { userId: string; orgId: string; connectionId: string }) {
-        const result = await connectionStatus(input.userId, input.orgId, input.connectionId);
+      async status(input: { userId: string; orgId: string; connectionId: string; signal?: AbortSignal }) {
+        const result = await connectionStatus(input.userId, input.orgId, input.connectionId, input.signal);
         const toolNames =
           "toolNames" in result &&
           Array.isArray(result.toolNames) &&
           result.toolNames.every((name): name is string => typeof name === "string")
             ? result.toolNames
             : undefined;
-        return { status: result.status, ...(toolNames ? { toolNames } : {}) };
+        return { status: result.status, ...(toolNames ? { toolNames } : {}), ...probeFields(result) };
       },
     },
     connections: createSqlMcpLaunchPort(sql, registry),
     drainInvalidations,
     startBackground,
     async close() {
-      clearInterval(timer);
-      await Promise.allSettled([draining]);
+      clearPollInterval(timer);
+      timer = undefined;
+      await Promise.allSettled([draining, seedingCursor]);
       await gateway.close();
       activeLeases.clear();
+      pendingAuthentications = 0;
+      cursorSeeded = false;
+      consecutiveFailures = 0;
+      nextPollAt = 0;
     },
     async route(request: Request): Promise<Response | null> {
       const path = new URL(request.url).pathname;
@@ -598,150 +710,7 @@ export function createMcpHttpIntegration(options: {
           );
         return gateway.handle(canonical);
       }
-      const prefix = "/api/v1/mcp/";
-      if (!path.startsWith(prefix)) return null;
-      const headers = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
-      try {
-        if (request.method !== "POST") return new Response(null, { status: 405, headers });
-        if (Number(request.headers.get("content-length") ?? 0) > 131072)
-          return new Response(null, { status: 413, headers });
-        const text = await request.text();
-        if (text.length > 131072) return new Response(null, { status: 413, headers });
-        const parsed: unknown = JSON.parse(text);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("JSON object required");
-        const body = parsed as Record<string, unknown>;
-        const auth = await authenticateCaller(request.headers.get("authorization"), {
-          store: options.authStore,
-          supabase: options.supabase,
-          now: new Date(),
-        });
-        if (!auth.ok) return Response.json({ error: "unauthorized" }, { status: 401, headers });
-        const actor = auth.caller;
-        const action = path.slice(prefix.length);
-        if (action === "oauth/callback") {
-          if (actor.via !== "supabase")
-            return Response.json(
-              { error: "forbidden", message: "A signed-in browser session is required." },
-              { status: 403, headers },
-            );
-          if (
-            actor.via !== "supabase" ||
-            typeof body.state !== "string" ||
-            typeof body.code !== "string" ||
-            body.state.length > 1024 ||
-            body.code.length > 8192 ||
-            (body.issuer !== undefined && typeof body.issuer !== "string")
-          )
-            throw new Error("Invalid callback");
-          const connection = await completeCallback(
-            actor.userId,
-            body.state,
-            body.code,
-            typeof body.issuer === "string" ? body.issuer : undefined,
-            request.signal,
-          );
-          return Response.json({ connection }, { headers });
-        }
-        if (body.org !== undefined && typeof body.org !== "string") throw new Error("Organization UUID required");
-        const org =
-          typeof body.org === "string"
-            ? body.org.trim().toLowerCase()
-            : actor.via !== "supabase"
-              ? actor.orgs[0]?.orgId
-              : undefined;
-        if (!org || !actor.orgs.some((o) => o.orgId === org))
-          throw new GatewayError("denied", "This request is not scoped to that organization.");
-        const id = String(body.id ?? body.connectionId ?? "");
-        if (action === "catalog") return Response.json({ services: await registry.catalog() }, { headers });
-        if (action === "metadata")
-          return Response.json({ connection: await registry.metadata(actor.userId, org, id, body) }, { headers });
-        if (action === "list")
-          return Response.json({ connections: await registry.list(actor.userId, org) }, { headers });
-        if (action === "create" || action === "update") {
-          if (body.transport === "stdio")
-            parsePinnedMcpStdio(
-              typeof body.command === "string" ? body.command : "",
-              Array.isArray(body.args) ? (body.args as string[]) : [],
-            );
-          return Response.json(
-            {
-              connection: await registry.save(
-                actor.userId,
-                org,
-                body as unknown as McpConnectionInput,
-                action === "update" ? id : undefined,
-              ),
-            },
-            { headers },
-          );
-        }
-        if (action === "sandbox-connections") {
-          const sandbox = await createSqlData(sql)(actor).sandboxes.get(id);
-          if (!sandbox || sandbox.orgId !== org) throw new GatewayError("denied", "No such sandbox.");
-          return Response.json({ connections: await registry.sandboxConnections(actor.userId, org, id) }, { headers });
-        }
-        await registry.get(actor.userId, org, id);
-        if (action === "revoke" || action === "delete") {
-          await registry.revoke(actor.userId, org, id, action === "delete");
-          return Response.json({ ok: true }, { headers });
-        }
-        if (action === "set-enabled") {
-          if (typeof body.enabled !== "boolean") throw new Error("enabled must be a boolean");
-          return Response.json(
-            { connection: await registry.setEnabled(actor.userId, org, id, body.enabled) },
-            { headers },
-          );
-        }
-        if (action === "status")
-          return Response.json(
-            { connection: await connectionStatus(actor.userId, org, id, request.signal) },
-            { headers },
-          );
-        if (action === "connect" || action === "reconnect") {
-          return Response.json(await connectConnection(actor.userId, org, id, request.signal), { headers });
-        }
-        return Response.json({ error: "not_found" }, { status: 404, headers });
-      } catch (error) {
-        const status =
-          error instanceof AuthUnavailable
-            ? 503
-            : error instanceof GatewayError
-              ? error.code === "denied"
-                ? 403
-                : error.code === "busy"
-                  ? 409
-                  : error.code === "upstream"
-                    ? 502
-                    : 400
-              : error instanceof VaultError
-                ? error.code === "forbidden"
-                  ? 403
-                  : error.code === "not_found"
-                    ? 404
-                    : error.code === "unavailable"
-                      ? 503
-                      : 400
-                : 400;
-        return Response.json(
-          {
-            error:
-              error instanceof GatewayError
-                ? error.code
-                : error instanceof VaultError
-                  ? error.code
-                  : error instanceof AuthUnavailable
-                    ? "temporarily_unavailable"
-                    : "invalid_request",
-            message:
-              error instanceof GatewayError
-                ? error.action
-                : error instanceof McpStdioError
-                  ? error.message
-                  : "MCP request denied; verify membership and connection state.",
-          },
-          { status, headers },
-        );
-      }
+      return null;
     },
   };
 }
