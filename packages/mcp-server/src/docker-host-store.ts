@@ -61,7 +61,13 @@ import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot
 import { resumeDispatchAuthority } from "./jobs/resume-authority.ts";
 import type { Job as RunnerJob } from "./jobs/runner.ts";
 import type { DockerStopIntent } from "./jobs/stop.ts";
-import { createJobsStore, dockerStopPending, jobRequestKey, recordDockerRestoreEvidence } from "./jobs/store.ts";
+import {
+  createJobsStore,
+  dockerStopPending,
+  jobRequestKey,
+  recordDockerRestoreEvidence,
+  wakeSandboxJobs,
+} from "./jobs/store.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -3157,6 +3163,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.absentMachineId ?? null,
             ],
           );
+          if (job.bound_sandbox_id) {
+            await wakeSandboxJobs(tx, job.bound_sandbox_id, ["launch", "resume", "stop"]);
+          }
         }
       });
     },

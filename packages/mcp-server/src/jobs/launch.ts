@@ -19,5 +19,6 @@ export function createLaunchJob(handlers: { modal?: JobKind; boat?: JobKind["run
       if (!run && boat && !docker) throw new Error("Boat launch worker is unavailable.");
       return run?.(job, context) ?? { status: "fail", reason: "launch_provider_unavailable" };
     },
+    ...(handlers.modal?.drain ? { drain: () => handlers.modal!.drain!() } : {}),
   } satisfies JobKind;
 }

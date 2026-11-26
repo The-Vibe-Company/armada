@@ -526,3 +526,127 @@ describe.each(["boat", "modal"] as const)("%s resume job", (placement) => {
     }
   });
 });
+
+test("Modal resume skips re-bootstrap after bootstrap_acknowledged and wakes immediately on enrolment", async () => {
+  const f = await stopped("codex", "modal");
+  const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+  const turns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+  const restore = {
+    epoch: f.cp.runtime.epoch,
+    watermark: f.cp.checkpoint.watermark,
+    conversationId: f.first.conversationId!,
+  };
+  let providerCalls = 0,
+    resumeCalls = 0,
+    bootstrapCalls = 0;
+  let ticketToken: string | undefined;
+  const service = createResumeJob({
+    turns,
+    sql: f.sql,
+    key: ENCRYPTION_KEY,
+    commands: f.bridge,
+    async provider() {
+      providerCalls++;
+      return {
+        get: async () => ({ state: "ready", expiresAt: new Date(Date.now() + 86_400_000) }),
+        async runtimeResumeMachine({ sandboxId, generation, ticket }) {
+          return {
+            predecessor: { sandboxId, generation: generation - 1, kind: "image", ref: "retained" },
+            async resume() {
+              resumeCalls++;
+              return { sandboxId, generation, machineId: "replacement" };
+            },
+            async bootstrap(request) {
+              ticketToken = (await ticket(request))?.enrolmentToken;
+              bootstrapCalls++;
+            },
+          };
+        },
+      } as Pick<
+        import("@armada/provider-modal").ModalProvider,
+        "runtimeResumeMachine"
+      > as import("@armada/provider-modal").ModalProvider;
+    },
+    prepare: async () => ({
+      serverUrl: PUBLIC_URL,
+      artifact: { sha256: "b".repeat(64), bytes: 5 },
+      cacheDir: "/tmp/runtime",
+      configuration: {},
+    }),
+    prepareMcp: async () => undefined,
+    restoreScopedAccess: async () => {},
+  });
+  await f.sql.query(
+    "insert into public.sandbox_launch_stages(sandbox_id,activation,stage,at) values($1,1,'accepted',now())",
+    [f.row.id],
+  );
+  const turnRunner = createJobsRunner(jobs, {
+    turn_dispatch: createTurnDispatchJob(
+      f.sql,
+      ENCRYPTION_KEY,
+      createQueuedSandboxDispatch({
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(f.sql),
+        providers: {
+          resolve: async () => {
+            throw Error("unused");
+          },
+        },
+        runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, undefined, service.wake),
+      }),
+    ),
+  });
+  expect(await turns.accept(f.caller, input(f.row.id))).toMatchObject({ status: "queued" });
+  expect(await turnRunner.reconcileOne(new AbortController().signal)).toBe(true);
+  await turnRunner.drain();
+
+  const owner = crypto.randomUUID();
+  const take = async () => {
+    const job = (await jobs.claim("resume", owner, 30, 8))!;
+    const result = await service.handler.run(job, {
+      signal: new AbortController().signal,
+      canDispatch: async (tx) => (await jobs.inspect(job, owner, tx)) === "dispatch",
+      handoffGeneration: async () => {
+        throw Error("unused");
+      },
+    });
+    expect(await jobs.complete(job, owner, result)).toBeTrue();
+    return result.status;
+  };
+
+  expect(await take()).toBe("retry");
+  expect([providerCalls, resumeCalls, bootstrapCalls]).toEqual([1, 1, 1]);
+  expect(
+    (
+      await f.sql.query(
+        "select outcome->>'bootstrap_acknowledged' as ack from public.jobs where sandbox_id=$1 and kind='resume'",
+        [f.row.id],
+      )
+    ).rows,
+  ).toEqual([{ ack: "true" }]);
+
+  await f.sql.query("update public.jobs set run_after='-infinity' where sandbox_id=$1 and kind='resume'", [f.row.id]);
+  expect(await take()).toBe("retry");
+  expect([providerCalls, resumeCalls, bootstrapCalls]).toEqual([1, 1, 1]);
+
+  let wakes = 0;
+  const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, () => void wakes++);
+  try {
+    await f.reboot(restore, true, ticketToken);
+    expect(wakes).toBeGreaterThan(0);
+    expect(
+      (
+        await f.sql.query("select stage from public.sandbox_launch_stages where sandbox_id=$1 and stage='enrolled'", [
+          f.row.id,
+        ])
+      ).rows,
+    ).toEqual([{ stage: "enrolled" }]);
+    expect(await take()).toBe("done");
+    expect([resumeCalls, bootstrapCalls]).toEqual([1, 1]);
+  } finally {
+    unsubscribe();
+  }
+});
