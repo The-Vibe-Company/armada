@@ -29,7 +29,7 @@ export async function updateLangfuse(
       case "connect":
       case "edit":
       case "test": {
-        const parsed = form ? readLangfuseForm(form, change === "edit" ? baseline : undefined) : null;
+        const parsed = form ? readLangfuseForm(form, change === "connect" ? undefined : baseline) : null;
         if (!parsed) return { ok: false, error: LANGFUSE_MISSING_FIELDS_ERROR };
         if (!parsed.ok) return { ok: false, error: parsed.error };
         const { input } = parsed;

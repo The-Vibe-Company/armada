@@ -151,7 +151,7 @@ function LangfuseForm({
           org,
           testing ? "test" : edit ? "edit" : "connect",
           data,
-          edit && !testing ? baseline : undefined,
+          edit ? baseline : undefined,
         );
         if (!result.ok) setError(result.error);
         else if (result.test) {
