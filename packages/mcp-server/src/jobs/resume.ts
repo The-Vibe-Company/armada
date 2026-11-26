@@ -466,7 +466,7 @@ export function createResumeJob(options: {
       if (!id || !generationText || !input?.source) return { status: "fail", reason: "resume_intent_missing" };
       const generation = Number(generationText);
       const caller: Caller = { userId: input.ownerId, orgs: [{ orgId: input.orgId, role: "member" }], via: "service" };
-      const retry = { status: "retry", after: new Date(Date.now() + 1_000) } satisfies JobResult;
+      const retry = () => ({ status: "retry", after: new Date(Date.now() + 1_000) }) satisfies JobResult;
       const target = async (db: Sql) =>
         (
           await db.query<{
@@ -507,7 +507,7 @@ export function createResumeJob(options: {
           )
         ).rows[0];
       const current = await withJobLease(sql, job, target);
-      if (!current) return { ...retry, unattempted: true };
+      if (!current) return { ...retry(), unattempted: true };
       if (current.restore_failure || current.cancelled || !(await context.canDispatch())) {
         return {
           status: "fail",
@@ -541,10 +541,10 @@ export function createResumeJob(options: {
       const dockerActor = { userId: input.ownerId, orgId: input.orgId };
       const goldenSandbox = current.docker ? null : await createSqlData(sql)(caller).sandboxes.get(id);
       const sandbox = current.docker ? await createDockerSandboxService(sql).get(dockerActor, id) : goldenSandbox;
-      if (!sandbox?.model || !sandbox.reasoningEffort || sandbox.lifecycleGeneration !== generation) return retry;
+      if (!sandbox?.model || !sandbox.reasoningEffort || sandbox.lifecycleGeneration !== generation) return retry();
       const providerId = sandbox.provider;
       const isBoat = goldenSandbox?.boatRuntime === true;
-      if (isBoat && sandbox.providerSandboxId !== input.boatMachineId) return retry;
+      if (isBoat && sandbox.providerSandboxId !== input.boatMachineId) return retry();
       const guard = async (db: Sql) => {
         if ((await target(db))?.cancelled !== false || !(await context.canDispatch(db))) throw conflict();
         signal.throwIfAborted();
@@ -567,7 +567,7 @@ export function createResumeJob(options: {
           );
       const retryWaitingForEnrolment = () =>
         ({
-          ...retry,
+          ...retry(),
           unattempted: true,
           commit: (tx) => wakeEnrolledSandboxJobs(tx, id, generation, ["resume"]),
         }) satisfies JobResult;
@@ -778,13 +778,13 @@ export function createResumeJob(options: {
           },
         };
       } catch (error) {
-        if (error instanceof DockerMachinePending) return { ...retry, unattempted: true };
+        if (error instanceof DockerMachinePending) return { ...retry(), unattempted: true };
         recordOperatorDiagnostic("jobs.resume.run", failureDiagnostic(error), {
           sandboxId: id,
           operationId: job.id,
           code: "retry",
         });
-        return retry;
+        return retry();
       }
     },
   };

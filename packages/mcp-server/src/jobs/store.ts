@@ -234,7 +234,7 @@ export async function wakeEnrolledSandboxJobs(
     `with due as (
        select j.id from public.jobs j
        where j.sandbox_id = $1 and j.kind = any($2::text[]) and j.state = 'queued'
-         and j.generation = $3::bigint and j.run_after > clock_timestamp()
+         and j.generation = $3::bigint
          and exists(
            select 1 from public.runtime_enrolments e
            where e.sandbox_id = j.sandbox_id and e.lifecycle_generation = j.generation and e.runtime_hash is not null
@@ -242,7 +242,7 @@ export async function wakeEnrolledSandboxJobs(
        order by j.id
        for update skip locked
      )
-     update public.jobs j set run_after = clock_timestamp()
+     update public.jobs j set run_after = least(j.run_after, clock_timestamp())
      from due where j.id = due.id
      returning j.id`,
     [sandboxId, [...kinds], generation],
@@ -881,7 +881,12 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         return (await withLockedJobGeneration(job, owner, complete)) ?? false;
       if (result.commit || refundAttempt) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
-        return sql.transaction((tx) => complete(tx, job.generation));
+        return sql.transaction(async (tx) => {
+          if (job.kind === "launch" && job.sandbox_id && result.commit) {
+            await tx.query("select id from public.sandboxes where id = $1 for update", [job.sandbox_id]);
+          }
+          return complete(tx, job.generation);
+        });
       }
       return complete(sql, job.generation);
     },

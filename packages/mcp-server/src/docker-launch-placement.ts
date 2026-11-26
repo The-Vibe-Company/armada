@@ -328,7 +328,8 @@ const active = (row: Row) =>
 export function createDockerLaunchPlacement(sql: Sql, key: string, options: Options) {
   const clock = options.clock ?? {
     now: Date.now,
-    wait: waitForTimeout,
+    wait: (ms: number, signal?: AbortSignal) =>
+      signal ? waitForTimeout(ms, signal) : new Promise<void>((resolve) => setTimeout(resolve, ms)),
   };
   const runtime = createDockerRuntimeLifecycle(sql, key);
   const templates = createTemplateService(sql, key);
@@ -931,7 +932,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
             () => {},
             async (ms) => {
               await live();
-              await clock.wait(ms);
+              await clock.wait(ms, worker.context.signal);
             },
             async (command, step) => {
               await live();

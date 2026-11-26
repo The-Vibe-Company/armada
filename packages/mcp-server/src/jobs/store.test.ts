@@ -1888,7 +1888,7 @@ test("Modal admission and deferred enrolment wake jobs and stay within the SQL s
       await runner.drain();
       checkpoints.push(statements.length);
       expect(
-        await createJobsStore(f.sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1),
+        await createJobsStore(f.db, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1),
       ).toBeUndefined();
       const wakesBeforeEnrol = jobWakes;
       await enrolPending();
@@ -1902,7 +1902,7 @@ test("Modal admission and deferred enrolment wake jobs and stay within the SQL s
         { state: "done" },
       ]);
       expect(
-        await createJobsStore(f.sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1),
+        await createJobsStore(f.db, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1),
       ).toMatchObject({ sandbox_id: id, kind: MODAL_INITIAL_TURN });
       checkpoints.push(statements.length);
       timing.checkpoint("shared_launcher");
@@ -1912,7 +1912,7 @@ test("Modal admission and deferred enrolment wake jobs and stay within the SQL s
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
     expect(statements.length).toBeLessThanOrEqual(60);
-    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 34, 10, 8]);
+    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 35, 9, 8]);
   } finally {
     unsubscribe();
     log.mockRestore();

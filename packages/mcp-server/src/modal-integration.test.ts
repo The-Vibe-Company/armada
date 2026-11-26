@@ -135,14 +135,23 @@ test("Modal machine clients are reused per credential slot, invalidated on token
         return work(sql);
       },
     };
+    let credentialAttempt = 0;
+    const staleFailureStarted = Promise.withResolvers<void>();
+    const staleFailureGate = Promise.withResolvers<void>();
     const modal = createModalIntegration({
       sql,
       encryptionKey,
       publicUrl: "https://armada.example",
       vault: {
-        credentials: async () => [
-          { id: "cred-1", version: 1, kind: "modal", status: "active", valueEnc: activeTokens },
-        ],
+        credentials: async () => {
+          credentialAttempt++;
+          if (credentialAttempt === 4) {
+            staleFailureStarted.resolve();
+            await staleFailureGate.promise;
+            return [];
+          }
+          return [{ id: "cred-1", version: 1, kind: "modal", status: "active", valueEnc: activeTokens }];
+        },
         orgBoatKey: async () => null,
       },
     });
@@ -151,7 +160,7 @@ test("Modal machine clients are reused per credential slot, invalidated on token
       async () => {
         throw new Error("unused");
       },
-      { warm: async (binding) => void warmed.push(binding) },
+      { beginWarming: (binding) => void warmed.push(binding) },
     );
     const baseJob = {
       sandbox_id: sandboxId,
@@ -196,7 +205,17 @@ test("Modal machine clients are reused per credential slot, invalidated on token
     expect(closeSpy).toHaveBeenCalledTimes(0);
 
     activeTokens = await encodeTokens("fixture2");
+    const staleMissingRun = modal.launchCleanupJob.run(cleanupJob, {
+      signal: new AbortController().signal,
+      canDispatch: async () => true,
+      handoffGeneration: async () => "1",
+    });
+    await staleFailureStarted.promise;
     await runWithAbort((context) => modal.launchCleanupJob.run(cleanupJob, context));
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+
+    staleFailureGate.resolve();
+    await expect(staleMissingRun).rejects.toThrow("Modal");
     expect(closeSpy).toHaveBeenCalledTimes(1);
 
     await launchJob.drain?.();

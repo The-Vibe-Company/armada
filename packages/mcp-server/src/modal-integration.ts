@@ -339,18 +339,24 @@ export function createModalIntegration(options: {
     onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
   ) => {
     const slot = `${authority.credentialScope}:${authority.credentialOwnerId}`;
-    let client = machineClients.get(slot);
+    const observed = machineClients.get(slot);
     const { tokenId, tokenSecret, id, version } = await resolveManagementCredentials(authority).catch(
       (error: unknown) => {
-        if (error instanceof VaultError && (error.code === "missing_credential" || error.code === "unavailable")) {
-          client?.close();
+        if (
+          error instanceof VaultError &&
+          (error.code === "missing_credential" || error.code === "unavailable") &&
+          observed &&
+          machineClients.get(slot) === observed
+        ) {
           machineClients.delete(slot);
+          observed.close();
         }
         throw error;
       },
     );
     if (!id || !version) throw new Error("Modal platform credential revision is unavailable.");
     signal.throwIfAborted();
+    let client = machineClients.get(slot);
     if (client?.profile.tokenId !== tokenId || client?.profile.tokenSecret !== tokenSecret) {
       client?.close();
       client = new ModalClient({
@@ -412,7 +418,7 @@ export function createModalIntegration(options: {
     launchCleanupJob: wrapMachineJob(createModalLaunchCleanupJob(options.sql, openMachine)),
     launchJob: (
       prepare: Parameters<typeof createModalLaunchJob>[3],
-      cache?: Pick<ReturnType<typeof createModalArtifactCache>, "warm">,
+      cache?: Pick<ReturnType<typeof createModalArtifactCache>, "beginWarming">,
       logError?: (line: string) => void,
     ) =>
       wrapMachineJob(
@@ -423,15 +429,7 @@ export function createModalIntegration(options: {
             openMachine(
               request,
               signal,
-              cache
-                ? (binding) => {
-                    void cache.warm(binding).catch((error) => {
-                      (logError ?? console.error)(
-                        `Modal artifact warming failed for an enrolled App: ${modalArtifactFailure(error)}.`,
-                      );
-                    });
-                  }
-                : undefined,
+              cache ? (binding) => cache.beginWarming(binding, logError ?? console.error) : undefined,
             ),
           prepare,
         ),
