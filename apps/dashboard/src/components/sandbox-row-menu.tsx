@@ -150,8 +150,9 @@ export function SandboxRowMenu({
             <form action={submitAction} className="w-full sm:w-auto">
               <input type="hidden" name="sandbox" value={id} />
               <input type="hidden" name="kind" value={dialog.kind} />
+              {dialog.kind === "delete" && <input type="hidden" name="stay" value="1" />}
               <Button type="submit" variant="destructive" disabled={pending} className="w-full sm:w-auto">
-                {pending && <Loader2Icon className="animate-spin" />}
+                {pending && <Loader2Icon aria-hidden="true" className="motion-safe:animate-spin" />}
                 {dialog.kind === "delete" ? "Delete sandbox" : "Stop sandbox"}
               </Button>
             </form>

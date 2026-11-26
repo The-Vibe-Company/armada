@@ -1055,6 +1055,12 @@ test("SandboxListRows navigates with j/k/arrows, opens on Enter, copies on c, an
     await dispatch("j");
     expect([focused(), copied]).toEqual([["sb-1"], ["sb-1"]]);
     dialogOpen = false;
+    await act(async () => {
+      fakeDocument.dispatchEvent(new Event("focusin"));
+    });
+    expect(focused()).toEqual([]);
+    await dispatch("j");
+    expect(focused()).toEqual(["sb-1"]);
     await dispatch("Escape");
     expect(focused()).toEqual([]);
   } finally {

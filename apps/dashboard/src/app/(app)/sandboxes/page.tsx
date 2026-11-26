@@ -614,7 +614,7 @@ function PreservationPill({ preservation }: { preservation: PreservationView }) 
       data-preservation={preservation.kind}
       title={preservation.text}
       className={cn(
-        "inline-flex shrink-0 truncate rounded-md border px-1.5 py-0 text-[11px] font-medium",
+        "inline-flex max-w-full shrink-0 truncate rounded-md border px-1.5 py-0 text-[11px] font-medium",
         preservation.kind === "failed" ? TONE_BADGE.warning : TONE_BADGE.neutral,
       )}
     >

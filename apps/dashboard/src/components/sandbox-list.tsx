@@ -67,8 +67,21 @@ export function SandboxListRows({ rows }: { rows: SandboxListRowItem[] }) {
       }
     }
 
+    function onFocusIn(event: FocusEvent) {
+      const cur = stateRef.current.focusedId;
+      if (!cur) return;
+      const node = rowRefs.current.get(cur);
+      if (node && typeof node.contains === "function" && node.contains(event.target as Node | null)) return;
+      stateRef.current.focusedId = null;
+      setFocusedId(null);
+    }
+
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("focusin", onFocusIn);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("focusin", onFocusIn);
+    };
   }, [router, toast]);
 
   return rows.map((row) => {
