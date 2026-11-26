@@ -141,7 +141,9 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string) {
       }
       return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
         const current = await createDockerSandboxService(scoped).get(actor, sandboxId);
-        if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
+        const enrolledDuringReady = allowPending && snapshot.status === "starting" && current.status === "ready";
+        const expected = enrolledDuringReady ? { ...snapshot, status: "ready" } : snapshot;
+        if (JSON.stringify(current) !== JSON.stringify(expected)) deny();
         await assertClaim?.(scoped);
         const result = await work(scoped, authority, current, scope.epoch, scope.lifecycleGeneration);
         await assertClaim?.(scoped);

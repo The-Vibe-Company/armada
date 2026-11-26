@@ -12,7 +12,7 @@ import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
-import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { fixtureMachineId, pollMachineBootstrap, queueMachineCreate } from "./docker-create.fixture.ts";
@@ -88,7 +88,7 @@ async function fixture() {
   const job = await pollMachineBootstrap(hosts, host.hostToken, installationId);
   if (job?.operation !== "bootstrap") throw Error("missing bootstrap");
   await hosts.complete(host.hostToken, installationId, { requestId: job.requestId, outcome: "completed" });
-  const enrol = () => authority.enrol(job.bootstrap.enrolmentToken);
+  const enrol = (target: Sql = sql) => createRuntimeEnrolments(target, key).enrol(job.bootstrap.enrolmentToken);
   return { actor, admin, credentialId, sandbox, installationId, ...host, enrol };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -690,5 +690,67 @@ test.each(["admin", "pin", "credential", "owner", "issuer", "rejoin", "host", "s
     if (change === "stop") await queueMailboxStop(sql, key, f.actor, f.sandbox.id, randomUUID());
     await denied(service.ready(actor, f.sandbox.id, randomUUID()));
     await denied(service.prompt(actor, f.sandbox.id, { requestId: randomUUID(), text: "Never admitted" }));
+  },
+);
+
+function raceAfterSnapshot(onSnapshot: (tx: Sql) => Promise<void>) {
+  let triggered = false;
+  const racedSql: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          async query<T>(q: string, v?: unknown[]) {
+            const result = await tx.query<T>(q, v);
+            if (!triggered && q.includes("from public.sandboxes s join public.members m")) {
+              triggered = true;
+              await onSnapshot(tx);
+            }
+            return result;
+          },
+        }),
+      ),
+  };
+  return { service: createDockerRuntimeLifecycle(racedSql, key), triggered: () => triggered };
+}
+
+test("Docker readiness admits a starting-to-ready enrolment transition between snapshot and lock", async () => {
+  const f = await fixture();
+  const requestId = randomUUID();
+  let session: Awaited<ReturnType<Fixture["enrol"]>> | undefined;
+  const raced = raceAfterSnapshot(async (tx) => {
+    session = await f.enrol(scopedRuntimeSql(tx));
+  });
+  expect(await raced.service.ready(f.actor, f.sandbox.id, requestId)).toEqual({ state: "pending" });
+  expect(raced.triggered()).toBe(true);
+  if (!session) throw Error("missing enrolled session");
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  await complete(session, { ready: true, generation: session.epoch });
+  expect(await service.ready(f.actor, f.sandbox.id, requestId)).toEqual({ state: "ready", epoch: session.epoch });
+  expect(await readinessJournal(f.sandbox.id)).toEqual([
+    { from_status: "starting", to_status: "ready", actor: "runtime_enrolment", code: "runtime_enrolled" },
+  ]);
+});
+
+test.each(["expires_at", "running", "prompt"] as const)(
+  "snapshot stability still denies %s across the snapshot-to-lock window",
+  async (mutation) => {
+    const f = await fixture();
+    const raced = raceAfterSnapshot(async (tx) => {
+      await f.enrol(scopedRuntimeSql(tx));
+      if (mutation === "expires_at")
+        await tx.query("update public.sandboxes set expires_at=expires_at+interval '1 hour' where id=$1", [
+          f.sandbox.id,
+        ]);
+      if (mutation === "running")
+        await tx.query("update public.sandboxes set status='running' where id=$1", [f.sandbox.id]);
+    });
+    if (mutation === "prompt")
+      await denied(raced.service.prompt(f.actor, f.sandbox.id, { requestId: randomUUID(), text: "Must still deny" }));
+    else await denied(raced.service.ready(f.actor, f.sandbox.id, randomUUID()));
+    expect(raced.triggered()).toBe(true);
+    expect(
+      (await database().query("select 1 from public.runtime_commands where sandbox_id=$1", [f.sandbox.id])).rows,
+    ).toEqual([]);
   },
 );
