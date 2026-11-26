@@ -128,6 +128,7 @@ struct SandboxListView: View {
     @State private var newSandbox: NewSandboxModel?
     @State private var showingNewSandbox = false
     @State private var disclosure = StatusSectionDisclosure()
+    @State private var searchText = ""
     @State private var isWorkspaceVisible = false
     @State private var isListVisible = false
 
@@ -139,6 +140,7 @@ struct SandboxListView: View {
             .onAppear { isListVisible = true }
             .onDisappear { isListVisible = false }
             .navigationTitle("Sandboxes")
+            .searchable(text: $searchText, prompt: "Search sandboxes")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     AccountButton(showing: $showingAccount)
@@ -182,6 +184,7 @@ struct SandboxListView: View {
         }
         .onChange(of: app.organization?.id) { _, newOrgID in
             selection.updateOrganization(newOrgID)
+            searchText = ""
         }
         .onChange(of: selection.selectedID) { _, _ in
             selection.sync(items: model?.items ?? [], id: \.id, orgID: \.orgID)
@@ -282,7 +285,10 @@ struct SandboxListView: View {
     }
 
     private func list(_ model: SandboxListModel) -> some View {
-        List(selection: $selection.selectedID) {
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSearching = !trimmedSearch.isEmpty
+        let visibleItems = isSearching ? model.items.filter { $0.matchesSearch(trimmedSearch) } : model.items
+        return List(selection: $selection.selectedID) {
             if let refreshError = model.refreshError {
                 InlineBanner(text: refreshError, style: .warning)
                     .listRowInsets(EdgeInsets())
@@ -295,13 +301,19 @@ struct SandboxListView: View {
                     symbol: "shippingbox"
                 ))
                 .listRowBackground(Color.clear)
+            } else if visibleItems.isEmpty {
+                ContentUnavailableView.search(text: trimmedSearch)
+                    .listRowBackground(Color.clear)
+                if model.hasMore {
+                    loadMoreSearchSection(model, matchCount: 0)
+                }
             } else {
                 let sections = ListOrdering.sections(
-                    model.items, group: { model.group(for: $0) }, createdAt: \.createdAt, id: \.id
+                    visibleItems, group: { model.group(for: $0) }, createdAt: \.createdAt, id: \.id
                 )
                 let groups = sections.map(\.group)
                 ForEach(sections, id: \.group) { section in
-                    let collapsed = disclosure.isCollapsed(section.group, groups: groups)
+                    let collapsed = isSearching ? false : disclosure.isCollapsed(section.group, groups: groups)
                     Section {
                         if !collapsed {
                             ForEach(section.items) { sandbox in
@@ -312,35 +324,78 @@ struct SandboxListView: View {
                             }
                         }
                     } header: {
-                        StatusSectionHeader(
-                            group: section.group,
-                            count: section.items.count,
-                            collapsed: Binding(
-                                get: { collapsed },
-                                set: { disclosure.set(section.group, collapsed: $0) }
+                        if isSearching {
+                            HStack(spacing: 6) {
+                                Text(section.group.title)
+                                Text("\(section.items.count)")
+                                    .monospacedDigit()
+                                    .foregroundStyle(ArmadaTheme.textSecondary)
+                            }
+                        } else {
+                            StatusSectionHeader(
+                                group: section.group,
+                                count: section.items.count,
+                                collapsed: Binding(
+                                    get: { collapsed },
+                                    set: { disclosure.set(section.group, collapsed: $0) }
+                                )
                             )
-                        )
+                        }
                     }
                 }
-                Section {
-                    if model.hasMore {
-                        HStack {
-                            Spacer()
-                            ProgressView()
-                            Spacer()
+                if isSearching {
+                    loadMoreSearchSection(model, matchCount: visibleItems.count)
+                } else {
+                    Section {
+                        if model.hasMore {
+                            HStack {
+                                Spacer()
+                                ProgressView()
+                                Spacer()
+                            }
+                            // Keyed by the row count: a page that lands only in a collapsed group adds nothing visible,
+                            // so the row never leaves the screen and must ask again after each page.
+                            .task(id: model.items.count) { await model.loadMore() }
                         }
-                        // Keyed by the row count: a page that lands only in a collapsed group adds nothing visible,
-                        // so the row never leaves the screen and must ask again after each page.
-                        .task(id: model.items.count) { await model.loadMore() }
+                    } footer: {
+                        Text(model.total == 1 ? "1 sandbox" : "\(model.total) sandboxes")
                     }
-                } footer: {
-                    Text(model.total == 1 ? "1 sandbox" : "\(model.total) sandboxes")
                 }
             }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .refreshable { await model.load() }
+    }
+
+    @ViewBuilder
+    private func loadMoreSearchSection(_ model: SandboxListModel, matchCount: Int) -> some View {
+        Section {
+            if model.hasMore {
+                Button {
+                    Task { await model.loadMore() }
+                } label: {
+                    HStack {
+                        Spacer()
+                        if model.loadingMore {
+                            ProgressView()
+                        } else {
+                            Text("Load More Sandboxes")
+                        }
+                        Spacer()
+                    }
+                }
+                .disabled(model.loadingMore)
+            }
+        } footer: {
+            if model.hasMore {
+                Text(matchCount == 1
+                     ? "1 match in \(model.items.count) of \(model.total) sandboxes"
+                     : "\(matchCount) matches in \(model.items.count) of \(model.total) sandboxes")
+            } else {
+                Text(matchCount == 1 ? "1 matching sandbox" : "\(matchCount) matching sandboxes")
+            }
+        }
     }
 }
 
