@@ -26,8 +26,15 @@ and use Ctrl-C to stop both processes. The dashboard unit tests use
   collapse on narrow screens. On a sandbox, the logs are the main column and the facts sit beside them.
 - **Progressive disclosure.** Build forms, edit-and-rebuild and capacity caveats stay one click away; the
   default view shows what exists and what can be done with it.
+- **One-line concept + relationship subtitle.** Every top-level page renders a single-line `PageHeader`
+  `description` explaining what the resource is and how it relates to neighboring concepts (for example, how
+  templates combine snapshots, models, tools, and variables, or how routines launch a saved template). Never
+  suppress the subtitle on filtered or table views.
+- **Single naming authority.** Product copy across pages, dialogs, buttons, and empty states uses the
+  canonical terms in [`docs/glossary.md`](glossary.md) — no marketing copy, no synonyms, and no invented
+  labels.
 - **Every state says what to do next.** Empty lists name the action that fills them; errors say what failed
-  and where to fix it. No marketing copy, no invented labels.
+  and where to fix it.
 
 ## November 2026 redesign foundation (#2487)
 

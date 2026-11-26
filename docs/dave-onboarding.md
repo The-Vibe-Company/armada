@@ -17,7 +17,7 @@ This guide takes a new user from nothing to a coding agent running on Boat or Mo
 
 The sidebar groups match the task:
 
-- **Running**: **Sandboxes** and **Routines**.
+- **Running**: **Sandboxes**, **Routines**, and **Inbound triggers** (organization admins).
 - **Launch from**: **Templates** and **Snapshots**.
 - **What agents have**: **Models**, **Tools**, **Skills** and **Variables**.
 - **Setup**: **Machines**, **Organization** and **Your connections**.
@@ -26,12 +26,13 @@ Connect organization compute in **Machines** (cloud accounts or **Docker hosts**
 connect your personal GitHub account in **Your connections**. **Tools** is where you
 connect MCP servers; CLI launches take connection IDs.
 
-In **Snapshots**, choose **New** to open **New snapshot**, then **Build snapshot**
-to prepare a workspace. **Sandboxes → Launch a sandbox** and a snapshot’s **Launch**
+In **Snapshots**, choose **New snapshot**, then **Build snapshot** to prepare a
+workspace. In **Templates**, choose **New template** to save reusable launch
+settings. **Sandboxes → Launch a sandbox** and a snapshot’s **Launch**
 open the launch dialog. A template’s **Launch** opens **Launch <template name>**
-with its version’s choices fixed; enter the task there. Templates save reusable launch
-settings. Each published configuration is an immutable **template version**. Use
-`--revision` to select a version when inspecting or launching a template from the CLI.
+with its version’s choices fixed; enter the task there. Each published configuration
+is an immutable **template version**. Use `--revision` to select a version when
+inspecting or launching a template from the CLI.
 
 In **Routines**, choose **New routine** to schedule a task from a template.
 It keeps the template as it is at creation; later template versions do not update
@@ -334,7 +335,7 @@ claude mcp add --transport http armada https://armada-mcp-production.up.railway.
 
 ### Give an agent access
 
-Sign in personally and open **Settings → API keys**, or create a key in the CLI:
+Sign in personally and open **Your connections → Armada API keys**, or create a key in the CLI:
 
 ```sh
 armada api token/create '{"label":"coordinator","org":"my-team","expires":"90d"}'
@@ -346,7 +347,8 @@ Run `armada whoami --json` in that environment to verify the key's name and expi
 Avoid shell tracing and keep the key out of command arguments and logs.
 
 From your personal login, use `armada api token/list` to find the key ID and
-`armada api token/revoke '{"id":"TOKEN_UUID"}'` to revoke it. You can also revoke it in Settings.
+`armada api token/revoke '{"id":"TOKEN_UUID"}'` to revoke it. You can also revoke it in
+**Your connections → Armada API keys**.
 Revocation takes effect on the next request. The last-used timestamp updates at most once per minute.
 
 For **Claude Code**, edit the project's `.mcp.json` directly (merge this entry with any existing servers). Keep the variable reference literal in the file; Claude Code, not the shell, expands it:
