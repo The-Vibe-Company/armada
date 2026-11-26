@@ -202,9 +202,10 @@ test("HTTP connection control routes through mcp-control with standard envelopes
     expect(await route(new Request("https://armada.example/api/control/mcp/list", { method: "POST" }))).toBeNull();
     const metadata = await route(new Request("https://armada.example/.well-known/armada-mcp-client.json"));
     if (!metadata) throw Error("Metadata missing");
-    expect(((await metadata.json()) as { redirect_uris: string[] }).redirect_uris).toEqual([
-      "https://dashboard.example/auth/mcp/callback",
-    ]);
+    expect((await metadata.json()) as { client_id: string; redirect_uris: string[] }).toMatchObject({
+      client_id: "https://dashboard.example/.well-known/armada-mcp-client.json",
+      redirect_uris: ["https://dashboard.example/auth/mcp/callback"],
+    });
     expect(
       (
         await route(
@@ -653,9 +654,10 @@ test("actual MCP integration construction preserves explicitly configured develo
     const response = await integration.route(new Request("https://gateway.example/.well-known/armada-mcp-client.json"));
     expect(response?.status).toBe(200);
     if (!response) throw Error("Missing client metadata route");
-    expect(((await response.json()) as { redirect_uris: string[] }).redirect_uris).toEqual([
-      "http://localhost:3000/auth/mcp/callback",
-    ]);
+    expect((await response.json()) as { client_id: string; redirect_uris: string[] }).toMatchObject({
+      client_id: "http://localhost:3000/.well-known/armada-mcp-client.json",
+      redirect_uris: ["http://localhost:3000/auth/mcp/callback"],
+    });
     expect(() => endpoint("http://localhost:3000/upstream")).toThrow();
   } finally {
     await integration?.close();

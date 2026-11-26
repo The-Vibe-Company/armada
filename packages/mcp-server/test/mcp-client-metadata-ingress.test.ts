@@ -17,7 +17,8 @@ test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fi
     const authStore = createSqlAuthStore(db);
     const { token } = await createServiceToken(authStore, { userId: user, now: new Date() });
     const host = "armada-mcp-production.up.railway.app";
-    const clientId = `https://${host}/.well-known/armada-mcp-client.json`;
+    const metadataEndpoint = `https://${host}/.well-known/armada-mcp-client.json`;
+    const clientId = "https://dashboard.example/.well-known/armada-mcp-client.json";
     const callback = "https://dashboard.example/auth/mcp/callback";
     const network: string[] = [];
     integration = createMcpHttpIntegration({
@@ -50,7 +51,7 @@ test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fi
       }) as typeof fetch,
     });
     const route = integration.route;
-    const internal = clientId.replace("https:", "http:");
+    const internal = metadataEndpoint.replace("https:", "http:");
     const response = await route(new Request(internal, { headers: { host } }));
     expect(response?.status).toBe(200);
     expect(response?.headers.get("content-type")).toContain("application/json");
@@ -68,7 +69,8 @@ test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fi
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     });
-    expect((await route(new Request(clientId)))?.status).toBe(200);
+    expect(new URL(document.client_id).host).toBe(new URL(document.redirect_uris[0]!).host);
+    expect((await route(new Request(metadataEndpoint)))?.status).toBe(200);
     // Forwarding headers never choose the client origin or callback, even on a valid ingress.
     const spoofed = await route(
       new Request(internal, {
@@ -91,9 +93,12 @@ test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fi
       new Request(internal.replace(host, "attacker.example"), {
         headers: { host, "x-forwarded-host": host, "x-forwarded-proto": "https" },
       }),
-      new Request(clientId.replace(host, "attacker.example"), { headers: { host } }),
-      new Request(clientId, { headers: { host: "attacker.example" } }),
+      new Request(metadataEndpoint.replace(host, "attacker.example"), { headers: { host } }),
+      new Request(metadataEndpoint, { headers: { host: "attacker.example" } }),
+      new Request(clientId),
+      new Request(`https://user:pass@${host}/.well-known/armada-mcp-client.json`),
       new Request(`${internal}?redirect_uri=https://attacker.example`, { headers: { host } }),
+      new Request(`${internal}?`, { headers: { host } }),
       new Request(`${internal}#fragment`, { headers: { host } }),
       ...["POST", "HEAD", "PUT"].map((method) => new Request(internal, { method, headers: { host } })),
     ])
@@ -121,8 +126,11 @@ test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fi
     expect(connect?.status).toBe(200);
     const result = (await connect!.json()) as { authorizationUrl: string };
     const authorize = new URL(result.authorizationUrl);
-    expect(authorize.searchParams.get("client_id")).toBe(document.client_id);
-    expect(authorize.searchParams.get("redirect_uri")).toBe(document.redirect_uris[0]!);
+    expect(authorize.searchParams.get("client_id")).toBe(clientId);
+    expect(authorize.searchParams.get("redirect_uri")).toBe(callback);
+    expect(new URL(authorize.searchParams.get("client_id")!).host).toBe(
+      new URL(authorize.searchParams.get("redirect_uri")!).host,
+    );
     expect(network.every((method) => method === "GET")).toBe(true);
     expect((await db.query("select status from mcp_grants where connection_id=$1", [connection.id])).rows).toEqual([
       { status: "not_connected" },
