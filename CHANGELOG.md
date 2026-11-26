@@ -1,5 +1,37 @@
 # Changelog
 
+## [14.7.0](https://github.com/The-Vibe-Company/armada/compare/v14.6.0...v14.7.0) (2026-11-26)
+
+
+### Features
+
+* **dashboard:** redesign sandboxes explorer filter bar, scope/state separation and live sync ([#4378](https://github.com/The-Vibe-Company/armada/issues/4378)) ([3cfb224](https://github.com/The-Vibe-Company/armada/commit/3cfb22498106f7eb08a0bc643860c76d83f1a03f))
+* **dashboard:** redesign sandboxes list rows, inline signals, quick actions and keyboard nav ([#4388](https://github.com/The-Vibe-Company/armada/issues/4388)) ([c5c30c6](https://github.com/The-Vibe-Company/armada/commit/c5c30c64cb142de03478c4940fa5db3c64917fe3))
+
+
+### Bug Fixes
+
+* **auth:** unblock Chromium MCP OAuth redirects, login providers, and refresh resource ([#4380](https://github.com/The-Vibe-Company/armada/issues/4380)) ([a9f6960](https://github.com/The-Vibe-Company/armada/commit/a9f6960d55939011e6d0c448098f0feb9848b630))
+* **cli:** fix machine-mode errors, api error passthrough, rm guard, and new flag validation ([#4379](https://github.com/The-Vibe-Company/armada/issues/4379)) ([0376831](https://github.com/The-Vibe-Company/armada/commit/0376831626b6c878b3f486ab6e747c4314754d1c))
+* **cli:** polish --help, automaticJson, --org resolution, table alignment, and relay UX ([#4390](https://github.com/The-Vibe-Company/armada/issues/4390)) ([74ad848](https://github.com/The-Vibe-Company/armada/commit/74ad84892a70da4e3469cd5852470f05dd6893b9))
+* **core:** allow dashboard proxy for sandbox relay-ticket mint ([#4375](https://github.com/The-Vibe-Company/armada/issues/4375)) ([4705349](https://github.com/The-Vibe-Company/armada/commit/47053493cf7a76dbaadb2fb2753ffabc965a6016))
+* **dashboard:** proxy relay-ticket, fix preview popup blocker, deduplicate list-turns, and add error boundaries ([#4384](https://github.com/The-Vibe-Company/armada/issues/4384)) ([a140716](https://github.com/The-Vibe-Company/armada/commit/a140716779fdfe57009ccb6a7bea8ab3adf0c06f))
+* **dashboard:** restore page subtitles, guide first-run onboarding, and unify Variables/Secrets/MCP copy ([#4393](https://github.com/The-Vibe-Company/armada/issues/4393)) ([6c186cb](https://github.com/The-Vibe-Company/armada/commit/6c186cb10ba24555c8dbcb204a4dd901646fd402))
+* **mcp-gateway:** support POST fallback on 405 discovery and optional OAuth expires_in ([#4387](https://github.com/The-Vibe-Company/armada/issues/4387)) ([8ac46b9](https://github.com/The-Vibe-Company/armada/commit/8ac46b9e77517beba440b4646b721b0af60f5f93))
+* **mcp-server:** add relay client keepalive, fix preview bridge leak, and fix Langfuse tokens and diagnostics ([#4381](https://github.com/The-Vibe-Company/armada/issues/4381)) ([09e08ca](https://github.com/The-Vibe-Company/armada/commit/09e08cac9c73ff2c1b786f4da5aa7c120483e6cb))
+* **mcp-server:** remove shadowed /api/v1/mcp handler, fix invalidation poller, and add /mcp CORS ([#4391](https://github.com/The-Vibe-Company/armada/issues/4391)) ([e1c2866](https://github.com/The-Vibe-Company/armada/commit/e1c2866b6af56e21cf44aafde1c06f8fa0642920))
+* **sdk:** export missing types, fix wait/exec timeout budget, wrap Zod errors, and set JSON content-type ([#4383](https://github.com/The-Vibe-Company/armada/issues/4383)) ([a41567a](https://github.com/The-Vibe-Company/armada/commit/a41567ad66475ac824ce4d73004a3e531eaa2474))
+
+
+### Performance Improvements
+
+* **agent-runtime:** eliminate harness re-hashing, Codex per-token I/O, and fix ACP/PTY bugs ([#4382](https://github.com/The-Vibe-Company/armada/issues/4382)) ([89fd9d5](https://github.com/The-Vibe-Company/armada/commit/89fd9d5e80ffcec026c45ca3a5bf2c2121fa8eaf))
+* **core:** skip redundant docker container updates/inspects and non-blocking bootstrap progress ([#4385](https://github.com/The-Vibe-Company/armada/issues/4385)) ([3c4f52d](https://github.com/The-Vibe-Company/armada/commit/3c4f52dcac4673b8fa079a4da9a2b4ebf395d73b))
+* **docker-host:** avoid double runtime read and warm shared artifacts before bootstrap ([#4389](https://github.com/The-Vibe-Company/armada/issues/4389)) ([3952594](https://github.com/The-Vibe-Company/armada/commit/39525943dfe1fdbbe5d6b429614ab0783a0728fc))
+* **mcp-server:** cut idle DB polling in runtime-sockets, commands, SSE, webhooks, and idle worker ([#4392](https://github.com/The-Vibe-Company/armada/issues/4392)) ([72ac4b4](https://github.com/The-Vibe-Company/armada/commit/72ac4b46123f9cff3be02ff2aedd88f515b9a4ab))
+* **mcp-server:** eliminate Modal resume flock storms, enrolment dead air, and Docker GitHub polling ([#4386](https://github.com/The-Vibe-Company/armada/issues/4386)) ([ca8d10d](https://github.com/The-Vibe-Company/armada/commit/ca8d10d76f6a6c36bad5c11ca21a0b4bd8be21cd))
+* **provider-modal:** mount shared artifact volume and reuse app and sandbox handles ([#4376](https://github.com/The-Vibe-Company/armada/issues/4376)) ([365211e](https://github.com/The-Vibe-Company/armada/commit/365211ed4370db77ca998953a976219a5f05fb11))
+
 ## [14.6.0](https://github.com/The-Vibe-Company/armada/compare/v14.5.0...v14.6.0) (2026-11-26)
 
 
