@@ -226,6 +226,12 @@ async function forwardRequest(
   }
   const sandboxDeletion =
     method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
+  const sandboxRelayTicket =
+    method === "POST" &&
+    path.length === 3 &&
+    path[0] === "sandboxes" &&
+    SANDBOX_ID.test(path[1] ?? "") &&
+    path[2] === "relay-ticket";
   const publicMethods: readonly string[] = Object.hasOwn(PUBLIC_CONTROL_ROUTES, relative)
     ? (PUBLIC_CONTROL_ROUTES[relative] ?? [])
     : [];
@@ -236,6 +242,7 @@ async function forwardRequest(
     !eventStream &&
     !sandboxOutputs &&
     !sandboxDeletion &&
+    !sandboxRelayTicket &&
     !antigravityLogin &&
     !isPublic &&
     !(method === "POST" && PRIVATE_POST_PATHS.has(relative))
