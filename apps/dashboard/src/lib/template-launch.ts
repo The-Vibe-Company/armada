@@ -63,7 +63,7 @@ export function launchTarget(
     definition,
     ...(lookups.accounts ? { accounts: lookups.accounts } : {}),
     goldenName: onHost
-      ? `${lookups.snapshots?.find((row) => row.id === definition.snapshotId && row.hostId === definition.hostId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official image")} · ${host?.name ?? DOCKER_HOST_LABEL}`
+      ? `${lookups.snapshots?.find((row) => row.id === definition.snapshotId && row.hostId === definition.hostId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Base Armada image")} · ${host?.name ?? DOCKER_HOST_LABEL}`
       : golden
         ? `${golden.name} · ${SANDBOX_PLACEMENT_LABELS[definition.provider]} cloud`
         : null,
