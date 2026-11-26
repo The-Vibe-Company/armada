@@ -126,15 +126,8 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
     visibleOrgs = account.orgs;
     org ??= visibleOrgs.length === 1 ? visibleOrgs[0]?.orgId : undefined;
     add("Session", "ok", `Signed in as ${account.userId} (${account.authentication})`);
-    add(
-      "Server",
-      !account.version ? "unknown" : account.version === VERSION ? "ok" : "warning",
-      !account.version
-        ? "Server version unavailable. Ask the server operator to update Armada."
-        : account.version === VERSION
-          ? `${origin} · ${account.version}`
-          : `${origin} · CLI ${VERSION}; server ${account.version}. Update CLI: npm i -g @the-vibe-company/armada (if CLI is newer, ask the server operator to update).`,
-    );
+    const [serverStatus, serverDetail] = serverVersionCheck(origin, account.version);
+    add("Server", serverStatus, serverDetail);
   } catch {
     add(
       "Session",
@@ -262,4 +255,50 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
         ),
   );
   return rows.some((r) => r.status === "failed") ? 1 : 0;
+}
+
+const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+
+export function compareSemver(a: string, b: string) {
+  const l = SEMVER.exec(a.trim()),
+    r = SEMVER.exec(b.trim());
+  if (!l || !r) return null;
+  for (const i of [1, 2, 3] as const) {
+    const diff = Number(l[i]) - Number(r[i]);
+    if (diff !== 0) return diff > 0 ? 1 : -1;
+  }
+  if (!l[4] && !r[4]) return 0;
+  if (!l[4] || !r[4]) return l[4] ? -1 : 1;
+  const lp = l[4].split("."),
+    rp = r[4].split(".");
+  for (let i = 0; i < Math.max(lp.length, rp.length); i++) {
+    const aPart = lp[i],
+      bPart = rp[i];
+    if (aPart === bPart) continue;
+    if (aPart === undefined || bPart === undefined) return aPart === undefined ? -1 : 1;
+    const aNum = /^\d+$/.test(aPart),
+      bNum = /^\d+$/.test(bPart);
+    if (aNum && bNum) return Number(aPart) > Number(bPart) ? 1 : -1;
+    if (aNum !== bNum) return aNum ? -1 : 1;
+    return aPart > bPart ? 1 : -1;
+  }
+  return 0;
+}
+
+function serverVersionCheck(origin: string, serverVersion: string | undefined) {
+  const trimmed = serverVersion?.trim();
+  if (!trimmed) return ["unknown", "Server version unavailable. Ask the server operator to update Armada."] as const;
+  const compared = trimmed === VERSION ? 0 : compareSemver(VERSION, trimmed);
+  if (compared === 0) return ["ok", `${origin} · ${trimmed}`] as const;
+  if (compared !== null && compared > 0)
+    return [
+      "info",
+      `${origin} · CLI ${VERSION} is ahead of server ${trimmed}. Ask the server operator to update Armada.`,
+    ] as const;
+  if (compared !== null && compared < 0)
+    return [
+      "warning",
+      `${origin} · CLI ${VERSION}; server ${trimmed}. Update CLI: npm i -g @the-vibe-company/armada@${trimmed}`,
+    ] as const;
+  return ["warning", `${origin} · CLI ${VERSION}; server ${trimmed}.`] as const;
 }

@@ -76,3 +76,17 @@ test("prompt --steer rejects request IDs before dispatch", async () => {
   expect(result.calls).toHaveLength(0);
   expect(result.error).toContain("Unsupported prompt option '--request-id'");
 });
+
+test("prompt accepts text directly without -- when a current sandbox exists", async () => {
+  const singleArg = await prompt(["Fix the test"]);
+  expect(singleArg.exit).toBe(0);
+  expect(singleArg.calls[0]?.body).toMatchObject({ id, prompt: "Fix the test" });
+
+  const multiWord = await prompt(["Fix", "the", "test"]);
+  expect(multiWord.exit).toBe(0);
+  expect(multiWord.calls[0]?.body).toMatchObject({ id, prompt: "Fix the test" });
+
+  const bareUuid = await prompt([id]);
+  expect(bareUuid.exit).toBe(2);
+  expect(bareUuid.calls).toHaveLength(0);
+});

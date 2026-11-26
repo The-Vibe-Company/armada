@@ -14,6 +14,7 @@ import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import {
   type CurrentSandboxFile,
+  isUuidPrefix,
   readCurrentSandbox,
   resolveSandboxId,
   resolveSandboxReference,
@@ -53,7 +54,7 @@ export async function operation(
         ? ["--status", "--ref", "--harness", "--golden", "--owner", "--page", "--limit"]
         : [],
     command === "ls"
-      ? ["--page-info"]
+      ? ["--page-info", "--wide", "--active"]
       : command === "rm"
         ? ["--yes"]
         : command === "info"
@@ -70,7 +71,19 @@ export async function operation(
     command === "report" && args.positionals.length === 1 && ["ready", "blocked"].includes(args.positionals[0] ?? "");
   const [id, ...rest] = implicitWithPayload || implicitReport ? [undefined, ...args.positionals] : args.positionals;
   const options: Record<string, readonly string[]> = {
-    ls: ["--status", "--ref", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
+    ls: [
+      "--status",
+      "--active",
+      "--wide",
+      "--ref",
+      "--agent",
+      "--harness",
+      "--golden",
+      "--owner",
+      "--page",
+      "--limit",
+      "--page-info",
+    ],
     info: ["--live", "--prompt-id", "--setup", "--wait", "--timeout"],
     exec: ["--cwd", "--timeout"],
     stop: ["--turn", "--after", "--timeout"],
@@ -117,8 +130,9 @@ export async function operation(
         "invalid_config",
         "Deletion permanently removes the disk and recovery archives. Pass --yes to confirm.",
       );
-    uuid(id, "sandbox id");
-    const result = await (await client()).deleteSandbox<{ id: string; status: "deleted" }>(id.toLowerCase(), org);
+    if (!isUuidPrefix(id)) throw new GoldenError("invalid_config", "sandbox id must be a UUID or UUID prefix.");
+    const resolved = await resolveSandboxReference(id, undefined, org, list);
+    const result = await (await client()).deleteSandbox<{ id: string; status: "deleted" }>(resolved, org);
     auth.out(flag(args, "--json") ? `${JSON.stringify(result)}\n` : `Deleted sandbox ${result.id}.\n`);
     return 0;
   }
@@ -244,7 +258,7 @@ export async function operation(
     if (!Array.isArray(page?.sandboxes)) throw new AuthError("Armada returned an invalid sandbox page.", "unavailable");
     if (flag(args, "--json") || flag(args, "--page-info"))
       auth.out(`${JSON.stringify(flag(args, "--page-info") ? result : { sandboxes: page.sandboxes }, null, 2)}\n`);
-    else auth.out(sandboxListText(page.sandboxes, auth.now()));
+    else auth.out(sandboxListText(page.sandboxes, auth.now(), { wide: flag(args, "--wide") }));
   } else {
     if (
       command === "info" &&
@@ -275,8 +289,12 @@ function sandboxListFilters(args: ReturnType<typeof parseArgs>): Record<string, 
     if (!parsed.success) throw new GoldenError("invalid_config", `--ref: ${parsed.error.issues[0]?.message}`);
     body.externalRef = parsed.data;
   }
+  const active = flag(args, "--active");
   const status = single(args, "--status");
-  if (status !== undefined) {
+  if (active && status !== undefined) throw new GoldenError("invalid_config", "Use --active or --status, not both.");
+  if (active) {
+    body.status = ["starting", "ready", "running"];
+  } else if (status !== undefined) {
     if (!["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"].includes(status))
       throw new GoldenError("invalid_config", "Unknown sandbox status.");
     body.status = [status];

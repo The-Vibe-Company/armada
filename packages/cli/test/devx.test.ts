@@ -54,7 +54,7 @@ test.each([VERSION, "0.0.1", null])(
       "/api/v1/account/status": {
         userId: "user",
         authentication: "service",
-        version: "0.0.1",
+        version: "99.0.0",
         orgs: [{ orgId: "org", role: "member" }],
       },
       "/api/v1/docker/hosts/list": {
@@ -88,7 +88,7 @@ test.each([VERSION, "0.0.1", null])(
     expect(f.output()).toMatch(/CHECK\s+STATUS\s+DETAIL \/ NEXT STEP/);
     expect(f.output()).toMatch(/Session\s+ok\s+Signed in as user \(service\)/);
     expect(f.output()).toMatch(/Organization\s+ok\s+org/);
-    expect(f.output()).toContain("npm i -g @the-vibe-company/armada");
+    expect(f.output()).toContain("npm i -g @the-vibe-company/armada@99.0.0");
     expect(f.output()).toContain(`online; daemon ${hostVersion ?? "unknown"}`);
     expect(f.output()).toMatch(
       new RegExp(`Host desk\\s+${hostVersion === VERSION ? "ok" : hostVersion ? "warning" : "unknown"}\\s+`),
@@ -216,16 +216,46 @@ test("doctor is an unknown command and performs no API calls", async () => {
 });
 
 test.each(["bash", "zsh", "fish"])(
-  "completion %s emits a sourceable shell registration without API access",
+  "completion %s emits a command- and subcommand-scoped shell registration without API access",
   (shell) => {
     const f = fixture({});
     expect(completion([shell], f.auth)).toBe(0);
     expect(f.output()).toContain("armada");
     expect(f.output()).toMatch(/\bnew\b/);
     expect(f.output()).toContain("keep-after-merge");
+    expect(f.output()).not.toContain("complete -W ");
+    if (shell === "fish") {
+      expect(f.output()).toContain("__fish_seen_subcommand_from org");
+      expect(f.output()).toContain("-a 'list use setup connect'");
+      expect(f.output()).toContain("-r -l 'profile'");
+      expect(f.output()).toMatch(
+        /__fish_seen_subcommand_from ls; and not __fish_seen_subcommand_from [^']*host[^']*' -l 'wide'/,
+      );
+    } else {
+      expect(f.output()).toContain('"org:use")');
+      expect(f.output()).toContain('"ls:"*)');
+      expect(f.output()).not.toContain("--short");
+    }
     expect(f.paths).toEqual([]);
   },
 );
+
+test.each([
+  [VERSION, "ok", ""],
+  ["0.0.1", "info", "is ahead of server 0.0.1"],
+  ["99.0.0", "warning", "npm i -g @the-vibe-company/armada@99.0.0"],
+] as const)("info --setup compares semver for server %s", async (serverVersion, expectedStatus, expectedDetail) => {
+  const f = fixture({
+    "/api/v1/account/status": { userId: "user", authentication: "service", version: serverVersion, orgs: [] },
+    "/api/v1/github/status": { connection: { status: "not_connected", login: null } },
+    "/api/v1/creds/list": { user: [{ id: "model", kind: "openai" }], orgs: [] },
+  });
+  expect(await f.run(["info", "--setup", "--json"])).toBe(0);
+  const server = JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "Server");
+  expect(server.status).toBe(expectedStatus);
+  if (expectedDetail) expect(server.detail).toContain(expectedDetail);
+  if (expectedStatus === "info") expect(server.detail).not.toContain("npm i -g");
+});
 
 test("guided launch fills missing choices from visible API catalogs and persists nonsecret selections", async () => {
   const org = "11111111-1111-4111-8111-111111111111";

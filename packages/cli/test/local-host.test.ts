@@ -307,3 +307,21 @@ test("unknown existing origin refuses before reading or exchanging the token", a
   expect(m.requests).toEqual([]);
   expect(result.err).not.toContain("run armada info --setup");
 });
+
+test("host install surfaces safe preflight stderr lines while redacting tokens and secrets", async () => {
+  const m = machine();
+  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signaturevalue123";
+  const basic = "dXNlcjpwYXNz";
+  m.native.execute = async () => ({
+    code: 1,
+    stdout: "",
+    stderr: `Docker access required: configure rootless Docker first.\nAuthorization: Bearer ${jwt}\nAuthorization: Basic ${basic}\n\x1b[31m{"secret":"${token}"}\x1b[0m\n  at main (/src/main.ts:1:1)\n`,
+  });
+  const result = await m.capture();
+  expect(result.code).toBe(1);
+  expect(result.err).toContain("Docker access required: configure rootless Docker first.");
+  expect(result.err).not.toContain(token);
+  expect(result.err).not.toContain(jwt);
+  expect(result.err).not.toContain(basic);
+  expect(result.err).not.toContain("at main");
+});

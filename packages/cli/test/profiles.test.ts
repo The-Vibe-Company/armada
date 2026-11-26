@@ -128,7 +128,9 @@ test("a malformed profile session can be cleared or replaced through explicit-se
     const calls: string[] = [];
     auth.fetch = async (url) => {
       calls.push(String(url));
-      return String(url).endsWith("/start") ? loginStarted() : loginAuthorized();
+      if (String(url).endsWith("/start")) return loginStarted();
+      if (String(url).endsWith("/org/list")) return Response.json({ orgs: [] });
+      return loginAuthorized();
     };
     auth.open = () => {};
     auth.sleep = async () => {};
@@ -136,6 +138,7 @@ test("a malformed profile session can be cleared or replaced through explicit-se
     expect(calls).toEqual([
       "https://stage.example/api/v1/auth/device/start",
       "https://stage.example/api/v1/auth/device/poll",
+      "https://stage.example/api/v1/org/list",
     ]);
     expect((await auth.session.read())?.armadaUrl).toBe("https://stage.example");
     expect(await run(["logout"], io, { auth })).toBe(0);

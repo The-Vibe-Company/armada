@@ -5,20 +5,21 @@ export default sandboxOperation({
   name: "ls",
   summary: "List visible sandboxes",
   usage: {
-    sandboxes: `  armada ls [--status STATUS] [--ref REF] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me] [--page N] [--limit 1..200] [--org ORG] [--json] [--page-info]
+    sandboxes: `  armada ls [--status STATUS | --active] [--ref REF] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me] [--page N] [--limit 1..200] [--wide] [--org ORG] [--json] [--page-info]
                                            List visible sandboxes (default page size 25)`,
   },
-  help: `Usage: armada ls [--status <status>] [--ref REF] [--agent <harness> | --harness <harness>]
-  [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--org UUID] [--json] [--page-info]
+  help: `Usage: armada ls [--status <status> | --active] [--ref REF] [--agent <harness> | --harness <harness>]
+  [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--wide] [--org UUID] [--json] [--page-info]
 List visible sandboxes after Armada login and server authorization.
 Status: starting, ready, running, stopping, stopped, failed or deleted.
+--active filters to starting, ready and running sandboxes.
 Deleted sandboxes are excluded by default; request --status deleted to include them.
 --agent and --harness are aliases; use only one (${HARNESSES.join(" or ")}).
 --ref matches the external reference supplied at launch.
 --golden filters by snapshot UUID. --owner accepts a user UUID or me.
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
-Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
-page metadata and exact totals as JSON even without --json.
+Human output is a compact table; pass --wide for all columns. --json returns {sandboxes:[...]};
+--page-info returns full page metadata and exact totals as JSON even without --json.
 Use --org to override a saved selection. Reuse returned IDs with info, events, or prompt.
 Example: armada ls --owner me --page 1 --limit 25 --json
 Example: armada ls --org ORG_UUID --page 2 --page-info

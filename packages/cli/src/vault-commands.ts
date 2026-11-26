@@ -17,13 +17,13 @@ import {
 import { antigravityLoginOperations, antigravityLoginPath, controlRouteKey, orgProvider } from "@armada/core/contract";
 import { ArmadaApiError } from "./api-responses.ts";
 import { acceptedOptions, flag, parseArgs, single } from "./args.ts";
-import type { AuthIo } from "./auth-commands.ts";
+import { type AuthIo, resolveOrgReference } from "./auth-commands.ts";
 import { authorizationUrl } from "./connection-authorization.ts";
 import { control } from "./control.ts";
 import { validateNativeCodexAuth } from "./native-login-protocol.ts";
 import { nativeCodexLogin } from "./native-model-login.ts";
 import type { Deps } from "./run.ts";
-import { createSdkCommandClient } from "./sdk-session.ts";
+import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 import { promptSecret } from "./secret-input.ts";
 
 export interface VaultIo {
@@ -71,6 +71,29 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
         flag(args, "--json")
           ? `${JSON.stringify(status)}\n`
           : `${status.org.name}: ${status.ready ? "ready" : "provider connection required"}\n${status.providers.map((p) => `${p.provider}: ${p.configured ? "configured" : "not configured"}`).join("\n")}\n`,
+      );
+      return 0;
+    }
+    case "use": {
+      const args = parseArgs(rest);
+      acceptedOptions(args, "org use", ["--json"]);
+      const ref = one(args.positionals, "armada org use <NAME|UUID|none> [--json]").trim();
+      if (!ref) throw usage("Give armada org use an organization name, UUID or none.");
+      const preferences = io.auth.preferences;
+      if (!preferences) throw new AuthError("Organization preferences are not available.", "usage");
+      const origin = await resolveArmadaOrigin(io.auth);
+      if (ref === "none") {
+        await preferences.write(origin, undefined);
+        io.auth.out(flag(args, "--json") ? `${JSON.stringify({ org: null })}\n` : "Cleared default organization.\n");
+        return 0;
+      }
+      const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});
+      const selected = resolveOrgReference(orgs, ref);
+      await preferences.write(origin, selected.id);
+      io.auth.out(
+        flag(args, "--json")
+          ? `${JSON.stringify({ org: selected })}\n`
+          : `Default organization set to ${selected.name} (${selected.id}).\n`,
       );
       return 0;
     }

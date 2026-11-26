@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentSandboxFile } from "../src/current-sandbox.ts";
@@ -176,4 +176,40 @@ test.each(
     throw new Error("unexpected fetch");
   }, first);
   expect((await cli.run(["info", ...options])).exit).toBe(2);
+});
+
+test("currentSandboxFile walks parent directories up to git root or home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-walk-"));
+  try {
+    const repo = join(root, "repo");
+    const nested = join(repo, "apps", "dashboard");
+    await mkdir(join(repo, ".git"), { recursive: true });
+    await mkdir(join(repo, ".armada"), { recursive: true });
+    await mkdir(nested, { recursive: true });
+    await writeFile(join(repo, ".armada", "sandbox"), `${first}\n`);
+    expect((await currentSandboxFile(nested, root).read())?.trim()).toBe(first);
+
+    const otherRepo = join(root, "other");
+    const otherSub = join(otherRepo, "sub");
+    await mkdir(join(root, ".armada"), { recursive: true });
+    await writeFile(join(root, ".armada", "sandbox"), `${second}\n`);
+    await mkdir(join(otherRepo, ".git"), { recursive: true });
+    await mkdir(otherSub, { recursive: true });
+    expect(await currentSandboxFile(otherSub, root).read()).toBeUndefined();
+
+    const fakeHome = join(root, "home-dir");
+    const homeSub = join(fakeHome, "work");
+    await mkdir(homeSub, { recursive: true });
+    expect(await currentSandboxFile(homeSub, fakeHome).read()).toBeUndefined();
+
+    const shared = join(root, "shared");
+    const sharedSub = join(shared, "work");
+    await mkdir(join(shared, ".armada"), { recursive: true });
+    await writeFile(join(shared, ".armada", "sandbox"), `${second}\n`);
+    await mkdir(sharedSub, { recursive: true });
+    await chmod(shared, 0o777);
+    expect(await currentSandboxFile(sharedSub, "/nonexistent-home").read()).toBeUndefined();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

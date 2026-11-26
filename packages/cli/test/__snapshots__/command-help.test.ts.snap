@@ -22,7 +22,7 @@ See command --help for supported JSON output; keep captured values/tokens out of
 Quick start / common examples:
   armada login
   armada org list
-  armada login --org my-team
+  armada org use my-team
   armada info --setup
   armada host add --name my-workstation
   armada new
@@ -40,7 +40,7 @@ Sandboxes:
                                            Fork a snapshot into a sandbox (see new --help)
   armada new [prompt] --provider docker [--host UUID|NAME | --golden UUID] --agent claude|codex|opencode|antigravity [--credential-id UUID] [--credential-version N] [--repo owner/repo[@branch]] [--variable KEY:UUID:V] [--secret KEY:UUID:V] [--idempotency-key KEY] [--ttl 4h] [--org ORG] [--json]
                                            Launch on a registered Docker host (see new --help)
-  armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode|antigravity] [--golden UUID] [--owner UUID|me] [--page N] [--limit 1..200] [--org ORG] [--json] [--page-info]
+  armada ls [--status STATUS | --active] [--ref REF] [--agent|--harness claude|codex|opencode|antigravity] [--golden UUID] [--owner UUID|me] [--page N] [--limit 1..200] [--wide] [--org ORG] [--json] [--page-info]
                                            List visible sandboxes (default page size 25)
   armada info [sandbox-id] [--live | --wait [--timeout S]] [--org ORG] [--json]
                                            Inspect sandbox state, probe provider, or wait for activity
@@ -51,7 +51,7 @@ Sandboxes:
                                            Stop the sandbox machine or interrupt its current turn
   armada report [sandbox-id] ready|blocked --prompt-id ID [options]
                                            Report an explicit outcome for the latest finished turn
-  armada prompt [--steer] <sandbox-id> <text>
+  armada prompt [--steer] [sandbox-id] <text>
                                            Start a turn or redirect a running turn
   armada bind-credential <sandbox-id> --credential-id UUID [--org ORG] [--json]
                                            Recover a legacy Modal credential binding (owner-only)
@@ -86,6 +86,7 @@ Hosts & Accounts:
   armada account ls|add|login|rm github    Manage GitHub connection and installations
   armada account status|logout             Show server account status or revoke login session
   armada org list                          List your organizations, roles and IDs
+  armada org use <NAME|UUID|none> [--json] Set or clear your default organization
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
                                            Connect an org provider via stdin or private file
@@ -193,17 +194,18 @@ Piped output and --json emit one JSON object per event.
 `;
 
 exports[`armada ls help preserves its output 1`] = `
-"Usage: armada ls [--status <status>] [--ref REF] [--agent <harness> | --harness <harness>]
-  [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--org UUID] [--json] [--page-info]
+"Usage: armada ls [--status <status> | --active] [--ref REF] [--agent <harness> | --harness <harness>]
+  [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--wide] [--org UUID] [--json] [--page-info]
 List visible sandboxes after Armada login and server authorization.
 Status: starting, ready, running, stopping, stopped, failed or deleted.
+--active filters to starting, ready and running sandboxes.
 Deleted sandboxes are excluded by default; request --status deleted to include them.
 --agent and --harness are aliases; use only one (claude or codex or opencode or antigravity).
 --ref matches the external reference supplied at launch.
 --golden filters by snapshot UUID. --owner accepts a user UUID or me.
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
-Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
-page metadata and exact totals as JSON even without --json.
+Human output is a compact table; pass --wide for all columns. --json returns {sandboxes:[...]};
+--page-info returns full page metadata and exact totals as JSON even without --json.
 Use --org to override a saved selection. Reuse returned IDs with info, events, or prompt.
 Example: armada ls --owner me --page 1 --limit 25 --json
 Example: armada ls --org ORG_UUID --page 2 --page-info
@@ -215,7 +217,7 @@ exports[`armada rm help preserves its output 1`] = `
 Permanently delete a stopped sandbox after Armada login and server authorization.
 Warning: deletion removes the disk AND recovery archives. --yes is required confirmation.
 This is not stop. Inspect status and preserve needed work before deleting.
-Use a sandbox UUID from armada ls --json; names are not accepted.
+Use a sandbox UUID or unique prefix from armada ls; names are not accepted.
 Example: armada rm SANDBOX_UUID --yes --org ORG_UUID --json
 "
 `;
@@ -269,7 +271,7 @@ exports[`armada prompt help preserves its output 1`] = `
 A new prompt automatically resumes a retained stopped sandbox. Use --steer to redirect a running turn.
 Steering can join a turn natively or interrupt and restart the same conversation.
 Check the receipt's delivery field to see which happened.
-Omit the ID and put the text after -- to use the current sandbox.
+Omit the ID when ARMADA_SANDBOX or .armada/sandbox is set; use -- if text starts with an option or UUID prefix.
 New turns accept --request-id UUID, --model ID and --reasoning-effort LEVEL.
 Runtime model and effort remain launch-pinned. Full-account prompts can queue FIFO before execution.
 For uncertain runtime delivery, reuse the request ID with identical input.

@@ -135,12 +135,65 @@ test("a failed login organization write preserves the previous identity", async 
   expect(h.output().err).toContain("Could not save organization preferences.");
 });
 
-test.each(["current", "use"])("org %s is rejected before an API request", async (verb) => {
+test("org current is rejected before an API request", async () => {
   const h = harness(async () => {
     throw new Error("Unexpected request");
   });
-  expect(await h.run(["org", verb, ...(verb === "use" ? ["Team"] : [])])).toBe(2);
-  expect(h.output().err).toContain(`unknown command 'org ${verb}'. Run 'armada --help'.`);
+  expect(await h.run(["org", "current"])).toBe(2);
+  expect(h.output().err).toContain("unknown command 'org current'. Run 'armada --help'.");
+});
+
+test("org use saves or clears the default organization using the existing session", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "armada-org-use-"));
+  try {
+    const paths: string[] = [];
+    const h = harness(async (input) => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      return Response.json({ orgs: [{ id: org, name: "Team", role: "admin" }] });
+    });
+    h.auth.preferences = filePreferences(join(directory, "preferences.json"));
+    expect(await h.run(["org", "use", "team"])).toBe(0);
+    expect(paths).toEqual(["/api/v1/org/list"]);
+    expect(await h.auth.preferences.read("https://armada.test")).toBe(org);
+    expect(h.output().out).toContain(`Default organization set to Team (${org}).`);
+
+    expect(await h.run(["org", "use", "none", "--json"])).toBe(0);
+    expect(await h.auth.preferences.read("https://armada.test")).toBeUndefined();
+    expect(JSON.parse(h.output().out.trim().split("\n").at(-1)!)).toEqual({ org: null });
+
+    expect(await h.run(["org", "use", "unknown"])).toBe(2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("login auto-saves default org when the user belongs to exactly one org and skips when multiple", async () => {
+  const secondOrg = "22222222-2222-4222-8222-222222222222";
+  for (const orgs of [
+    [{ id: org, name: "Solo", role: "admin" }],
+    [
+      { id: org, name: "One", role: "admin" },
+      { id: secondOrg, name: "Two", role: "member" },
+    ],
+  ]) {
+    let saved: string | undefined;
+    const h = harness(async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith("/auth/device/start")) return loginStarted();
+      if (path.endsWith("/auth/device/poll")) return loginAuthorized();
+      if (path.endsWith("/org/list")) return Response.json({ orgs });
+      throw new Error(`Unexpected ${path}`);
+    });
+    h.auth.preferences = {
+      read: async () => saved,
+      write: async (_origin, value) => {
+        saved = value;
+      },
+    };
+    expect(await h.run(["login"])).toBe(0);
+    expect(saved).toBe(orgs.length === 1 ? org : undefined);
+  }
 });
 
 test("GitHub connect waits for its own completed authorization, not a pre-existing connected account", async () => {
