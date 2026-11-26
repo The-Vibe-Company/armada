@@ -93,9 +93,9 @@ const CLOSE_INFO: Record<string, readonly ["disconnected" | "error", string, boo
 };
 
 export function describeRelayClose(code: number, reason?: string) {
-  const hit =
-    (reason && CLOSE_INFO[reason]) ||
-    (code === 4403 ? CLOSE_INFO.revoked : code === 4429 ? CLOSE_INFO.limit : undefined);
+  let hit = reason ? CLOSE_INFO[reason] : undefined;
+  if (!hit && code === 4403) hit = CLOSE_INFO.revoked;
+  if (!hit && code === 4429) hit = CLOSE_INFO.limit;
   if (hit) return { phase: hit[0], message: hit[1], canReconnect: hit[2] };
   if (code === 4401)
     return { phase: "error" as const, message: "Relay ticket expired or was rejected.", canReconnect: true };
@@ -125,14 +125,14 @@ export function submitPreviewBootstrap(bootstrapUrl: string, ticket: string, doc
   }
 }
 
-const toBytes = (d: unknown) =>
-  d instanceof Uint8Array
-    ? d
-    : ArrayBuffer.isView(d)
-      ? new Uint8Array(d.buffer, d.byteOffset, d.byteLength)
-      : d instanceof ArrayBuffer
-        ? new Uint8Array(d)
-        : null;
+function toBytes(d: unknown) {
+  if (d instanceof Uint8Array) return d;
+  if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+  if (d instanceof ArrayBuffer) return new Uint8Array(d);
+  return null;
+}
+
+const browserCloseCode = (code: number) => (code === 1000 || (code >= 3000 && code <= 4999) ? code : 1000);
 
 export function createRelayClient(options: RelayClientOptions) {
   const timer = options.timer ?? defaultTimer,
@@ -175,7 +175,16 @@ export function createRelayClient(options: RelayClientOptions) {
         () => cur.send(r.encodeRelayMessage({ type: CLOSE, streamId: STREAM_ID, code: 1000, reason: "eof" })),
         undefined,
       );
-    tryOr(() => cur.close(code), undefined);
+    const closeCode = browserCloseCode(code);
+    if (
+      !tryOr(() => {
+        cur.close(closeCode);
+        return true;
+      }, false) &&
+      closeCode !== 1000
+    ) {
+      tryOr(() => cur.close(1000), undefined);
+    }
   };
   const stop = (next: RelayClientState, code = 1000, sendClose = false) => {
     attempt += 1;

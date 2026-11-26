@@ -88,9 +88,13 @@ export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onC
     term.open(el);
     fit.fit();
     term.focus();
-    term.attachCustomKeyEventHandler(
-      (ev) => !(ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey && ev.code === "Backquote"),
-    );
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey) {
+        if (ev.code === "Backquote") return false;
+        if (ev.key.toLowerCase() === "k") ev.stopPropagation();
+      }
+      return true;
+    });
     const client = createRelayClient({
       mintTicket: () => mintRelayTicket(sandboxId, { mode: "pty" }),
       onState: setRelay,
@@ -114,7 +118,7 @@ export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onC
     };
   }, [sandboxId]);
 
-  const expanded = height >= EXPANDED_H - 24;
+  const expanded = height > DEFAULT_H + 40;
   const clampH = (n: number) => Math.min(Math.max(MIN_H, Math.round(window.innerHeight * 0.68)), Math.max(MIN_H, n));
   const reconnect = () => {
     if (!refs.current) return;
@@ -204,6 +208,8 @@ export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onC
             type="button"
             variant="ghost"
             size="xs"
+            aria-label="Reconnect terminal"
+            title="Reconnect terminal"
             disabled={!relay.canReconnect}
             onClick={reconnect}
             className={iconCls}
@@ -243,7 +249,7 @@ export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onC
             aria-label={expanded ? "Restore terminal height" : "Expand terminal"}
             title={expanded ? "Restore height" : "Expand height"}
             onClick={() =>
-              setHeight(expanded ? DEFAULT_H : Math.max(EXPANDED_H, Math.round(window.innerHeight * 0.56)))
+              setHeight(expanded ? DEFAULT_H : clampH(Math.max(EXPANDED_H, Math.round(window.innerHeight * 0.56))))
             }
             className={iconCls}
           >

@@ -40,7 +40,10 @@ function setup(overrides: Partial<Parameters<typeof createRelayClient>[0]> = {})
         addEventListener: (type: string, fn: (ev?: any) => void) =>
           void listeners.set(type, [...(listeners.get(type) ?? []), fn]),
         send: (data: string | Uint8Array) => void ws.sent.push(typeof data === "string" ? data : new Uint8Array(data)),
-        close() {
+        close(code = 1000) {
+          if (code !== 1000 && (code < 3000 || code > 4999)) {
+            throw new DOMException("Invalid close code", "InvalidAccessError");
+          }
           ws.readyState = 3;
         },
         emit(type: string, ev?: unknown) {
@@ -153,6 +156,38 @@ describe("relay-client", () => {
       phase: "error",
       message: "Relay access was revoked for this sandbox.",
       canReconnect: false,
+    });
+  });
+
+  test("closes browser WebSocket with a spec-valid code on protocol error, network error and backpressure", async () => {
+    const { client, sockets, states } = setup();
+    await client.connect(80, 24);
+    const ws1 = sockets[0]!.ws;
+    ws1.emit("open");
+    ws1.emit("message", { data: JSON.stringify({ type: "not_ok" }) });
+    expect(ws1.readyState).toBe(3);
+    expect(states.at(-1)?.phase).toBe("error");
+
+    await client.connect(80, 24);
+    const ws2 = sockets[1]!.ws;
+    ws2.emit("error");
+    expect(ws2.readyState).toBe(3);
+    expect(states.at(-1)?.phase).toBe("error");
+
+    await client.connect(80, 24);
+    const ws3 = sockets[2]!.ws;
+    ws3.emit("open");
+    ws3.emit("message", { data: JSON.stringify({ type: "auth_ok" }) });
+    ws3.emit("message", { data: r.encodeRelayMessage({ type: OPEN_OK, streamId: 1 }).buffer });
+    const chunk = new Uint8Array(r.MAX_DATA_CHUNK).fill(1);
+    for (let i = 0; i <= r.INITIAL_STREAM_WINDOW / r.MAX_DATA_CHUNK; i++) {
+      ws3.emit("message", { data: r.encodeRelayMessage({ type: DATA, streamId: 1, data: chunk }).buffer });
+    }
+    expect(ws3.readyState).toBe(3);
+    expect(states.at(-1)).toEqual({
+      phase: "error",
+      message: "Terminal stream closed due to backpressure.",
+      canReconnect: true,
     });
   });
 
