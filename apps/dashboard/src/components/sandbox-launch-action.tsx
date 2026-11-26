@@ -3,11 +3,13 @@
 import { RocketIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { LaunchDialogContent } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Kbd } from "@/components/ui/kbd";
+import { shouldIgnoreGlobalShortcut } from "@/lib/shortcut";
 import { cn } from "@/lib/utils";
 
 function loadLaunchStart() {
@@ -33,19 +35,35 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
   const [options, setOptions] = useState<Awaited<ReturnType<typeof readLaunchDialogOptions>> | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  async function onOpenChange(next: boolean) {
+  const openRef = useRef(open);
+  openRef.current = open;
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
+  const onOpenChange = useCallback(async (next: boolean) => {
     setOpen(next);
-    if (!next || loading) return;
+    if (!next || loadingRef.current) return;
     prefetchLaunch();
+    loadingRef.current = true;
     setLoading(true);
     try {
       setOptions(await readLaunchDialogOptions());
     } catch {
       setOptions(null);
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
-  }
+  }, []);
+  useEffect(() => {
+    if (!shortcut) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (openRef.current || event.key.toLowerCase() !== "l" || shouldIgnoreGlobalShortcut(event)) return;
+      event.preventDefault();
+      void onOpenChange(true);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [shortcut, onOpenChange]);
   const target = options
     ? (options.targets.find((item) => !item.reason) ??
       options.targets[0] ?? {
@@ -67,18 +85,10 @@ export function SandboxLaunchAction({ shortcut = false }: { shortcut?: boolean }
           className={cn(shortcut && "w-full justify-start group-data-[state=collapsed]:justify-center")}
           onMouseEnter={prefetchLaunch}
           onFocus={prefetchLaunch}
-          onKeyDown={(event) => {
-            if (shortcut && event.key.toLowerCase() === "l" && !event.metaKey && !event.ctrlKey && !event.altKey) {
-              event.preventDefault();
-              void onOpenChange(true);
-            }
-          }}
         >
           <RocketIcon />
           <span className={cn(shortcut && "group-data-[state=collapsed]:sr-only")}>Launch a sandbox</span>
-          {shortcut && (
-            <kbd className="ml-auto text-xs text-muted-foreground group-data-[state=collapsed]:hidden">L</kbd>
-          )}
+          {shortcut && <Kbd className="ml-auto group-data-[state=collapsed]:hidden">L</Kbd>}
         </Button>
       </DialogTrigger>
       <LaunchDialogContent>

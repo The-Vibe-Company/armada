@@ -17,11 +17,12 @@ import * as sandboxesData from "@/lib/data/sandboxes";
 import * as selectedOrg from "@/lib/data/selected-org";
 import * as viewer from "@/lib/data/viewer";
 import * as env from "@/lib/env";
-import { LIVE_FLEET_REFRESH_EVENT, type LiveSandboxes } from "@/lib/live-sandbox-view";
+import { LIVE_FLEET_CHANGE_EVENT, LIVE_FLEET_REFRESH_EVENT, type LiveSandboxes } from "@/lib/live-sandbox-view";
 import type { SandboxListMetadata } from "@/lib/sandbox-access";
 import * as supabase from "@/lib/supabase/server";
 import { NavLinks } from "./nav-links";
 import { SandboxChat, SandboxThreadStateProvider, ThreadSandboxState } from "./sandbox-chat";
+import { SandboxListLiveSync } from "./sandbox-list-live-sync";
 import { SandboxState } from "./sandbox-state";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -114,8 +115,14 @@ test("SandboxState shows green pulsing Working across working states and never o
   }
 });
 
-test("NavLinks renders working ready/starting/stopped as pulsing Working and polls immediately on desktop", async () => {
+test("NavLinks skips redundant SSR mount poll, broadcasts live fingerprint changes, and syncs /sandboxes", async () => {
   const responses: LiveSandboxes["rows"][] = [
+    [
+      { id: "s1", label: "modal-working", status: "ready", working: true },
+      { id: "s2", label: "starting-queued", status: "starting", working: true },
+      { id: "s3", label: "stopped-waking", status: "stopped", working: true },
+      { id: "s4", label: "modal-idle", status: "ready", working: false },
+    ],
     [
       { id: "s1", label: "modal-working", status: "ready", working: true },
       { id: "s2", label: "starting-queued", status: "starting", working: true },
@@ -125,6 +132,8 @@ test("NavLinks renders working ready/starting/stopped as pulsing Working and pol
     [{ id: "s1", label: "modal-working", status: "ready", working: false }],
   ];
   const urls: string[] = [];
+  let refreshes = 0;
+  const spyRouter = { ...router, refresh: () => (refreshes += 1) } satisfies AppRouterInstance;
   const { windowEvents } = installDom(async (input) => {
     urls.push(String(input));
     const rows = responses[Math.min(urls.length - 1, responses.length - 1)]!;
@@ -134,7 +143,7 @@ test("NavLinks renders working ready/starting/stopped as pulsing Working and pol
   await act(async () => {
     renderer = create(
       <TooltipProvider>
-        <AppRouterContext.Provider value={router}>
+        <AppRouterContext.Provider value={spyRouter}>
           <PathnameContext.Provider value="/sandboxes">
             <SidebarProvider>
               <NavLinks
@@ -144,13 +153,21 @@ test("NavLinks renders working ready/starting/stopped as pulsing Working and pol
                   rows: [{ id: "s1", label: "modal-working", status: "ready", working: false }],
                 }}
               />
+              <SandboxListLiveSync organizationId="org-1" />
             </SidebarProvider>
           </PathnameContext.Provider>
         </AppRouterContext.Provider>
       </TooltipProvider>,
     );
   });
+  expect(urls).toEqual([]);
+  expect(refreshes).toBe(0);
+  expect(renderer.root.findByProps({ href: "/sandboxes/s1" }).props.title).toBe("modal-working · Waiting for you");
+  await act(async () => {
+    windowEvents.dispatchEvent(new CustomEvent(LIVE_FLEET_REFRESH_EVENT));
+  });
   expect(urls).toEqual(["/api/fleet/live?organizationId=org-1"]);
+  expect(refreshes).toBe(1);
   expect(renderer.root.findByProps({ href: "/sandboxes/s1" }).props.title).toBe("modal-working · Working");
   expect(renderer.root.findByProps({ href: "/sandboxes/s2" }).props.title).toBe("starting-queued · Working");
   expect(renderer.root.findByProps({ href: "/sandboxes/s3" }).props.title).toBe("stopped-waking · Working");
@@ -162,7 +179,17 @@ test("NavLinks renders working ready/starting/stopped as pulsing Working and pol
     windowEvents.dispatchEvent(new CustomEvent(LIVE_FLEET_REFRESH_EVENT));
   });
   expect(urls).toHaveLength(2);
+  expect(refreshes).toBe(1);
+  await act(async () => {
+    windowEvents.dispatchEvent(new CustomEvent(LIVE_FLEET_REFRESH_EVENT));
+  });
+  expect(urls).toHaveLength(3);
+  expect(refreshes).toBe(2);
   expect(renderer.root.findByProps({ href: "/sandboxes/s1" }).props.title).toBe("modal-working · Waiting for you");
+  await act(async () => {
+    windowEvents.dispatchEvent(new CustomEvent(LIVE_FLEET_CHANGE_EVENT, { detail: { organizationId: "org-2" } }));
+  });
+  expect(refreshes).toBe(2);
   await act(async () => renderer.unmount());
 
   const mobileUrls: string[] = [];
@@ -176,7 +203,7 @@ test("NavLinks renders working ready/starting/stopped as pulsing Working and pol
         <AppRouterContext.Provider value={router}>
           <PathnameContext.Provider value="/sandboxes">
             <SidebarProvider>
-              <NavLinks organizationId="org-1" initialLive={{ total: 0, rows: [] }} />
+              <NavLinks organizationId="org-1" initialLive={null} />
             </SidebarProvider>
           </PathnameContext.Provider>
         </AppRouterContext.Provider>
@@ -365,7 +392,7 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
         size: new Map([["medium", 1]]),
       },
       activity: "all",
-      counts: { all: 1, mine: 1, working: 1, need: 0, stopped: 0, failed: 0, deleted: 0 },
+      counts: { all: 1, active: 1, need: 0, stopped: 0, failed: 0 },
       page: 1,
       workingIds: new Set([row.id]),
       waitingIds: new Set(),
@@ -398,6 +425,8 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     expect(articleHtml).toMatch(
       /<p[^>]*class="[^"]*\btruncate\b[^"]*"[^>]*data-lifecycle="overdue"[^>]*>Past deadline<\/p>/,
     );
+    expect(html).toContain("1 working");
+    expect(html).not.toContain('aria-label="Sandbox scope"');
   } finally {
     mock.restore();
   }
