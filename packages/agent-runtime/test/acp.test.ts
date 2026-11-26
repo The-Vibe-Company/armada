@@ -94,6 +94,15 @@ for (const action of ["finish", "steer", "interrupt", "unknown"] as const) {
         expect(tools[0]?.id).toBe(tools[1]?.id);
         expect(tools[0]?.id).toBe(tools[2]?.id);
         expect(tools[0]?.id).not.toBe(tools[3]?.id);
+        const toolEvents = events.filter(
+          (event): event is Extract<DriverEvent, { kind: "message" }> =>
+            event.kind === "message" && event.tools.length > 0,
+        );
+        expect(toolEvents[0]?.responseKind).toBeUndefined();
+        expect(toolEvents[1]?.responseKind).toBe("tool_result");
+        expect(toolEvents[2]?.responseKind).toBe("tool_result");
+        expect(toolEvents[3]?.responseKind).toBeUndefined();
+        expect(toolEvents[4]?.responseKind).toBeUndefined();
         for (const tool of tools) {
           expect(tool.id.length).toBeGreaterThan(0);
           expect(tool.id.length).toBeLessThanOrEqual(256);
@@ -198,6 +207,12 @@ test("ACP bounds active retained long tool titles and frees budget on terminal o
 
     const tools = events.flatMap((event) => (event.kind === "message" ? event.tools : []));
     const longTitle = `echo ${"x".repeat(32768)}`;
+    const terminalEvents = events.filter(
+      (event): event is Extract<DriverEvent, { kind: "message" }> =>
+        event.kind === "message" && event.tools.some((tool) => tool.result !== undefined),
+    );
+    expect(terminalEvents.length).toBe(66);
+    expect(terminalEvents.every((event) => event.responseKind === "tool_result")).toBe(true);
     expect(tools.find((tool) => tool.id === "done-0" && tool.result)).toMatchObject({
       id: "done-0",
       input: { title: longTitle, rawInput: { index: 0 } },

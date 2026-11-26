@@ -410,3 +410,48 @@ test.each(["epoch", "revision", "shape"] as const)(
     expect(calls).toBe(1);
   },
 );
+
+test("HTTPS idle poll sleeps 1000ms only on fast returns (<500ms) and skips backoff after long-poll waits", async () => {
+  const time = clock();
+  const stop = new AbortController();
+  let currentNow = 0;
+  let polls = 0;
+  const backoffScheduled = deferred();
+  const backoffPolls: number[] = [];
+  const channel = new RuntimeDialout("https://armada.example", session, {
+    ...time,
+    after(ms, callback) {
+      if (ms === 1000) {
+        backoffPolls.push(polls);
+        backoffScheduled.resolve();
+      }
+      return time.after(ms, callback);
+    },
+    now: () => currentNow,
+    socket() {
+      throw Error("upgrade rejected");
+    },
+    async fetch(url) {
+      expect(url.pathname).toBe("/api/runtime/poll");
+      polls++;
+      if (polls === 1) {
+        currentNow += 20_000;
+        return Response.json({ epoch: "1", command: null });
+      }
+      if (polls === 2) {
+        currentNow += 50;
+        return Response.json({ epoch: "1", command: null });
+      }
+      stop.abort();
+      return Response.json({ epoch: "1", command: null });
+    },
+  });
+  const work = channel.run(async () => Response.json({}), stop.signal);
+  await backoffScheduled.promise;
+  expect(polls).toBe(2);
+  expect(backoffPolls).toEqual([2]);
+  time.fire(1000);
+  await work;
+  expect(polls).toBe(3);
+  expect(time.timers.size).toBe(0);
+});

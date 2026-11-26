@@ -109,3 +109,57 @@ export function readNativeCodexAuth(root: string, register: (values: readonly st
 export function removeNativeCodexAuth(root: string, register: (values: readonly string[]) => void): void {
   if (readNativeCodexAuth(root, register) !== undefined) unlinkSync(join(root, "codex", "auth.json"));
 }
+
+export function createNativeAuthRefresher(
+  root: string,
+  register: (values: readonly string[]) => void,
+  onChange?: (auth: string | undefined) => void,
+) {
+  let lastStatKey: string | undefined;
+  let lastAuth: string | undefined;
+  const clear = () => {
+    lastStatKey = undefined;
+    if (lastAuth !== undefined) {
+      lastAuth = undefined;
+      onChange?.(undefined);
+    }
+  };
+  return () => {
+    let key: string;
+    try {
+      const directory = lstatSync(join(root, "codex"));
+      if (
+        directory.isSymbolicLink() ||
+        !directory.isDirectory() ||
+        directory.uid !== process.getuid?.() ||
+        (directory.mode & 0o077) !== 0
+      )
+        throw Error("unsafe");
+      const file = lstatSync(join(root, "codex", "auth.json"), { bigint: true });
+      const uid = process.getuid?.();
+      if (
+        file.isSymbolicLink() ||
+        !file.isFile() ||
+        (uid !== undefined && file.uid !== BigInt(uid)) ||
+        file.nlink !== 1n ||
+        file.size > 65536n ||
+        (file.mode & 0o077n) !== 0n
+      )
+        throw Error("unsafe");
+      key = `${file.dev}:${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}:${file.mode}:${file.nlink}`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        clear();
+        return;
+      }
+      throw Error("native_auth_state_unavailable");
+    }
+    if (key === lastStatKey) return;
+    const current = readNativeCodexAuth(root, register);
+    lastStatKey = current === undefined ? undefined : key;
+    if (current !== lastAuth) {
+      lastAuth = current;
+      onChange?.(current);
+    }
+  };
+}

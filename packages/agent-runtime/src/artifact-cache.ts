@@ -39,7 +39,6 @@ async function copyShared(sharedDir: string, artifact: RuntimeArtifact, temporar
       }
       if (bytes !== artifact.bytes || hash.digest("hex") !== artifact.sha256) return false;
       await file.chmod(0o700);
-      await file.sync();
     } finally {
       await file.close();
     }
@@ -171,4 +170,39 @@ export async function runArtifactInstallMode(): Promise<void> {
   const input = JSON.parse(await Bun.stdin.text()) as Parameters<typeof installRuntimeArtifact>[0];
   const path = await installRuntimeArtifact(input);
   process.stdout.write(`${JSON.stringify({ path })}\n`);
+}
+
+export async function readSharedArtifact(sharedDir: string, artifact: RuntimeArtifact) {
+  if (
+    !isAbsolute(sharedDir) ||
+    !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
+    !Number.isSafeInteger(artifact.bytes) ||
+    artifact.bytes <= 0 ||
+    artifact.bytes > MAX_BYTES
+  )
+    return undefined;
+  let source: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    source = await open(
+      join(sharedDir, artifact.sha256),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const info = await source.stat();
+    if (!info.isFile() || info.size !== artifact.bytes) return undefined;
+    const out = Buffer.allocUnsafe(artifact.bytes);
+    const hash = createHash("sha256");
+    let bytes = 0;
+    for await (const chunk of source.createReadStream({ autoClose: false })) {
+      if (bytes + chunk.byteLength > artifact.bytes) return undefined;
+      out.set(chunk, bytes);
+      bytes += chunk.byteLength;
+      hash.update(chunk);
+    }
+    if (bytes !== artifact.bytes || hash.digest("hex") !== artifact.sha256) return undefined;
+    return out;
+  } catch {
+    return undefined;
+  } finally {
+    await source?.close();
+  }
 }

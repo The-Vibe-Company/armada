@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import * as r from "@armada/core/relay";
 import { validateHarnessCwd } from "./cwd.ts";
 import { validateExecEnvironment } from "./exec-env.ts";
+import { githubRuntimeEnvironment } from "./github-tools.ts";
 import type { ExecEnvironment } from "./protocol.ts";
 
 const OP = r.RELAY_OPCODE;
@@ -42,9 +44,18 @@ export type PtyHost = {
   spawn(cwd: string, env: Record<string, string>, cols: number, rows: number, cb: PtyCallbacks): PtyProcess;
   killGroup(pid: number, sig: NodeJS.Signals): void;
 };
+export type PtyEnvironmentOptions = {
+  ghConfigDir?: string | undefined;
+  githubToolsRoot?: string | undefined;
+};
+export function ptyShellArgs(env: Record<string, string>, hasBash = existsSync("/bin/bash")) {
+  if (!hasBash) return ["/bin/sh", "-l"];
+  if (env.BASH_ENV) return ["/bin/bash", "-l", "-c", '[ -r "$BASH_ENV" ] && . "$BASH_ENV"; exec /bin/bash -i'];
+  return ["/bin/bash", "-l"];
+}
 export const nativePtyHost: PtyHost = {
   spawn(cwd, env, cols, rows, cb) {
-    const p = Bun.spawn([existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh", "-l"], {
+    const p = Bun.spawn(ptyShellArgs(env), {
       cwd,
       env,
       terminal: {
@@ -79,9 +90,22 @@ export const nativePtyHost: PtyHost = {
     }
   },
 };
-export const ptyEnvironment = (execEnv: ExecEnvironment | undefined) => {
+export const ptyEnvironment = (execEnv: ExecEnvironment | undefined, options?: PtyEnvironmentOptions) => {
   const base = validateExecEnvironment(execEnv);
-  return { ...base, PATH: base.PATH ?? "/usr/local/bin:/usr/bin:/bin", TERM: "xterm-256color", COLORTERM: "truecolor" };
+  const path = base.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  if (
+    options?.ghConfigDir !== undefined &&
+    (!isAbsolute(options.ghConfigDir) || resolve(options.ghConfigDir) !== options.ghConfigDir)
+  )
+    throw Error("invalid_exec_environment");
+  return {
+    ...base,
+    PATH: path,
+    ...(options?.ghConfigDir ? { GH_CONFIG_DIR: options.ghConfigDir } : {}),
+    ...(options?.githubToolsRoot ? githubRuntimeEnvironment({ PATH: path }, options.githubToolsRoot) : {}),
+    TERM: "xterm-256color",
+    COLORTERM: "truecolor",
+  };
 };
 type Pty = {
   id: number;
@@ -101,8 +125,9 @@ export class RelayPtyManager {
     private readonly send: SendFn,
     private readonly host: PtyHost = nativePtyHost,
     private readonly after: AfterFn = defaultAfter,
+    envOptions?: PtyEnvironmentOptions,
   ) {
-    this.env = ptyEnvironment(execEnv);
+    this.env = ptyEnvironment(execEnv, envOptions);
   }
   open(id: number, cols: number, rows: number, cwd?: string) {
     if (this.streams.has(id) || this.streams.size >= r.MAX_PTYS_PER_SANDBOX)

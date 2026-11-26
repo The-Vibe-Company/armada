@@ -1,11 +1,17 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ANTIGRAVITY_ARTIFACT } from "../src/antigravity-artifact.ts";
-import { prepareEnrolledHarness } from "../src/enrolled-harness.ts";
+import {
+  bootstrapGitHubHomes,
+  initializeBootstrapHarnessHomes,
+  prepareEnrolledHarness,
+  selectBootstrapHarnesses,
+  shouldPrepareLocalOpenCode,
+} from "../src/enrolled-harness.ts";
 
 // Owning boundary is bootstrap wiring: installer integrity already belongs to
 // harness-cache.test.ts. This checks server selection -> driver executable/env.
@@ -162,3 +168,34 @@ test.skipIf(process.platform !== "linux")(
     }
   },
 );
+
+test("enrolled bootstrap initializes only the selected harness home and skips duplicate OpenCode preparation", async () => {
+  expect(shouldPrepareLocalOpenCode(true, { OPENCODE_API_KEY: "synthetic-key" })).toBe(false);
+  expect(shouldPrepareLocalOpenCode(true, { OPENCODE_CONFIG_CONTENT: "{}" })).toBe(false);
+  expect(shouldPrepareLocalOpenCode(false, { OPENCODE_API_KEY: "synthetic-key" })).toBe(true);
+  expect(shouldPrepareLocalOpenCode(false, {})).toBe(false);
+  expect(selectBootstrapHarnesses(false, undefined)).toEqual(["opencode", "claude", "codex"]);
+  expect(selectBootstrapHarnesses(true, "antigravity")).toEqual([]);
+
+  for (const selected of ["codex", "claude", "opencode"] as const) {
+    const root = await mkdtemp(join(tmpdir(), `single-harness-${selected}-`));
+    try {
+      const harnesses = selectBootstrapHarnesses(true, selected);
+      expect(harnesses).toEqual([selected]);
+      const envs = {
+        opencode: {} as Record<string, string>,
+        claude: {} as Record<string, string>,
+        codex: {} as Record<string, string>,
+      };
+      const created = await initializeBootstrapHarnessHomes({ root, harnesses, envs, execEnv: { HOME: "/home/user" } });
+      expect(created).toEqual([`${root}/${selected}/home`]);
+      expect(await readdir(root)).toEqual([selected]);
+      expect(bootstrapGitHubHomes("/home/user", harnesses, envs)).toEqual(["/home/user", `${root}/${selected}/home`]);
+      for (const other of ["opencode", "claude", "codex"] as const) {
+        if (other !== selected) expect(envs[other].HOME).toBeUndefined();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+});

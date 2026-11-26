@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import * as r from "@armada/core/relay";
 import { createRuntimeRelay, type RelaySocket, RuntimeRelayClient } from "../src/relay-client.ts";
-import type { PtyCallbacks, PtyProcess } from "../src/relay-pty.ts";
+import { type PtyCallbacks, type PtyProcess, ptyEnvironment, ptyShellArgs } from "../src/relay-pty.ts";
 import type { LoopbackAddress, TcpCallbacks, TcpSocket } from "../src/relay-tcp.ts";
 
 type FakePty = PtyProcess & {
@@ -246,4 +246,33 @@ test("reconnect backoff 1s->10s, 20s heartbeat, 4401 teardown, builder opt-out",
   ).toBeUndefined();
   expect(createRuntimeRelay("https://armada.example", undefined, { cwd: "/tmp" })).toBeUndefined();
   expect(createRuntimeRelay("https://armada.example", session, { cwd: "/tmp" })).toBeInstanceOf(RuntimeRelayClient);
+});
+
+test("relay PTY preserves trusted BASH_ENV and GH_CONFIG_DIR and sources BASH_ENV after login profile", () => {
+  const env = ptyEnvironment(
+    { HOME: "/home/user", PATH: "/usr/bin:/bin" },
+    { ghConfigDir: "/home/user/.armada/exec-transient/gh", githubToolsRoot: "/home/user/.armada/github-abc" },
+  );
+  expect(env).toEqual({
+    HOME: "/home/user",
+    PATH: "/home/user/.armada/github-abc/bin:/usr/bin:/bin",
+    BASH_ENV: "/home/user/.armada/github-abc/shell-env.sh",
+    GH_CONFIG_DIR: "/home/user/.armada/exec-transient/gh",
+    TERM: "xterm-256color",
+    COLORTERM: "truecolor",
+  });
+  expect(ptyShellArgs(env, true)).toEqual([
+    "/bin/bash",
+    "-l",
+    "-c",
+    '[ -r "$BASH_ENV" ] && . "$BASH_ENV"; exec /bin/bash -i',
+  ]);
+  expect(ptyShellArgs({ PATH: "/usr/bin:/bin" }, true)).toEqual(["/bin/bash", "-l"]);
+  expect(ptyShellArgs(env, false)).toEqual(["/bin/sh", "-l"]);
+  expect(() => ptyEnvironment({ HOME: "/home/user" }, { ghConfigDir: "relative/gh" })).toThrow(
+    "invalid_exec_environment",
+  );
+  expect(() => ptyEnvironment({ HOME: "/home/user" }, { githubToolsRoot: "relative/root" })).toThrow(
+    "github_tools_denied",
+  );
 });
