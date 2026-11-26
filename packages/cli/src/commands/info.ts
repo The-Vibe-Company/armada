@@ -4,9 +4,9 @@ export default sandboxOperation({
   name: "info",
   summary: "Inspect Armada setup or sandbox status",
   usage: {
-    setup: "  armada info --setup [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts",
-    sandbox: `  armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--org UUID] [--json]
-                                           Inspect recorded state, probe the provider or wait for activity`,
+    sandboxes: `  armada info [sandbox-id] [--live | --wait [--timeout S]] [--org ORG] [--json]
+                                           Inspect sandbox state, probe provider, or wait for activity
+  armada info --setup [--org ORG] [--json] Check identity, server, GitHub, hosts and accounts`,
   },
   help: `Usage: armada info [--setup] [--org UUID] [--json]
        armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--prompt-id ID] [--org UUID] [--json]

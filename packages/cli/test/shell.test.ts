@@ -126,3 +126,59 @@ test("piped shell propagates remote non-zero exit code without appending machine
   ws.receive({ type: RELAY_OPCODE.CLOSE, streamId: 1, code: 1, reason: "eof" });
   expect([await done, getErr()]).toEqual([1, ""]);
 });
+
+test("piped shell sends EOT on stdin end and fails cleanly on WebSocket connect timeout", async () => {
+  const { io, auth, getErr } = makeRelayAuth(async () => Response.json(TICKET), { ARMADA_SANDBOX: ID });
+  const ws = createFakeWs(),
+    term = createFakeTerminal(false),
+    { promise: ready, resolve: markReady } = Promise.withResolvers<void>();
+  const done = run(["shell"], io, {
+    auth,
+    stdoutIsTTY: false,
+    relay: {
+      terminal: term.terminal,
+      onSignal: () => () => {},
+      createWebSocket() {
+        queueMicrotask(() => {
+          ws.open();
+          queueMicrotask(markReady);
+        });
+        return ws.ws;
+      },
+    },
+  });
+  await ready;
+  term.stdin(new TextEncoder().encode("ls\n"));
+  term.endStdin();
+  ws.receive({ type: RELAY_OPCODE.OPEN_OK, streamId: 1 });
+  expect(ws.sent.filter((m) => m.type === RELAY_OPCODE.DATA).flatMap((m) => Array.from(m.data))).toEqual([
+    ...new TextEncoder().encode("ls\n"),
+    4,
+  ]);
+  ws.receive({ type: RELAY_OPCODE.CLOSE, streamId: 1, code: 0, reason: "eof" });
+  expect([await done, getErr()]).toEqual([0, ""]);
+
+  const timed = makeRelayAuth(async () => Response.json(TICKET), { ARMADA_SANDBOX: ID });
+  const slowWs = createFakeWs();
+  let scheduledMs = 0;
+  let fireTimeout: (() => void) | undefined;
+  const code = await run(["shell"], timed.io, {
+    auth: timed.auth,
+    stdoutIsTTY: true,
+    relay: {
+      terminal: createFakeTerminal(true).terminal,
+      onSignal: () => () => {},
+      after(ms, fn) {
+        scheduledMs = ms;
+        fireTimeout = fn;
+        return () => {};
+      },
+      createWebSocket() {
+        queueMicrotask(() => fireTimeout?.());
+        return slowWs.ws;
+      },
+    },
+  });
+  expect([code, scheduledMs, slowWs.state.closedWith]).toEqual([1, 15_000, 1000]);
+  expect(timed.getErr()).toContain("Timed out connecting to sandbox relay.");
+});

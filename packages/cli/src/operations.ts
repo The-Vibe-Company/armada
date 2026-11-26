@@ -117,7 +117,6 @@ export async function operation(
         "invalid_config",
         "Deletion permanently removes the disk and recovery archives. Pass --yes to confirm.",
       );
-    if (org) uuid(org, "--org");
     uuid(id, "sandbox id");
     const result = await (await client()).deleteSandbox<{ id: string; status: "deleted" }>(id.toLowerCase(), org);
     auth.out(flag(args, "--json") ? `${JSON.stringify(result)}\n` : `Deleted sandbox ${result.id}.\n`);
@@ -259,7 +258,7 @@ export async function operation(
         rateLimit?: { message: string; retryCount: number; totalWaitMs: number } | null;
       } | null;
       if (prompt?.rateLimit)
-        auth.out(
+        auth.err(
           `${prompt.rateLimit.message} (retry ${prompt.rateLimit.retryCount}, total wait ${Math.ceil(prompt.rateLimit.totalWaitMs / 1000)} s)\n`,
         );
     }

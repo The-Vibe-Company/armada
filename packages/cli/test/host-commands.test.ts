@@ -20,7 +20,12 @@ const summary = {
   upgradeRequired: true,
   sandboxes: 3,
 };
-async function capture(args: string[], fetcher: (request: Request) => Promise<Response>, stdoutIsTTY?: boolean) {
+async function capture(
+  args: string[],
+  fetcher: (request: Request) => Promise<Response>,
+  stdoutIsTTY?: boolean,
+  savedOrg: string | undefined = org,
+) {
   let out = "",
     err = "",
     now = start,
@@ -53,7 +58,7 @@ async function capture(args: string[], fetcher: (request: Request) => Promise<Re
           now += ms;
           slept += ms;
         },
-        preferences: { read: async () => org, write: async () => {} },
+        preferences: { read: async () => savedOrg, write: async () => {} },
         fetch: async (input, init) => fetcher(input instanceof Request ? input : new Request(String(input), init)),
       },
     },
@@ -112,7 +117,7 @@ test("host add pending waits respect token expiry and five-minute limit without 
         }
         return Response.json({ placement: true, hosts: [{ ...summary, state: "offline" }] });
       },
-      false,
+      true,
     );
     expect(result.code).toBe(1);
     expect(issued).toBe(1);
@@ -121,6 +126,10 @@ test("host add pending waits respect token expiry and five-minute limit without 
     expect(result.err).toContain("no registration was reissued");
     expect(result.err).not.toContain("command_failed");
   }
+  const piped = await capture(["host", "add"], async () => Response.json(ticket()), false);
+  expect(piped.code).toBe(0);
+  expect(piped.slept).toBe(0);
+  expect(JSON.parse(piped.out)).toEqual(ticket());
 });
 
 test("host ls accepts a draining host and prints the shared uninstall reason", async () => {
@@ -318,6 +327,27 @@ test("host ls flags an outdated daemon with a supported protocol", async () => {
   expect(result.out).toMatch(/outdated/i);
   expect(result.out).toContain("dev (unrecognized version)");
   expect(result.out).not.toContain("Upgrade the Docker host daemon");
+});
+
+test("host commands resolve organization names and single-org membership", async () => {
+  for (const args of [
+    ["host", "ls", "--org", "Engineering", "--json"],
+    ["host", "ls", "--json"],
+  ]) {
+    const result = await capture(
+      args,
+      async (request) => {
+        if (new URL(request.url).pathname.endsWith("/org/list"))
+          return Response.json({ orgs: [{ id: org, name: "Engineering", role: "member" }] });
+        expect(await request.json()).toEqual({ org });
+        return Response.json({ placement: true, hosts: [summary] });
+      },
+      true,
+      undefined,
+    );
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out).hosts[0].id).toBe(hostId);
+  }
 });
 
 test("host protocol errors exit 1 as operational failures", async () => {

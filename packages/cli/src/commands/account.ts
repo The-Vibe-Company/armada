@@ -42,9 +42,10 @@ export default {
   name: "account",
   summary: "Manage model credentials, GitHub access and your Armada session",
   usage: {
-    account: `  armada account --help                      Discover encrypted model account commands
-  armada account ls|add|login|rm github      GitHub connection and installation
-  armada account status|logout               Armada identity / revoke current login session`,
+    hosts: `  armada account ls|add|login|import|default|limits|rm|test
+                                           Manage encrypted model accounts (see account --help)
+  armada account ls|add|login|rm github    Manage GitHub connection and installations
+  armada account status|logout             Show server account status or revoke login session`,
   },
   help: `Usage: armada account <command> [arguments]
 Manage model credentials, GitHub access or your personal Armada session.
@@ -149,6 +150,7 @@ To clear only the saved local session, use armada logout.
 Example: armada account logout
 `,
   },
+  automaticJson: true,
   helpWhenBare: true,
   useSelectedOrg(argv) {
     const args = parseAccountArgs(argv);

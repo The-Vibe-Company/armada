@@ -29,7 +29,7 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     credential_binding_required:
       "The sandbox needs an account binding. Ask its owner to inspect armada account ls and use armada bind-credential after stopping safely.",
     credential_binding_unsupported:
-      "This native Boat sandbox cannot refresh model accounts safely yet. Launch a new sandbox using the chosen account; existing work is unchanged (tracked by #1579).",
+      "This native Boat sandbox cannot refresh model accounts safely yet. Launch a new sandbox using the chosen account; existing work is unchanged.",
     credential_binding_unsafe:
       "Wait for the turn or lifecycle operation to finish and inspect retained-work warnings before retrying as the owner. The account was not changed.",
     provider_not_configured: "The sandbox provider is not configured. Ask an org admin to check armada org setup.",
@@ -86,12 +86,17 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     )
       ? serverMessage
       : undefined;
+  const validationMessage =
+    status === 400 && serverCode === "invalid_request" && typeof serverMessage === "string" && serverMessage.trim()
+      ? serverMessage.trim()
+      : undefined;
   return {
     code,
     exitCode: code === "invalid_request" ? (2 as const) : (1 as const),
     message:
       controlReason ??
       bindingReason ??
+      validationMessage ??
       help[code] ??
       `Sandbox operation failed (${status}). Check access and sandbox status. ${inspect} A mutation may already have been accepted; check its outcome before retrying.`,
   };

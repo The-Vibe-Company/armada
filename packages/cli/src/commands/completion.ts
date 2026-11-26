@@ -12,7 +12,7 @@ Example: armada completion ${shell ?? "bash"} > armada-completion.${shell ?? "ba
 export default {
   name: "completion",
   summary: "Print shell completions",
-  usage: { setup: `  armada completion bash|zsh|fish           Print a shell completion script` },
+  usage: { auth: "  armada completion bash|zsh|fish          Print a shell completion script" },
   help: completionHelp(),
   subcommandHelp: {
     "completion bash": completionHelp("bash"),

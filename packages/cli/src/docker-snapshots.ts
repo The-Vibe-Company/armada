@@ -2,9 +2,10 @@ import { AuthError } from "@armada/auth";
 import { type GoldenConfig, GoldenError, parseDockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
 import { type Args, flag, single, uuid } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
-import { resolveHost } from "./host-commands.ts";
+import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { createSdkCommandClient } from "./sdk-session.ts";
 import { waitForSnapshot } from "./snapshot-wait.ts";
+import { formatTable } from "./table.ts";
 
 function parseSnapshot(input: unknown) {
   try {
@@ -35,10 +36,8 @@ export async function dockerSnapshotCommand(
   ]);
   if ([...args.options.keys()].some((key) => !allowed.has(key)))
     throw new GoldenError("invalid_config", "Unsupported Docker snapshot option.");
-  const org = single(args, "--org");
-  if (!org || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(org))
-    throw new GoldenError("invalid_config", "Docker snapshots require --org UUID.");
   const client = await createSdkCommandClient(auth);
+  const org = await resolveHostOrganization(client, single(args, "--org"));
   const post = (operation: Parameters<typeof client.dockerSnapshot>[0], body: object, signal?: AbortSignal) =>
     client.control<Record<string, unknown>>(`docker/snapshots/${operation}`, { org, ...body }, signal);
   if (operation === "ls") {
@@ -48,16 +47,31 @@ export async function dockerSnapshotCommand(
       throw new AuthError("Armada returned an invalid snapshot response.", "unavailable");
     const rows = data.snapshots.map(parseSnapshot);
     const currentVersion = typeof data.currentVersion === "string" ? data.currentVersion : null;
-    io.out(
-      flag(args, "--json")
-        ? JSON.stringify(rows, null, 2) + "\n"
-        : rows
-            .map(
-              (r) =>
-                `${r.id}\t${r.name}\t${r.status}\t${r.visibility}\t${r.hostName ?? r.hostId}${r.failureReason ? `\t${r.failureReason}` : ""}${r.baselineWarning ? `\t${r.baselineWarning}` : ""}\tBuilt on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada snapshot rebuild ${r.id} --provider docker --org ${org}` : ""}`,
-            )
-            .join("\n") + "\n",
-    );
+    if (flag(args, "--json")) {
+      io.out(`${JSON.stringify(rows, null, 2)}\n`);
+    } else if (rows.length === 0) {
+      io.out("No snapshots.\n");
+    } else {
+      io.out(
+        formatTable(
+          ["ID", "NAME", "STATUS", "VISIBILITY", "HOST", "NOTES"],
+          rows.map((r) => [
+            r.id,
+            r.name,
+            r.status,
+            r.visibility,
+            r.hostName ?? r.hostId,
+            [
+              r.failureReason,
+              r.baselineWarning,
+              `Built on Armada ${r.builtOnVersion ?? "unknown version"}${snapshotUpdateAvailable(r.builtOnVersion, currentVersion) ? ` · Update to ${currentVersion}: armada snapshot rebuild ${r.id} --provider docker --org ${org}` : ""}`,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          ]),
+        ),
+      );
+    }
     return 0;
   }
   if (operation === "rebuild") {

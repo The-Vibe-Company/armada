@@ -3,7 +3,8 @@ import { sandboxOperation } from "./sandbox-operation.ts";
 export default sandboxOperation({
   name: "rm",
   summary: "Delete a stopped sandbox",
-  usage: `  armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives`,
+  usage: `  armada rm <sandbox-id> --yes [--org ORG] [--json]
+                                           Permanently delete a stopped sandbox and its recovery archives`,
   help: `Usage: armada rm <sandbox-UUID> --yes [--org UUID] [--json]
 Permanently delete a stopped sandbox after Armada login and server authorization.
 Warning: deletion removes the disk AND recovery archives. --yes is required confirmation.

@@ -1,12 +1,5 @@
 import { AuthError } from "@armada/auth";
-import {
-  GoldenError,
-  HARNESSES,
-  type LaunchResult,
-  MODEL_CATALOG,
-  resolveModelChoice,
-  SANDBOX_PLACEMENT_LABELS,
-} from "@armada/core";
+import { GoldenError, HARNESSES, type LaunchResult, resolveModelChoice, SANDBOX_PLACEMENT_LABELS } from "@armada/core";
 import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { requireLaunchAgent } from "../agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, providerFlag, single, usesHostLaunch, values } from "../args.ts";
@@ -150,20 +143,10 @@ export default {
   name: "new",
   summary: "Launch an agent sandbox",
   usage: {
-    "docker-launch": `  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent ${agentChoices} [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
-                                           Docker launch through the normal Armada API using the official Armada environment.`,
-    new: `  armada new <snapshot> --agent ${agentChoices} ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                                           [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
-                --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
-                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
-                Omit connections to request server defaults; --no-connections opts out.
-                                           Fork a snapshot into a sandbox. With a prompt the agent starts at once;
-                                           without one the sandbox waits, ready, for the first prompt. The model
-                                           and effort apply to every later turn too. --credential-id UUID selects a model account;
-                                           otherwise use your personal or organization default.
-                                           --repo selects the agent's initial working directory, including when idle.
-                                           Defaults:
-                                           ${modelDefaults()}`,
+    sandboxes: `  armada new <snapshot> --agent ${agentChoices} --provider boat|modal ["prompt"] [options]
+                                           Launch an agent sandbox from a snapshot (see new --help)
+  armada new [prompt] --provider docker --host UUID|NAME --agent ${agentChoices} [options]
+                                           Launch on a registered Docker host (see new --help)`,
   },
   help: `Usage: armada new <snapshot> --provider boat|modal --agent ${agentChoices} ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
@@ -256,10 +239,4 @@ function githubLine(github: LaunchResult["github"], now: Date) {
     return `GitHub: git and gh act as ${github.login} (${lifetime}; shared owner refresh may invalidate it earlier). Reconnect GitHub if needed and resume to re-resolve credentials.`;
   }
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
-}
-
-function modelDefaults() {
-  return Object.entries(MODEL_CATALOG)
-    .map(([h, e]) => `${h} ${e.defaultModel} ${e.defaultReasoningEffort}`)
-    .join(", ");
 }

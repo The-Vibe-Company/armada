@@ -90,6 +90,7 @@ test("Docker repository launch accepts a starting receipt without inventing a ru
     return Response.json({ sandbox: { id: requestId, status: "starting" } });
   });
   expect(result.code).toBe(0);
+  expect(result.out).toContain(`Sandbox: ${requestId}`);
   expect(await calls[0]?.json()).toMatchObject({
     repos: [{ url: "https://github.com/acme/web", branch: "feature/work", dir: "web" }],
   });
@@ -339,6 +340,14 @@ test("Docker snapshots build through the normal golden command and launch throug
     }),
   );
   expect(offered.out).toContain(`armada snapshot rebuild ${id} --provider docker --org ${org}`);
+  const byName = await capture(["snapshot", "ls", "--provider", "docker", "--org", "engineering"], async (request) => {
+    if (new URL(request.url).pathname.endsWith("/org/list"))
+      return Response.json({ orgs: [{ id: org, name: "engineering", role: "member" }] });
+    expect(await request.json()).toEqual({ org });
+    return Response.json({ snapshots: [snapshot] });
+  });
+  expect(byName.code).toBe(0);
+  expect(byName.out).toMatch(/ID\s+NAME\s+STATUS\s+VISIBILITY\s+HOST\s+NOTES/);
   const rebuilt = await capture(
     ["snapshot", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
     async (request) => {

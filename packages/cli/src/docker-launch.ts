@@ -171,7 +171,7 @@ export async function launchDocker(
     if (result.sandbox.status !== "failed" && result.sandbox.status !== "deleted")
       await rememberSandbox(result.sandbox.id, sandboxFile, io);
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
-    else io.out(`Armada id: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n`);
+    else io.out(`Sandbox: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n`);
     return 0;
   } catch (error) {
     if (

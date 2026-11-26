@@ -55,7 +55,11 @@ Docker takes a snapshot UUID and --org UUID.
 export default {
   name: "snapshot",
   summary: "Manage provider-scoped snapshots",
-  usage: { snapshots: usageRows },
+  usage: {
+    templates: `  armada snapshot ls|show [--provider boat|modal|docker] [--org ORG] [--json]
+                                           List or inspect provider-scoped snapshots
+  armada snapshot new|update|rebuild|rm    Create, update, rebuild or remove snapshots (see snapshot --help)`,
+  },
   help: `Usage: armada snapshot <ls|new|update|rebuild|rm|show> [arguments]
 Manage provider-scoped snapshots. Use a verb with --help for its options.
 ${usageRows}

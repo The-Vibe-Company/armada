@@ -93,8 +93,10 @@ const usage = "armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]";
 export default {
   name: "outputs",
   summary: "List or download saved sandbox outputs",
-  usage: `  ${usage}
-                                           List or download saved outputs`,
+  usage: {
+    interactive: `  ${usage}
+                                           List or download saved sandbox outputs`,
+  },
   help: `Usage: ${usage}
 List saved outputs for the current sandbox or the sandbox selected with --id.
 With NAME, download the file into DIR (default the current directory).
