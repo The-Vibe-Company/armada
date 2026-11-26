@@ -53,7 +53,14 @@ import { runtimeWakes, SANDBOX_ADMISSION_WAKE, waitForTimeout } from "../wake-bu
 import { createBoatResumeMachine } from "./boat-resume.ts";
 import { resumeDispatchAuthority } from "./resume-authority.ts";
 import type { JobKind, JobResult } from "./runner.ts";
-import { JOBS_WAKE, recordResumeAuthority, recordResumeBootstrapTicket, withJobLease } from "./store.ts";
+import {
+  JOBS_WAKE,
+  recordResumeAuthority,
+  recordResumeBootstrapAcknowledged,
+  recordResumeBootstrapTicket,
+  wakeEnrolledSandboxJobs,
+  withJobLease,
+} from "./store.ts";
 
 type DockerSandbox = Awaited<ReturnType<ReturnType<typeof createDockerSandboxService>["get"]>>;
 
@@ -473,6 +480,8 @@ export function createResumeJob(options: {
             boat_restore_dispatched: boolean;
             boat_restore_authority: string | null;
             boat_restore_observed: boolean;
+            bootstrap_acknowledged: boolean;
+            enrolment_pending: boolean;
           }>(
             `select j.deadline_at, (j.outcome->>'expiresAt')::timestamptz as expires_at,
                case when s.provider='docker' then s.effective_ttl_seconds
@@ -485,6 +494,12 @@ export function createResumeJob(options: {
                j.outcome ? 'boat_restore_dispatched' as boat_restore_dispatched,
                j.outcome->>'boat_restore_authority' as boat_restore_authority,
                j.outcome ? 'boat_restore_observed' as boat_restore_observed,
+               coalesce((j.outcome->>'bootstrap_acknowledged')::boolean, false) as bootstrap_acknowledged,
+               exists(
+                 select 1 from public.runtime_enrolments e
+                 where e.sandbox_id=s.id and e.lifecycle_generation=s.lifecycle_generation
+                   and e.runtime_hash is null and e.enrolment_hash is not null and e.enrolment_expires_at>clock_timestamp()
+               ) as enrolment_pending,
                not coalesce(${resumeDispatchAuthority("j", "s")},false) as cancelled
              from public.sandboxes s join public.jobs j on j.sandbox_id=s.id and j.generation=s.lifecycle_generation
              where s.id=$1 and j.id=$2 and s.owner_id=$3 and s.org_id=$4 and (s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`,
@@ -550,7 +565,17 @@ export function createResumeJob(options: {
             (epoch) => epoch === input.target,
             () => false,
           );
+      const retryWaitingForEnrolment = () =>
+        ({
+          ...retry,
+          unattempted: true,
+          commit: (tx) => wakeEnrolledSandboxJobs(tx, id, generation, ["resume"]),
+        }) satisfies JobResult;
       try {
+        const isEnrolled = await enrolled();
+        if (!isEnrolled && current.bootstrap_acknowledged && current.enrolment_pending) {
+          return retryWaitingForEnrolment();
+        }
         const boat = isBoat && goldenSandbox ? await options.boat?.(caller, goldenSandbox) : undefined;
         if (
           boat &&
@@ -577,7 +602,7 @@ export function createResumeJob(options: {
           return physicalDeadline;
         };
         const docker =
-          current.docker && !(await enrolled()) ? await dockerHosts.resumeMachineTarget(dockerActor, job) : undefined;
+          current.docker && !isEnrolled ? await dockerHosts.resumeMachineTarget(dockerActor, job) : undefined;
         const binding = {
           recordId: sandbox.providerSandboxId,
           sandboxId: id,
@@ -699,8 +724,11 @@ export function createResumeJob(options: {
                 signal,
               });
           }
-          if (!(await enrolled())) return retry;
-        } else if (!(await enrolled())) {
+          if (!(await enrolled())) {
+            await binding.write((tx) => recordResumeBootstrapAcknowledged(tx, job.id));
+            return retryWaitingForEnrolment();
+          }
+        } else if (!isEnrolled) {
           if (!machine) throw conflict();
           await guard(sql);
           const identity = await machine.resume({
@@ -713,7 +741,10 @@ export function createResumeJob(options: {
           });
           if (identity.sandboxId !== id || identity.generation !== generation) throw conflict();
           await machine.bootstrap({ ...identity, bindingRef: job.id, signal });
-          if (!(await enrolled())) return retry;
+          if (!(await enrolled())) {
+            await binding.write((tx) => recordResumeBootstrapAcknowledged(tx, job.id));
+            return retryWaitingForEnrolment();
+          }
         }
         await agent.health(signal, input.retainedWorkspace ? undefined : checkpoint, {
           expectedEpoch: input.target,

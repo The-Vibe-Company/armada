@@ -25,6 +25,7 @@ import {
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import { createModalLaunchCleanupJob, createModalLaunchJob } from "./jobs/modal-launch.ts";
+import type { JobKind } from "./jobs/runner.ts";
 import {
   type createModalArtifactCache,
   type ModalArtifactBinding,
@@ -326,27 +327,51 @@ export function createModalIntegration(options: {
       },
     };
   }
+  const machineClients = new Map<string, ModalClient>();
+  const machineCallSignal = new AsyncLocalStorage<AbortSignal>();
+  const closeMachineClients = () => {
+    for (const client of machineClients.values()) client.close();
+    machineClients.clear();
+  };
   const openMachine = async (
     { appName, binding, ...authority }: Parameters<Parameters<typeof createModalLaunchCleanupJob>[1]>[0],
     signal: AbortSignal,
+    onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
   ) => {
-    const { tokenId, tokenSecret, id, version } = await resolveManagementCredentials(authority);
+    const slot = `${authority.credentialScope}:${authority.credentialOwnerId}`;
+    let client = machineClients.get(slot);
+    const { tokenId, tokenSecret, id, version } = await resolveManagementCredentials(authority).catch(
+      (error: unknown) => {
+        if (error instanceof VaultError && (error.code === "missing_credential" || error.code === "unavailable")) {
+          client?.close();
+          machineClients.delete(slot);
+        }
+        throw error;
+      },
+    );
     if (!id || !version) throw new Error("Modal platform credential revision is unavailable.");
     signal.throwIfAborted();
+    if (client?.profile.tokenId !== tokenId || client?.profile.tokenSecret !== tokenSecret) {
+      client?.close();
+      client = new ModalClient({
+        tokenId,
+        tokenSecret,
+        maxThrottleWaitSecs: 0,
+        grpcMiddleware: [
+          async function* (call, rpc) {
+            const active = machineCallSignal.getStore();
+            const signals = [rpc.signal, active].filter((entry): entry is AbortSignal => entry !== undefined);
+            const requestSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+            requestSignal?.throwIfAborted();
+            const boundedRpc = { ...rpc, ...(requestSignal ? { signal: requestSignal } : {}), retries: 0 };
+            return yield* call.next(call.request, boundedRpc);
+          },
+        ],
+      });
+      machineClients.set(slot, client);
+    }
+    onRuntimeBinding?.({ appId: binding.appId, appName, environment: binding.environment, tokenId, tokenSecret });
     const deploymentId = modalDeploymentId(binding.environment, options.publicUrl);
-    const client = new ModalClient({
-      tokenId,
-      tokenSecret,
-      maxThrottleWaitSecs: 0,
-      grpcMiddleware: [
-        async function* (call, rpc) {
-          const requestSignal = rpc.signal ? AbortSignal.any([rpc.signal, signal]) : signal;
-          requestSignal.throwIfAborted();
-          const boundedRpc = { ...rpc, signal: requestSignal, retries: 0, timeoutMs: 10_000 };
-          return yield* call.next(call.request, boundedRpc);
-        },
-      ],
-    });
     return {
       client,
       appName,
@@ -355,9 +380,20 @@ export function createModalIntegration(options: {
       async modalCredential() {
         return { id, version };
       },
-      close: () => client.close(),
+      close: () => {},
       resolveRuntimeTicket: async () => null,
     };
+  };
+  const wrapMachineJob = (handler: JobKind) => {
+    const wrapped: JobKind = {
+      ...handler,
+      run: (job, context) => machineCallSignal.run(context.signal, () => handler.run(job, context)),
+      async drain() {
+        await handler.drain?.();
+        closeMachineClients();
+      },
+    };
+    return wrapped;
   };
   async function launchProviderFor(target: ProviderTarget, caller: { userId: string }) {
     if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
@@ -373,9 +409,33 @@ export function createModalIntegration(options: {
     return provider;
   }
   return {
-    launchCleanupJob: createModalLaunchCleanupJob(options.sql, openMachine),
-    launchJob: (prepare: Parameters<typeof createModalLaunchJob>[3]) =>
-      createModalLaunchJob(options.sql, options.encryptionKey, openMachine, prepare),
+    launchCleanupJob: wrapMachineJob(createModalLaunchCleanupJob(options.sql, openMachine)),
+    launchJob: (
+      prepare: Parameters<typeof createModalLaunchJob>[3],
+      cache?: Pick<ReturnType<typeof createModalArtifactCache>, "warm">,
+      logError?: (line: string) => void,
+    ) =>
+      wrapMachineJob(
+        createModalLaunchJob(
+          options.sql,
+          options.encryptionKey,
+          (request, signal) =>
+            openMachine(
+              request,
+              signal,
+              cache
+                ? (binding) => {
+                    void cache.warm(binding).catch((error) => {
+                      (logError ?? console.error)(
+                        `Modal artifact warming failed for an enrolled App: ${modalArtifactFailure(error)}.`,
+                      );
+                    });
+                  }
+                : undefined,
+            ),
+          prepare,
+        ),
+      ),
     inventoryReaper,
     warmRegisteredArtifactCaches,
     modalProviderFor,

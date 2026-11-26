@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { encryptSecret, type ModalBinding } from "@armada/core";
+import { decryptSecret, encryptSecret, type ModalBinding } from "@armada/core";
 import { modalLaunchReceipt } from "@armada/core/contract";
 import { createSqlVaultStore } from "@armada/core/server";
 import { handleControlRequest } from "../src/control.ts";
@@ -223,10 +223,17 @@ describe("provider routing", () => {
       expect(modal.forks).toHaveLength(0);
       const jobs = createJobsStore(sql, ENCRYPTION_KEY);
       const launchJob = await jobs.claim("launch", crypto.randomUUID(), 30, 1);
-      const setupJob = await jobs.claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1);
-      expect(setupJob).toMatchObject({
-        sandbox_id: response.sandbox.id,
-        payload: { launchJobId: launchJob?.id, prompt: "Inspect the repository." },
+      expect(await jobs.claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1)).toBeUndefined();
+      const {
+        rows: [setupRow],
+      } = await db.query<{ sandbox_id: string; payload_enc: Uint8Array<ArrayBuffer> }>(
+        "select sandbox_id, payload_enc from jobs where sandbox_id=$1 and kind=$2",
+        [response.sandbox.id, MODAL_INITIAL_TURN],
+      );
+      expect(setupRow?.sandbox_id).toBe(response.sandbox.id);
+      expect(JSON.parse(await decryptSecret(setupRow!.payload_enc, ENCRYPTION_KEY))).toMatchObject({
+        launchJobId: launchJob?.id,
+        prompt: "Inspect the repository.",
       });
 
       const samples = launchSamples(log);

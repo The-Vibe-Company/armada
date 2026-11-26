@@ -309,7 +309,7 @@ export async function createServerServices(env: Record<string, string | undefine
       ...modalLaunchTicketGuard(sandbox),
     };
   };
-  const modalJob = modal.launchJob(prepareLaunchTicket);
+  const modalJob = modal.launchJob(prepareLaunchTicket, warmModalArtifacts, options.logError);
   const boatJobs = boat
     ? boatLaunchJobs({
         sql,

@@ -101,6 +101,8 @@ import {
   jobRequestKey,
   queryWithJobLease,
   recordModalBootstrapTicket,
+  wakeEnrolledSandboxJobs,
+  wakeSandboxJobs,
   withJobLease,
 } from "./store.ts";
 import { launchAuthorityCurrent } from "./template-launch-authority.ts";
@@ -479,7 +481,7 @@ export async function admitModalLaunch(
           skills,
           ...(armadaAccess ? { scopedAccess: true } : {}),
         },
-        { orgId, maxAttempts: 3 },
+        { orgId, maxAttempts: 3, runAfter: input.deadline },
         tx,
       );
       const envelope = { sandbox: { id: sandboxId, status: "starting" as const } };
@@ -588,7 +590,7 @@ export function createModalInitialTurnJob(
       if (target?.accepted) return { status: "done" };
       if (!target || target.state === "failed") return { status: "fail", reason: "modal_initial_turn_unavailable" };
       if (!(await context.canDispatch())) return { status: "fail", reason: "modal_initial_turn_budget_exhausted" };
-      if (target.state !== "done") return { status: "retry", after: new Date(Date.now() + 1_000), unattempted: true };
+      if (target.state !== "done") return { status: "retry", after: new Date(Date.now() + 10_000), unattempted: true };
 
       const { epoch } = target;
       const actor = { userId: target.owner_id, orgId: target.org_id, role: target.role };
@@ -1090,7 +1092,7 @@ export async function runModalLaunch(
               case when s.stop_requested_at is null and e.enrolment_hash is not null
                      and e.enrolment_expires_at>clock_timestamp()
                      and j.deadline_at>clock_timestamp() and s.expires_at>clock_timestamp()
-                then least(e.enrolment_expires_at,j.deadline_at,s.expires_at,clock_timestamp()+interval '1 second')::text
+                then least(e.enrolment_expires_at,j.deadline_at,s.expires_at,clock_timestamp()+interval '10 seconds')::text
               end as check_after,
               j.outcome->>'bootstrap_ticket_enc' as bootstrap_ticket_enc,
               j.outcome->'modal_handoff' is not null as handoff_staged,
@@ -1119,7 +1121,10 @@ export async function runModalLaunch(
       throw new ModalBootstrapRefused("Modal launch account pin changed.");
     return receipt;
   };
-  const done = { status: "done" } satisfies JobResult;
+  const done = {
+    status: "done",
+    commit: (tx) => wakeSandboxJobs(tx, sandboxId, [MODAL_INITIAL_TURN], generation),
+  } satisfies JobResult;
   const retryUnattempted = (after = new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS)) =>
     ({ status: "retry", after, unattempted: true }) satisfies JobResult;
   const hasJournal = hasModalMachineJournal(job);
@@ -1133,7 +1138,11 @@ export async function runModalLaunch(
   if (initial === "deferred") return retryUnattempted();
   if (!initial) return done;
   const { pending, waitForEnrolment } = initial;
-  if (waitForEnrolment && pending.check_after) return retryUnattempted(new Date(pending.check_after));
+  if (waitForEnrolment && pending.check_after)
+    return {
+      ...retryUnattempted(new Date(pending.check_after)),
+      commit: (tx) => wakeEnrolledSandboxJobs(tx, sandboxId, generation, ["launch"]),
+    } satisfies JobResult;
 
   const startingTarget = async (tx: Sql) => {
     const row = await readEnrolment(tx);
@@ -1266,6 +1275,7 @@ export async function runModalLaunch(
       status: "retry",
       after: target.check_after ? new Date(target.check_after) : new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
       ...(target.check_after ? { outcome: "modal_bootstrap_acknowledged" } : {}),
+      commit: (tx) => wakeEnrolledSandboxJobs(tx, sandboxId, generation, ["launch"]),
     } satisfies JobResult;
   }
 
@@ -1326,6 +1336,7 @@ export async function runModalLaunch(
         },
         tx,
       );
+      await wakeSandboxJobs(tx, sandboxId, [MODAL_INITIAL_TURN], generation);
     },
   } satisfies JobResult;
 }

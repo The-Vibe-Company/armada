@@ -188,6 +188,68 @@ export function recordResumeBootstrapTicket(tx: Sql, jobId: string, ciphertext: 
   );
 }
 
+export function recordResumeBootstrapAcknowledged(tx: Sql, jobId: string) {
+  return tx.query(
+    `update public.jobs set outcome=outcome||'{"bootstrap_acknowledged":true}'::jsonb
+      where id=$1 and kind='resume'`,
+    [jobId],
+  );
+}
+
+async function scheduleJobsWake(tx: Sql) {
+  if (deferTransactionWake(tx, JOBS_WAKE)) return;
+  const deferred = await tx.transaction?.(async (raw) => deferTransactionWake(raw, JOBS_WAKE));
+  if (!deferred) runtimeWakes.notify(JOBS_WAKE);
+}
+
+export async function wakeSandboxJobs(
+  tx: Sql,
+  sandboxId: string,
+  kinds: readonly string[],
+  generation?: string | number,
+) {
+  await tx.query(
+    `with due as (
+       select id from public.jobs
+       where sandbox_id = $1 and kind = any($2::text[]) and state = 'queued'
+         and ($3::bigint is null or generation = $3::bigint)
+         and run_after > clock_timestamp()
+       order by id
+       for update skip locked
+     )
+     update public.jobs j set run_after = clock_timestamp()
+     from due where j.id = due.id`,
+    [sandboxId, [...kinds], generation ?? null],
+  );
+  await scheduleJobsWake(tx);
+}
+
+export async function wakeEnrolledSandboxJobs(
+  tx: Sql,
+  sandboxId: string,
+  generation: string | number,
+  kinds: readonly string[],
+) {
+  const { rows } = await tx.query(
+    `with due as (
+       select j.id from public.jobs j
+       where j.sandbox_id = $1 and j.kind = any($2::text[]) and j.state = 'queued'
+         and j.generation = $3::bigint and j.run_after > clock_timestamp()
+         and exists(
+           select 1 from public.runtime_enrolments e
+           where e.sandbox_id = j.sandbox_id and e.lifecycle_generation = j.generation and e.runtime_hash is not null
+         )
+       order by j.id
+       for update skip locked
+     )
+     update public.jobs j set run_after = clock_timestamp()
+     from due where j.id = due.id
+     returning j.id`,
+    [sandboxId, [...kinds], generation],
+  );
+  if (rows.length) await scheduleJobsWake(tx);
+}
+
 export function clearStopCapture(tx: Sql, jobId: string, sandboxId: string, generation: string) {
   return tx.query(
     "update public.jobs set outcome=outcome-'output' where id=$1 and sandbox_id=$2 and generation=$3 and kind='stop'",
@@ -268,6 +330,7 @@ interface EnqueueOptions {
   orgId: string;
   maxAttempts: number;
   deadline?: Date;
+  runAfter?: Date;
   request?: { ownerId: string; digest: string };
 }
 
@@ -569,7 +632,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     tx?: Sql,
   ) {
     const db = tx ?? sql;
-    const { orgId, request, deadline, maxAttempts } = options;
+    const { orgId, request, deadline, runAfter, maxAttempts } = options;
     const key = request
       ? jobRequestKey(orgId, kind, request.ownerId, idemKey)
       : JSON.stringify(["internal", orgId, kind, sandboxId, generation, idemKey]);
@@ -579,8 +642,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     const { rows: insertedRows } = await db.query<{ id: string }>(
       `insert into public.jobs
            (kind, sandbox_id, generation, idem_key, payload_enc, org_id, max_attempts, deadline_at,
-            request_owner_id, request_digest)
-         values ($1,$2,$3,$4,$5::text::bytea,$6,$7,$8,$9,$10)
+            request_owner_id, request_digest, run_after)
+         values ($1,$2,$3,$4,$5::text::bytea,$6,$7,$8,$9,$10,coalesce($11,now()))
          on conflict (idem_key) do nothing returning id`,
       [
         kind,
@@ -593,10 +656,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         deadline ?? null,
         request?.ownerId ?? null,
         request?.digest ?? null,
+        runAfter ?? null,
       ],
     );
     if (insertedRows[0]) {
-      if (!deferTransactionWake(db, JOBS_WAKE)) {
+      if (!runAfter && !deferTransactionWake(db, JOBS_WAKE)) {
         if (!tx || tx === sql) runtimeWakes.notify(JOBS_WAKE);
         else await tx.transaction?.(async (raw) => deferTransactionWake(raw, JOBS_WAKE));
       }
