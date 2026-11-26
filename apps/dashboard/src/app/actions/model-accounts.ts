@@ -282,7 +282,9 @@ export async function makeDefaultAccount(_previous: ActionResult | null, data: F
     if (!allowed.ok) return fail(allowed.error);
     const saved = await context.control.makeDefault(target(context, id));
     refresh();
-    return done(`${saved.name} is now the account-wide default for ${KIND_INFO[saved.kind].harnessLabel}.`);
+    return done(
+      `${saved.name} is now the ${saved.scope === "org" ? "organization" : "personal"} default for ${KIND_INFO[saved.kind].harnessLabel}.`,
+    );
   } catch (error) {
     return explain(error);
   }

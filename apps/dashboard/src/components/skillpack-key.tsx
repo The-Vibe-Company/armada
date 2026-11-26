@@ -48,15 +48,6 @@ const SCOPES: readonly SkillpackScope[] = ["user", "org"];
  */
 export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, keys }: Props) {
   const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState("all");
-  const [query, setQuery] = useState("");
-  const shown = SCOPES.filter(
-    (item) =>
-      (filter === "all" || filter === item) &&
-      (item === "user" ? "Your Skillpack key Personal" : "The organization’s key Organization")
-        .toLowerCase()
-        .includes(query.toLowerCase()),
-  );
   const [scope, setScope] = useState<SkillpackScope>("user");
   const [generation, setGeneration] = useState(0);
   const toast = useToast();
@@ -109,49 +100,16 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
         </CreateDialog>
       </PageHeader>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <fieldset
-          aria-label="Filter Skillpack keys"
-          className="inline-flex flex-wrap gap-0.5 rounded-lg bg-muted p-[3px]"
-        >
-          {[
-            { key: "all", label: "All" },
-            { key: "org", label: "Organization" },
-            { key: "user", label: "Personal" },
-          ].map((item) => (
-            <Button
-              key={item.key}
-              variant="ghost"
-              size="sm"
-              aria-pressed={filter === item.key}
-              onClick={() => setFilter(item.key)}
-              className={filter === item.key ? "h-7 bg-card shadow-xs" : "h-7"}
-            >
-              {item.label}
-              <span className="font-mono text-[11px] text-muted-foreground">{item.key === "all" ? 2 : 1}</span>
-            </Button>
-          ))}
-        </fieldset>
-        <Input
-          aria-label="Search Skillpack keys"
-          placeholder="Search keys"
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          className="h-[34px] w-[260px] max-w-full text-[13px]"
-        />
-      </div>
       <div className="space-y-3">
-        {shown.length === 0 && (
-          <p className="rounded-[10px] border border-dashed p-12 text-center text-sm text-muted-foreground">
-            Nothing matches
-          </p>
-        )}
+        <p className="max-w-3xl text-sm text-pretty text-muted-foreground">
+          Public skills work automatically. Add a personal or organization Skillpack key here to unlock private skills
+          chosen in Templates or at Launch.
+        </p>
         <ul
           aria-label="Skillpack keys"
           className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,310px),1fr))] gap-3"
         >
-          {shown.map((item) => (
+          {SCOPES.map((item) => (
             <KeyRow
               key={item}
               scope={item}
@@ -164,9 +122,8 @@ export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, 
           ))}
         </ul>
         <p className="max-w-3xl text-xs text-pretty text-muted-foreground">
-          You pick skills in a template or at launch, not here. Your key is used first; the organization's serves
-          members without one. If your key is refused, Armada does not fall back to the organization's. Without a key,
-          only public skills install. Once a key is stored, nobody can read it back.
+          Your personal key is used first; the organization&apos;s serves members without one. If your key is refused,
+          Armada does not fall back to the organization&apos;s. Once a key is stored, nobody can read it back.
         </p>
       </div>
     </>

@@ -195,7 +195,7 @@ export function LaunchStart(
   const fallback: LaunchStartTarget = host
     ? {
         id: props.initialTargetId ?? `host:${props.hostId}`,
-        label: `Empty machine · ${props.hostName}`,
+        label: `Base Armada image · ${props.hostName}`,
         group,
         hostName: props.hostName,
         golden: "",
@@ -398,14 +398,28 @@ export function LaunchStart(
   const repositoryContext = {
     headline: (
       <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        What should we build in
-        <RepositoryPicker
-          current={repository}
-          choices={launchRepositoryChoices(starts)}
-          onChange={chooseRepository}
-          disabled={Boolean(building)}
-        />
-        <span className="-ml-1">?</span>
+        {repository ? (
+          <>
+            What should we build in
+            <RepositoryPicker
+              current={repository}
+              choices={launchRepositoryChoices(starts)}
+              onChange={chooseRepository}
+              disabled={Boolean(building)}
+            />
+            <span className="-ml-1">?</span>
+          </>
+        ) : (
+          <>
+            What should we build?
+            <RepositoryPicker
+              current={repository}
+              choices={launchRepositoryChoices(starts)}
+              onChange={chooseRepository}
+              disabled={Boolean(building)}
+            />
+          </>
+        )}
       </span>
     ),
     withoutRepository: repository && !building ? <WithoutRepository onClick={() => chooseRepository("")} /> : null,

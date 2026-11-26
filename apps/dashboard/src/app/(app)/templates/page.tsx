@@ -202,7 +202,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
     : undefined;
   const environment = definition
     ? "hostId" in definition
-      ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Official Armada image")} · ${DOCKER_HOST_LABEL} ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "unavailable"}`
+      ? `${lookups.snapshots?.find((snapshot) => snapshot.id === definition.snapshotId)?.name ?? (definition.snapshotId ? "Unavailable snapshot" : "Base Armada image")} · ${DOCKER_HOST_LABEL} ${lookups.hosts?.find((host) => host.id === definition.hostId)?.name ?? "unavailable"}`
       : `${golden?.name ?? "Unavailable snapshot"} on ${PROVIDER_LABELS[definition.provider]} cloud`
     : null;
   const target = launchTarget(item, context.goldens, lookups);
@@ -239,7 +239,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             )}
             {"hostId" in definition && (
               <p className="text-xs text-muted-foreground">
-                {definition.snapshotId ? "Exact snapshot on this Docker host." : "Official Armada image."}
+                {definition.snapshotId ? "Exact snapshot on this Docker host." : "Base Armada image."}
               </p>
             )}
           </PanelSection>

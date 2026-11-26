@@ -391,32 +391,59 @@ function ScopedGoldenForm({
       <input type="hidden" name="org" value={orgId} />
       <fieldset disabled={pending || jobActive} className="space-y-4 disabled:opacity-70">
         {mode === "create" ? (
-          <div className="space-y-2">
-            <div className="space-y-2">
-              <Label htmlFor={`${id}-name`}>Name</Label>
-              <Input
-                id={`${id}-name`}
-                aria-label="Snapshot name"
-                name="name"
-                value={goldenName}
-                onChange={(event) => setGoldenName(event.target.value)}
-                required
-                maxLength={120}
-                placeholder="web-app"
-                autoComplete="off"
-                className="h-[38px] font-mono"
-              />{" "}
-            </div>
-            <p className="flex items-start gap-1.5 text-xs">
-              <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
-              Where it is built is permanent. Its owner can make it private later.
-            </p>
-            {!isAdmin && (
-              <p className="text-xs text-muted-foreground">
-                Only an organization admin can create a snapshot for everyone.
-              </p>
+          <>
+            {providerChoice && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Where to build</p>
+                {providerChoice}
+              </div>
             )}
-          </div>
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <Label htmlFor={`${id}-name`}>Name</Label>
+                <Input
+                  id={`${id}-name`}
+                  aria-label="Snapshot name"
+                  name="name"
+                  value={goldenName}
+                  onChange={(event) => setGoldenName(event.target.value)}
+                  required
+                  maxLength={120}
+                  placeholder="web-app"
+                  autoComplete="off"
+                  className="h-[38px] font-mono"
+                />
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Visible to</p>
+                <LaunchChoice
+                  inline
+                  label="Who sees it"
+                  presentation="chips"
+                  value={chosenVisibility}
+                  onChange={(value) => setChosenVisibility(value as "org" | "private")}
+                  options={[
+                    {
+                      value: "org",
+                      label: `everyone in ${orgName}`,
+                      ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
+                    },
+                    { value: "private", label: "only you" },
+                  ]}
+                />
+                <input type="hidden" name="visibility" value={chosenVisibility} />
+              </div>
+              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
+                Where it is built is permanent. Its owner can change visibility later.
+              </p>
+              {!isAdmin && (
+                <p className="text-xs text-muted-foreground">
+                  Only an organization admin can create a snapshot for everyone.
+                </p>
+              )}
+            </div>
+          </>
         ) : (
           <>
             <input type="hidden" name="golden" value={goldenId ?? ""} />
@@ -429,12 +456,6 @@ function ScopedGoldenForm({
           </>
         )}
 
-        {embedded && (
-          <div className="space-y-1">
-            <p className="text-sm font-medium">Where to build</p>
-            {providerChoice}
-          </div>
-        )}
         <SnapshotDetails openInComposer={Boolean(embedded)}>
           <fieldset className="relative space-y-3">
             <legend className="text-sm font-medium">Repositories</legend>
@@ -538,39 +559,10 @@ function ScopedGoldenForm({
               <PlusIcon /> Add repository
             </Button>
           </fieldset>
-
-          {mode === "create" && (
-            <div className="space-y-2">
-              {" "}
-              {!embedded && (
-                <>
-                  <div className="pt-2 text-sm font-medium">Machine</div>
-                  {providerChoice}
-                </>
-              )}
-              <div className="pt-2 text-sm font-medium">Visible to</div>
-              <LaunchChoice
-                inline
-                label="Who sees it"
-                presentation="chips"
-                value={chosenVisibility}
-                onChange={(value) => setChosenVisibility(value as "org" | "private")}
-                options={[
-                  {
-                    value: "org",
-                    label: `everyone in ${orgName}`,
-                    ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
-                  },
-                  { value: "private", label: "only you" },
-                ]}
-              />
-              <input type="hidden" name="visibility" value={chosenVisibility} />
-            </div>
-          )}
         </SnapshotDetails>
         <div className="space-y-2">
           <Label htmlFor={`${id}-init`}>
-            Setup script <span className="font-normal text-muted-foreground">optional</span>
+            Setup commands <span className="font-normal text-muted-foreground">optional</span>
           </Label>
           <Textarea
             id={`${id}-init`}
@@ -584,8 +576,8 @@ function ScopedGoldenForm({
             className="font-mono text-xs"
           />
           <p id={`${id}-init-hint`} className="text-xs text-muted-foreground">
-            One per line, each starting from the home folder (up to 32 lines). Never put a password or a key here; an
-            agent that needs one gets it as a secret in a template.
+            Runs each time a sandbox launches from this cloud snapshot. One command per line from the home folder (up to
+            32 lines). Never put a password or key here; add secrets in a template.
           </p>
         </div>
       </fieldset>

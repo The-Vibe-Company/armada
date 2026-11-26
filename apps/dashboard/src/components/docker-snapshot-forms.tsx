@@ -66,6 +66,7 @@ export function SnapshotCreateChoice({
   cloudForms,
   hosts,
   orgId,
+  orgName,
   isAdmin,
   canBuild,
   githubConnected = true,
@@ -77,6 +78,7 @@ export function SnapshotCreateChoice({
   cloudForms: Partial<Record<"boat" | "modal", ReactNode>>;
   hosts: DockerHost[];
   orgId: string;
+  orgName?: string | undefined;
   isAdmin: boolean;
   canBuild: boolean;
   githubConnected?: boolean;
@@ -110,6 +112,7 @@ export function SnapshotCreateChoice({
           <DockerSnapshotForm
             hosts={hosts}
             orgId={orgId}
+            orgName={orgName}
             isAdmin={isAdmin}
             canBuild={canBuild}
             githubConnected={githubConnected}
@@ -150,6 +153,7 @@ function DockerRepositoryDetails({ embedded, children }: { embedded: boolean; ch
 function DockerSnapshotForm({
   hosts,
   orgId,
+  orgName,
   isAdmin,
   canBuild,
   githubConnected = true,
@@ -159,6 +163,7 @@ function DockerSnapshotForm({
 }: {
   hosts: DockerHost[];
   orgId: string;
+  orgName?: string | undefined;
   isAdmin: boolean;
   canBuild: boolean;
   githubConnected?: boolean;
@@ -168,7 +173,7 @@ function DockerSnapshotForm({
 }) {
   const placement = useSnapshotPlacement();
   const [hostId, setHostId] = useState(hosts.find((host) => host.state === "online")?.id ?? "");
-  const [visibility, setVisibility] = useState("private");
+  const [visibility, setVisibility] = useState<"org" | "private">(isAdmin ? "org" : "private");
   const [result, action, pending] = useMutationState(buildDockerSnapshot);
   const [config, setConfig] = useState("");
   const [buildName, setBuildName] = useState(embedded?.name ?? "");
@@ -283,15 +288,16 @@ function DockerSnapshotForm({
       <LaunchChoice
         inline
         label="Who sees it"
+        presentation="chips"
         value={visibility}
-        onChange={setVisibility}
+        onChange={(value) => setVisibility(value as "org" | "private")}
         options={[
-          { value: "private", label: "only you" },
           {
             value: "org",
-            label: "everyone in the organization",
+            label: orgName ? `everyone in ${orgName}` : "everyone in the organization",
             ...(!isAdmin ? { reason: "Only an organization admin can create a snapshot for everyone." } : {}),
           },
+          { value: "private", label: "only you" },
         ]}
       />
       <input type="hidden" name="visibility" value={visibility} />
@@ -331,28 +337,15 @@ function DockerSnapshotForm({
           }
           className="space-y-4"
         >
-          <div className="text-lg leading-loose">
-            Build{" "}
-            <Input
-              id={`${id}-name`}
-              aria-label="Snapshot name"
-              name="name"
-              value={buildName}
-              onChange={(event) => setBuildName(event.target.value)}
-              required
-              maxLength={80}
-              placeholder="armada-warm"
-              className="inline-flex h-8 w-40 border-0 border-b border-dashed rounded-none shadow-none"
-              pattern={"[A-Za-z0-9][A-Za-z0-9._\\-]{0,79}"}
-              title="Start with a letter or number; use only letters, numbers, dots, underscores and hyphens."
-            />{" "}
-            on{" "}
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Where to build</p>
             {placement ? (
               <SnapshotPlacementWord />
             ) : (
               <LaunchChoice
                 inline
                 label="Where to build"
+                presentation="chips"
                 value={hostId}
                 onChange={setHostId}
                 options={hosts.map((host) => {
@@ -366,20 +359,40 @@ function DockerSnapshotForm({
               />
             )}
             <input type="hidden" name="hostId" value={placement?.value ?? hostId} />
-            {!embedded && ", visible to "}
-            {!embedded && visibilityField}
           </div>
-          <p className="flex gap-2 text-sm">
-            <LockIcon className="size-4 shrink-0" />
-            Where it is built and who sees it are permanent.
-          </p>
-          <SnapshotDetails openInComposer={Boolean(embedded)}>
-            {embedded && (
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Who sees it</p>
-                {visibilityField}
-              </div>
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor={`${id}-name`}>Name</Label>
+              <Input
+                id={`${id}-name`}
+                aria-label="Snapshot name"
+                name="name"
+                value={buildName}
+                onChange={(event) => setBuildName(event.target.value)}
+                required
+                maxLength={80}
+                placeholder="armada-warm"
+                autoComplete="off"
+                className="h-[38px] font-mono"
+                pattern={"[A-Za-z0-9][A-Za-z0-9._\\-]{0,79}"}
+                title="Start with a letter or number; use only letters, numbers, dots, underscores and hyphens."
+              />
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Visible to</p>
+              {visibilityField}
+            </div>
+            <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+              <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0" />
+              Where it is built and who sees it are permanent.
+            </p>
+            {!isAdmin && (
+              <p className="text-xs text-muted-foreground">
+                Only an organization admin can create a snapshot for everyone.
+              </p>
             )}
+          </div>
+          <SnapshotDetails openInComposer={Boolean(embedded)}>
             <Button type="button" variant="link" onClick={() => setAdvanced(!advanced)}>
               {advanced ? "Use repositories and commands instead" : "Use a snapshot file instead"}
             </Button>
@@ -413,7 +426,7 @@ function DockerSnapshotForm({
               </div>
             ) : (
               <>
-                <Label>Repositories to put on the machine</Label>
+                <Label>Repositories</Label>
                 {repos.map((repo, index) => (
                   <div key={repo.key} className="border-b py-2 space-y-2">
                     <div className="flex gap-2 items-center">
@@ -496,18 +509,19 @@ function DockerSnapshotForm({
           {!advanced && (
             <div className="space-y-2">
               <Label htmlFor={`${id}-commands`}>
-                {embedded ? "Init commands (optional)" : "Commands to run once, while building (optional)"}
+                Setup commands <span className="font-normal text-muted-foreground">optional</span>
               </Label>
               <Textarea
                 id={`${id}-commands`}
                 value={commands}
                 onChange={(e) => setCommands(e.target.value)}
                 placeholder="(cd web && bun install)"
+                aria-describedby={`${id}-commands-hint`}
                 className="font-mono text-xs"
               />
-              <p className="text-xs text-muted-foreground">
-                One per line, each starting from the home folder. At most 32 commands. Never put a password or key here;
-                an agent gets secrets through a template.
+              <p id={`${id}-commands-hint`} className="text-xs text-muted-foreground">
+                Runs once while building this Docker snapshot. One command per line from the home folder (up to 32
+                lines). Never put a password or key here; add secrets in a template.
               </p>
             </div>
           )}

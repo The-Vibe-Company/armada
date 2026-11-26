@@ -152,8 +152,8 @@ function ConnectionTestDialog({
         <DialogHeader>
           <DialogTitle>Test {account.name}</DialogTitle>
           <DialogDescription>
-            Use an idle, running Modal or Boat shared-runtime sandbox with this API-key account. This sends one tiny
-            billable request through its runtime, without starting or resuming a machine.
+            Use an idle, running cloud sandbox (Modal or Boat with the Armada runtime) using this API-key account. This
+            sends one tiny billable request through the sandbox without starting or resuming a machine.
           </DialogDescription>
         </DialogHeader>
         <ConnectionTestForm
@@ -199,7 +199,7 @@ function ConnectionTestForm({
           <NativeSelect id={`${id}-sandbox`} name="sandboxId" required defaultValue={candidates[0]?.id}>
             {candidates.map((sandbox) => (
               <option key={sandbox.id} value={sandbox.id}>
-                {HARNESS_LABELS[sandbox.harness]} · {sandbox.provider === "boat" ? "Boat runtime" : "Modal"} —{" "}
+                {HARNESS_LABELS[sandbox.harness]} · {sandbox.provider === "boat" ? "Boat" : "Modal"} —{" "}
                 {new Date(sandbox.createdAt).toLocaleString("en", {
                   dateStyle: "medium",
                   timeStyle: "short",
@@ -215,7 +215,7 @@ function ConnectionTestForm({
           <p>
             {choices.state === "unavailable"
               ? "Available sandboxes could not be loaded. Reload Models to check again."
-              : "No matching sandbox is running. Launch a Modal or Boat shared-runtime sandbox with this account, then reload Models."}
+              : "No matching sandbox is running. Launch a cloud sandbox on Modal or Boat with this account, then reload Models."}
           </p>
           <Button asChild variant="outline" size="sm">
             {choices.state === "unavailable" ? (
@@ -249,9 +249,9 @@ function ConnectionTestForm({
         ) : null}
       </div>
       <p className="text-xs text-muted-foreground">
-        Only your recent running Modal or Boat shared-runtime sandboxes using this account are listed. Native Boat and
-        Docker are not supported for checks. No machine is started or resumed. A successful check does not prove
-        streaming or tool compatibility.
+        Only your recent running cloud sandboxes (Modal, or Boat running the Armada runtime) using this account are
+        listed. Legacy Boat sandboxes and Docker hosts are not supported for connection checks. No machine is started or
+        resumed. A successful check does not prove streaming or tool compatibility.
       </p>
       {pending ? (
         <p role="status" className="text-sm text-muted-foreground">
@@ -565,7 +565,8 @@ export function AccountRow({
               </Badge>
               {account.isDefault && (
                 <Badge variant="outline" className="gap-1" data-default>
-                  <StarIcon className="fill-current" /> Account-wide default
+                  <StarIcon className="fill-current" />{" "}
+                  {account.scope === "org" ? "Organization default" : "Personal default"}
                 </Badge>
               )}
             </div>
@@ -651,7 +652,7 @@ export function AccountRow({
                             ?.click()
                         }
                       >
-                        Make account-wide default
+                        Make {account.scope === "org" ? "organization" : "personal"} default
                       </DropdownMenuItem>
                     )}
                     {info.billing === "api" &&
@@ -835,9 +836,9 @@ function DefaultAccountAction({
           action={change}
           fields={<TargetFields account={account} orgId={orgId} />}
           onResult={ignoreResult}
-          label={`Make default account-wide, ${account.name}`}
+          label={`Make default (${account.scope === "org" ? "organization" : "personal"}), ${account.name}`}
         >
-          Make account-wide default
+          Make {account.scope === "org" ? "organization" : "personal"} default
         </InlineAction>
       )}
       {undo && (
@@ -1934,7 +1935,10 @@ export function AddAccountDialog({
             <div data-wizard-panel="2" className="space-y-4">
               {saveFields}
               {command && (
-                <Disclosure summary="Sign-in instructions and terminal login" defaultOpen={false}>
+                <Disclosure
+                  summary="Sign-in instructions and terminal login"
+                  defaultOpen={kind === "claude_oauth" || kind === "codex_auth"}
+                >
                   {pasteSignIn && <PasteSignIn key={kind} command={pasteSignIn.command} paste={pasteSignIn.paste} />}
                   <TerminalSignIn
                     command={command}
@@ -2376,7 +2380,7 @@ function PersonalDefaultSentence({
           <DialogHeader>
             <DialogTitle>{HARNESS_LABELS[harness]} launch default</DialogTitle>
             <DialogDescription>
-              Only your launches change. Other agents and account-wide defaults stay unchanged.
+              Only your launches change. Other agents and default fallbacks stay unchanged.
             </DialogDescription>
           </DialogHeader>
           <form
@@ -2399,7 +2403,7 @@ function PersonalDefaultSentence({
                 name="credentialId"
                 defaultValue={current.credentialId ?? account?.id ?? ""}
               >
-                <option value="">Use account-wide defaults</option>
+                <option value="">Use default fallback</option>
                 {accountsFor(accounts, harness).map((choice) => (
                   <option key={choice.id} value={choice.id} disabled={!!accountProblem(choice, now)}>
                     {choice.name}

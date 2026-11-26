@@ -195,6 +195,7 @@ export default async function GoldensPage({ searchParams }: Props) {
           snapshots={snapshots}
           launch={launch}
           orgId={org.id}
+          orgName={org.name}
           isAdmin={role === "admin"}
           hosts={hosts}
           canBuild={canBuildDocker}
@@ -377,8 +378,8 @@ export default async function GoldensPage({ searchParams }: Props) {
       {
         catalog: { group: "docker", attention: !!blocker, footer: name },
         key: `empty:${hostId}`,
-        name: "Empty machine",
-        search: name,
+        name: "Base Armada image",
+        search: `${name} base armada image`,
         meta: "No snapshot needed",
         state: <StateCell tone={blocker ? "warning" : "success"} label={blocker ? "Unavailable" : "Ready"} />,
         fact: blocker ?? "No repository, nothing installed by you",

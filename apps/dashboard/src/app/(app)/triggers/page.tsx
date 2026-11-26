@@ -34,6 +34,7 @@ export default async function InboundTriggersPage({
       searchParams,
       inboundTriggerTemplates(org),
     ]);
+    const templateNames = new Map((templates ?? []).map((template) => [template.id, template.name]));
     return (
       <ResourceBrowser
         key={org}
@@ -43,16 +44,24 @@ export default async function InboundTriggersPage({
         blockers={[]}
         actions={<CreateTriggerDialog org={org} templates={templates} />}
         initial={typeof item === "string" ? item : null}
-        empty={<Empty title="No inbound triggers configured" />}
+        empty={
+          <Empty title="No inbound triggers yet">
+            Create a trigger to get a webhook URL that launches a saved template automatically when external events
+            arrive.
+          </Empty>
+        }
         rows={triggers.map((trigger) => {
           const { id, templateId, poolHarness, enabled, ratePerMinute, concurrency, rateRefusals } = trigger;
           const hook = new URL(`/api/v1/hooks/${id}`, mcpUrl() ?? undefined).href;
           const harness = HARNESS_LABELS[poolHarness];
+          const templateName = templateId ? templateNames.get(templateId) : undefined;
+          const rowName = templateName ?? (templateId ? "Saved template" : "Private template");
+          const shortId = id.slice(0, 8);
           return {
             key: id,
-            name: id,
-            search: `${id} ${harness} ${enabled ? "enabled" : "disabled"}`,
-            meta: harness,
+            name: rowName,
+            search: `${rowName} ${id} ${harness} ${enabled ? "enabled" : "disabled"}`,
+            meta: `${harness} · ${shortId}`,
             state: <Badge variant={enabled ? "secondary" : "outline"}>{enabled ? "Enabled" : "Disabled"}</Badge>,
             detail: (
               <div className="space-y-5">
@@ -68,7 +77,7 @@ export default async function InboundTriggersPage({
                   <dd>
                     {templateId ? (
                       <Link href={`/templates?item=${templateId}`} className="underline">
-                        View template
+                        {templateName ?? "View template"}
                       </Link>
                     ) : (
                       "Private template"
