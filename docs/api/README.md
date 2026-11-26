@@ -338,6 +338,12 @@ producing side effects. Return 2xx after durable acceptance. Deliveries carry
 `externalRef` (null if absent) and may be retried, with up to five attempts.
 See [outbound webhooks](../outbound-webhooks.md) for payloads and endpoint management.
 
+## Relay interactive shell and TCP forwarding
+
+Mint a short-lived single-use ticket via `POST /api/v1/sandboxes/{id}/relay-ticket` (`{"mode":"pty","cwd":"/home/user"}` or `{"mode":"tcp","port":3000}`, optional `org`; `Cache-Control: no-store`).
+Connect to `wsUrl` (`/api/v1/relay/ws`) with `Authorization: Bearer <ticket>` (never query strings) using `@armada/core/relay`.
+CLI commands: `armada shell [sandbox-id] [--cwd PATH] [--org UUID]` and `armada port-forward [sandbox-id] <remote-port> [local-port] [--org UUID]` (loopback `127.0.0.1` only).
+
 ## Download outputs
 
 Have the agent write files directly to `/home/user/outputs` on every provider.
