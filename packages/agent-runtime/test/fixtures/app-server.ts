@@ -6,12 +6,16 @@ import { createInterface } from "node:readline";
 import type { TurnStartParams } from "../../src/codex-schema/v2/TurnStartParams.ts";
 import recordedTerminal from "./codex-terminal-recorded.json";
 
-const send = (message: unknown) => process.stdout.write(`${JSON.stringify(message)}\n`);
+let buffered: string[] | null = null;
+const send = (message: unknown) => {
+  const line = `${JSON.stringify(message)}\n`;
+  if (buffered) buffered.push(line);
+  else process.stdout.write(line);
+};
 let loggedIn = false;
 let turn = 0;
 let thread = "fixture-thread";
 let usageOffset = 0;
-let pendingResumeBaseline: (() => void) | undefined;
 createInterface({ input: process.stdin }).on("line", (line) => {
   const m = JSON.parse(line);
   if (process.env.ARMADA_CWD_PROOF) {
@@ -70,8 +74,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     loggedIn = true;
     reply({ type: "apiKey" });
   } else if (m.method === "account/rateLimits/read") {
-    pendingResumeBaseline?.();
-    pendingResumeBaseline = undefined;
+    if (process.env.ARMADA_HANG_RATE_LIMITS === "1") return;
     if (process.env.ARMADA_QUOTA_UNAVAILABLE === "1") {
       send({ id: m.id, error: { code: -32000, message: "Synthetic quota unavailable" } });
       return;
@@ -173,6 +176,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       baseline(1, true);
       baseline();
     }
+    if (baselineMode === "after") buffered = [];
     reply({
       thread: {
         id: process.env.ARMADA_NATIVE_RESUME_MISMATCH === "thread" ? "replacement-native" : thread,
@@ -196,7 +200,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
             ? undefined
             : (process.env.ARMADA_USAGE_MODEL ?? m.params.model ?? "gpt-6.2-sol"),
     });
-    if (baselineMode === "after") pendingResumeBaseline = baseline;
+    if (buffered) {
+      baseline();
+      const lines = buffered.join("");
+      buffered = null;
+      process.stdout.write(lines);
+    }
   } else if (m.method === "thread/read" && process.env.ARMADA_HYDRATION_FAILURE) {
     if (thread !== "recovered-thread" || !turn || m.params.threadId !== thread)
       throw Error("replacement verification must follow a native turn");

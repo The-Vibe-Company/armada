@@ -1,14 +1,22 @@
 import { streamSandboxEvents } from "@armada/core/contract/sandbox-events";
 import type { EventStreamInput, SandboxEvent } from "./index.ts";
 
-type StreamConnection = { body: ReadableStream<Uint8Array> } | { retryAfterMs: number };
+type StreamConnection = { body: ReadableStream<Uint8Array>; status?: number } | { retryAfterMs: number };
 
 export const sandboxEventStream: (
   input: EventStreamInput,
   open: (cursor: string | undefined) => Promise<StreamConnection>,
   signal?: AbortSignal,
-) => AsyncGenerator<SandboxEvent, void> = async function* (input, open, signal) {
-  const { sandbox, cursor } = streamSandboxEvents.input.query.parse(input);
+  invalidPayload?: (message: string, status: number) => Error,
+) => AsyncGenerator<SandboxEvent, void> = async function* (
+  input,
+  open,
+  signal,
+  invalidPayload = (message) => new TypeError(message),
+) {
+  const parsed = streamSandboxEvents.input.query.safeParse(input);
+  if (!parsed.success) throw new TypeError("Invalid event stream input: expected a sandbox UUID and optional cursor.");
+  const { sandbox, cursor } = parsed.data;
   let lastId = cursor;
   while (!signal?.aborted) {
     const connection = await open(lastId);
@@ -18,7 +26,13 @@ export const sandboxEventStream: (
     }
 
     const before = lastId;
-    for await (const event of readEvents(connection.body, sandbox.toLowerCase(), signal)) {
+    for await (const event of readEvents(
+      connection.body,
+      sandbox.toLowerCase(),
+      connection.status ?? 200,
+      invalidPayload,
+      signal,
+    )) {
       if (lastId !== undefined && lastId !== "tail" && BigInt(event.id) <= BigInt(lastId)) continue;
       lastId = event.id;
       yield event;
@@ -27,7 +41,13 @@ export const sandboxEventStream: (
   }
 };
 
-async function* readEvents(body: ReadableStream<Uint8Array>, sandbox: string, signal?: AbortSignal) {
+async function* readEvents(
+  body: ReadableStream<Uint8Array>,
+  sandbox: string,
+  status: number,
+  invalidPayload: (message: string, status: number) => Error,
+  signal?: AbortSignal,
+) {
   const reader = body.getReader();
   const cancel = () => {
     void reader.cancel().catch(() => {});
@@ -42,7 +62,7 @@ async function* readEvents(body: ReadableStream<Uint8Array>, sandbox: string, si
       buffer += decoder.decode(chunk.value, { stream: true });
       let separator = /\r?\n\r?\n/.exec(buffer);
       while (separator && !signal?.aborted) {
-        const event = parseFrame(buffer.slice(0, separator.index), sandbox);
+        const event = parseFrame(buffer.slice(0, separator.index), sandbox, status, invalidPayload);
         buffer = buffer.slice(separator.index + separator[0].length);
         if (event) yield event;
         separator = /\r?\n\r?\n/.exec(buffer);
@@ -55,7 +75,12 @@ async function* readEvents(body: ReadableStream<Uint8Array>, sandbox: string, si
   }
 }
 
-function parseFrame(frame: string, sandbox: string) {
+function parseFrame(
+  frame: string,
+  sandbox: string,
+  status: number,
+  invalidPayload: (message: string, status: number) => Error,
+) {
   let id: string | undefined;
   const data: string[] = [];
   for (const line of frame.split(/\r?\n/)) {
@@ -63,7 +88,15 @@ function parseFrame(frame: string, sandbox: string) {
     if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
   }
   if (data.length === 0) return;
-  const event = streamSandboxEvents.output.parse(JSON.parse(data.join("\n")));
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data.join("\n"));
+  } catch {
+    throw invalidPayload("Event stream returned malformed JSON.", status);
+  }
+  const parsed = streamSandboxEvents.output.safeParse(raw);
+  if (!parsed.success) throw invalidPayload("Event stream returned an invalid event payload.", status);
+  const event = parsed.data;
   if (event.id !== id || event.sandboxId.toLowerCase() !== sandbox)
     throw new TypeError("Event stream returned an inconsistent event reference.");
   const base = {

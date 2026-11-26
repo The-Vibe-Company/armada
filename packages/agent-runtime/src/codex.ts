@@ -116,6 +116,7 @@ export class CodexDriver implements Driver {
         method: string;
         resolve: (x: unknown) => void;
         reject: (e: Error) => void;
+        onResult?: (x: unknown) => void;
         timer: ReturnType<typeof setTimeout>;
       }
     >();
@@ -165,7 +166,13 @@ export class CodexDriver implements Driver {
     let terminalReject: ((error: Error) => void) | undefined;
     let failure: Error | undefined;
     let lineFailure: Error | undefined;
-    const rpc = <T>(method: string, params: unknown, timeoutMs = 30000, fatal = true) =>
+    const rpc = <T>(
+      method: string,
+      params: unknown,
+      timeoutMs = 30000,
+      fatal = true,
+      onResult?: (x: unknown) => void,
+    ) =>
       new Promise<T>((resolve, reject) => {
         if (failure) {
           reject(failure);
@@ -177,7 +184,13 @@ export class CodexDriver implements Driver {
           reject(new HarnessError("harness_timeout"));
           if (fatal) child.kill("SIGKILL");
         }, timeoutMs);
-        pending.set(id, { method, resolve: (x) => resolve(x as T), reject, timer });
+        pending.set(id, {
+          method,
+          resolve: (x) => resolve(x as T),
+          reject,
+          ...(onResult ? { onResult } : {}),
+          timer,
+        });
         child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
       });
     let retryWait: AbortController | undefined;
@@ -224,7 +237,10 @@ export class CodexDriver implements Driver {
             clearTimeout(p.timer);
             pending.delete(m.id);
             if (m.error) p.reject(nativeHarnessError(m.error, p.method));
-            else p.resolve(m.result);
+            else {
+              p.onResult?.(m.result);
+              p.resolve(m.result);
+            }
           }
           return;
         }
@@ -493,6 +509,8 @@ export class CodexDriver implements Driver {
     let historySummary = "";
     let recovering = false;
     const initialized = (async () => {
+      const initialAccess = this.options.subscriptionAccess ? subscriptionAccess(false) : undefined;
+      void initialAccess?.catch(() => {});
       await rpc("initialize", {
         clientInfo: { name: "armada-runner", version: "1.0.0" },
         capabilities: { experimentalApi: true },
@@ -504,8 +522,8 @@ export class CodexDriver implements Driver {
       } catch {
         /* Observability is best effort. */
       }
-      if (this.options.subscriptionAccess) {
-        const access = await subscriptionAccess(false);
+      if (initialAccess) {
+        const access = await initialAccess;
         const result = await rpc<LoginAccountResponse>("account/login/start", {
           type: "chatgptAuthTokens",
           ...access,
@@ -538,15 +556,12 @@ export class CodexDriver implements Driver {
         // including an invalidated candidate; never resurrect an invalid baseline.
         if (!resumeUsage.seen && !resumeUsage.invalid) baseline = persisted;
       }
-      if (!this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
-        // Existing native ChatGPT session only: this documented RPC never starts inference.
+      if (!resumeOnly && !this.options.env.OPENAI_API_KEY && this.options.env.CODEX_HOME) {
+        // Existing native ChatGPT session only: pipeline without blocking turn/start.
         // Optional quota failure cannot turn a normal coding request into a harness failure.
         const requestedAtRevision = rateLimitsRevision;
-        const limits = await rpc<unknown>("account/rateLimits/read", {}, 5000, false).catch(() => {
-          if (failure) throw failure;
-          return undefined;
-        });
-        if (limits !== undefined) {
+        void rpc<unknown>("account/rateLimits/read", {}, 5000, false, (limits) => {
+          if (closed || limits === undefined) return;
           const snapshot =
             limits && typeof limits === "object" && !Array.isArray(limits)
               ? (limits as { rateLimits?: unknown }).rateLimits
@@ -561,7 +576,7 @@ export class CodexDriver implements Driver {
           )
             rateLimits = snapshot;
           c.emit({ kind: "other", type: "account/rateLimits/read", data: limits });
-        }
+        }).catch(() => {});
       }
       if (failure) throw failure;
     })();
@@ -575,7 +590,10 @@ export class CodexDriver implements Driver {
         return;
       }
       const active = await current;
-      if (!terminalTurns.has(turnId)) await rpc("turn/interrupt", { threadId, turnId });
+      if (!closed && !terminalTurns.has(turnId))
+        await rpc("turn/interrupt", { threadId, turnId }).catch((error) => {
+          if (!closed && !terminalTurns.has(turnId)) throw error;
+        });
       try {
         await bounded(active.terminal, 10000);
       } catch (error) {
@@ -735,6 +753,12 @@ export class CodexDriver implements Driver {
         throw error;
       } finally {
         closed = true;
+        const closeError = failure ?? new HarnessError("harness_process_lost");
+        for (const p of pending.values()) {
+          clearTimeout(p.timer);
+          p.reject(closeError);
+        }
+        pending.clear();
         const snapshot = settleCodexTurnUsage({
           tokenTotals: this.tokenTotals,
           threadId,

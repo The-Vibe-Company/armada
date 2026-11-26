@@ -68,6 +68,16 @@ export function parseRelayPort(raw: string) {
 
 export const portForwardCommand = (sandboxId: string, port: number) => `armada port-forward ${sandboxId} ${port}`;
 
+export const isRelayActiveStatus = (status: string) => status === "ready" || status === "running";
+
+export const isSandboxRelayEligible = (s: {
+  application_secret_tainted: boolean;
+  deleted_at: string | null;
+  provider: string | null;
+  boat_runtime: boolean;
+  runtime_transport: string | null;
+}) => !s.application_secret_tainted && !s.deleted_at && sandboxUsesRuntime(s);
+
 export const canUseSandboxRelay = (s: {
   publicStatus: string;
   application_secret_tainted: boolean;
@@ -76,12 +86,7 @@ export const canUseSandboxRelay = (s: {
   provider: string | null;
   boat_runtime: boolean;
   runtime_transport: string | null;
-}) =>
-  !s.application_secret_tainted &&
-  !s.stop_requested_at &&
-  !s.deleted_at &&
-  (s.publicStatus === "ready" || s.publicStatus === "running") &&
-  sandboxUsesRuntime(s);
+}) => !s.stop_requested_at && isRelayActiveStatus(s.publicStatus) && isSandboxRelayEligible(s);
 
 const CLOSE_INFO: Record<string, readonly ["disconnected" | "error", string, boolean]> = {
   eof: ["disconnected", "Shell exited.", true],
@@ -105,14 +110,26 @@ export function describeRelayClose(code: number, reason?: string) {
   return { phase: "error" as const, message: "Connection to sandbox relay dropped.", canReconnect: true };
 }
 
-export function submitPreviewBootstrap(bootstrapUrl: string, ticket: string, doc: Document = document) {
+export function parsePreviewBootstrapUrl(bootstrapUrl: string, ticket: string) {
   const u = ticket ? tryOr(() => new URL(bootstrapUrl), null) : null;
-  if (!u || (u.protocol !== "https:" && u.protocol !== "http:") || u.search || u.username || u.password) return false;
+  if (!u || (u.protocol !== "https:" && u.protocol !== "http:") || u.search || u.username || u.password) return null;
+  return u;
+}
+
+export function submitPreviewBootstrap(
+  bootstrapUrl: string,
+  ticket: string,
+  options: { target?: string; doc?: Document } = {},
+) {
+  const u = parsePreviewBootstrapUrl(bootstrapUrl, ticket);
+  if (!u) return false;
+  const target = options.target?.trim() || "_blank";
+  const doc = options.doc ?? document;
   const form = Object.assign(doc.createElement("form"), {
     method: "POST",
     action: u.toString(),
-    target: "_blank",
-    rel: "noopener",
+    target,
+    ...(target === "_blank" ? { rel: "noopener" } : {}),
   });
   form.style.display = "none";
   form.appendChild(Object.assign(doc.createElement("input"), { type: "hidden", name: "ticket", value: ticket }));

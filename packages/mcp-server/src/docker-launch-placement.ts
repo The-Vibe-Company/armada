@@ -81,6 +81,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { failDockerStartup, recordRuntimeStartupFailure } from "./sandbox-lifecycle.ts";
+import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 type Request = {
   repos?: GoldenRepo[];
@@ -162,7 +163,7 @@ type Row = {
   reasoning_effort: string;
   skills: SkillReceipt[];
 };
-type Clock = { now(): number; wait(ms: number): Promise<void> };
+type Clock = { now(): number; wait(ms: number, signal?: AbortSignal): Promise<void> };
 type Options = {
   officialImage?: string;
   github?: Pick<RuntimeGitHub, "prepare" | "prepareLaunch" | "preflightRepositories">;
@@ -327,7 +328,8 @@ const active = (row: Row) =>
 export function createDockerLaunchPlacement(sql: Sql, key: string, options: Options) {
   const clock = options.clock ?? {
     now: Date.now,
-    wait: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    wait: (ms: number, signal?: AbortSignal) =>
+      signal ? waitForTimeout(ms, signal) : new Promise<void>((resolve) => setTimeout(resolve, ms)),
   };
   const runtime = createDockerRuntimeLifecycle(sql, key);
   const templates = createTemplateService(sql, key);
@@ -791,19 +793,37 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
             throw error;
           });
       };
+      const watches: ReturnType<typeof runtimeWakes.watch>[] = [];
+      const watch = (wakeKey: string) => {
+        const handle = runtimeWakes.watch(wakeKey);
+        watches.push(handle);
+        return handle;
+      };
       try {
         if (request.repos?.length || manifest.snapshotConfig?.repos.length) {
-          reason = "github_preparation";
-          phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
-          const repositories = request.repos ?? manifest.snapshotConfig!.repos;
-          await options.credentials.authorizeRepositories?.(
-            { ...actor, role: state.membership.role },
-            {},
-            repositories,
-          );
-          if (request.repos) {
-            if (!options.github) throw failure("unavailable");
-            await options.github.preflightRepositories(caller, request.org, repositories);
+          const createDispatched =
+            (
+              await sql.query(
+                `select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='create'
+                 union all
+                 select 1 from public.runtime_enrolments where sandbox_id=$1 and runtime_hash is not null
+                 limit 1`,
+                [request.requestId],
+              )
+            ).rows.length > 0;
+          if (!createDispatched) {
+            reason = "github_preparation";
+            phase = DOCKER_LAUNCH_FAILURE_MESSAGES.github;
+            const repositories = request.repos ?? manifest.snapshotConfig!.repos;
+            await options.credentials.authorizeRepositories?.(
+              { ...actor, role: state.membership.role },
+              {},
+              repositories,
+            );
+            if (request.repos) {
+              if (!options.github) throw failure("unavailable");
+              await options.github.preflightRepositories(caller, request.org, repositories);
+            }
           }
         }
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
@@ -831,16 +851,27 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           }
           return current;
         };
-        async function wait() {
+        async function wait(ms = 250, signal?: AbortSignal) {
           if (clock.now() >= deadline) {
             if (reason === "runtime_readiness") readinessCause = "readiness_deadline";
             throw failure("unavailable");
           }
-          await clock.wait(Math.min(250, deadline - clock.now()));
+          await clock.wait(Math.min(ms, deadline - clock.now()), signal ?? worker.context.signal);
+        }
+        async function waitFor(handle: ReturnType<typeof runtimeWakes.watch>) {
+          if (clock.now() >= deadline) {
+            if (reason === "runtime_readiness") readinessCause = "readiness_deadline";
+            throw failure("unavailable");
+          }
+          await handle.wait(worker.context.signal, Math.min(250, deadline - clock.now()), (ms, signal) =>
+            clock.wait(ms, signal),
+          );
+          worker.context.signal.throwIfAborted();
         }
         await startMachine(actor, request, state.row, worker, assertClaim);
         reason = "runtime_readiness";
         let receipt: Receipt;
+        const readinessWatch = watch(`socket:${request.requestId}`);
         for (;;) {
           await live();
           const ready = await runtime
@@ -853,7 +884,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
             receipt = { epoch: ready.epoch };
             break;
           }
-          await wait();
+          await waitFor(readinessWatch);
         }
         reason = "runtime_environment";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.environment;
@@ -872,9 +903,9 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           const agent = createRuntimeAgent(
             createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
               now: clock.now,
-              wait: async () => {
+              wait: async (ms, signal) => {
                 await live();
-                await wait();
+                await wait(ms, signal);
               },
             }),
             {
@@ -901,7 +932,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
             () => {},
             async (ms) => {
               await live();
-              await clock.wait(ms);
+              await clock.wait(ms, worker.context.signal);
             },
             async (command, step) => {
               await live();
@@ -925,6 +956,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           const command = dockerRepositoryCheckout(manifest.request.repos, "/home/user");
           const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
           const id = `docker_checkout_${request.requestId}`;
+          const checkoutWatch = watch(`reply:${request.requestId}:${receipt.epoch}:${id}`);
           await commands.enqueue(
             actor.userId,
             {
@@ -953,7 +985,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
               break;
             }
             if (response.state !== "pending") throw failure("sandbox_not_ready");
-            await wait();
+            await waitFor(checkoutWatch);
           }
           await recordLaunchStageQuietly(sql, request.requestId, "checkout_done");
         }
@@ -969,7 +1001,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           const agent = createRuntimeAgent(
             createRuntimeCommands(createRuntimeEnrolments(sql, key), key, {
               now: clock.now,
-              wait: (ms) => clock.wait(ms),
+              wait: (ms, signal) => clock.wait(ms, signal),
             }),
             {
               provider: "docker",
@@ -1016,6 +1048,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           const conversationId = prior
             ? (JSON.parse(await decryptSecret(prior.request_enc, key)).input.conversationId as string | undefined)
             : (manifest.conversationId ?? manifest.promptId);
+          const promptWatch = watch(`reply:${request.requestId}:${receipt.epoch}:docker_prompt_${manifest.promptId}`);
           for (;;) {
             await live();
             const result = await runtime.prompt(
@@ -1039,7 +1072,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
               };
               break;
             }
-            await wait();
+            await waitFor(promptWatch);
           }
         }
         reason = "receipt_publication";
@@ -1093,6 +1126,8 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           });
         }
         throw error;
+      } finally {
+        for (const handle of watches) handle.close();
       }
     } catch (error) {
       if (!(error instanceof DockerMachinePending)) {

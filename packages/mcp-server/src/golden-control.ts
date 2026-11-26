@@ -1,10 +1,4 @@
-import {
-  goldenForSettings,
-  goldenResponse,
-  HOST_CAPABILITIES,
-  parseMachineSizePolicy,
-  providerRateLimitDetails,
-} from "@armada/core";
+import { goldenResponse, HOST_CAPABILITIES, parseMachineSizePolicy, providerRateLimitDetails } from "@armada/core";
 import { controlRouteKey, goldenOperations } from "@armada/core/contract";
 import {
   addGoldenRepositories,
@@ -344,12 +338,14 @@ export const goldenRoutes = defineRoutes("golden", {
     if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
     const data = options.data(caller);
     const name = required(body, "golden");
-    const actor = await launchActor(data, caller, name, optional(body, "org"), options.store);
-    const golden = await goldenForSettings(
-      data.goldens,
-      actor,
+    const { actor, golden } = await launchActor(
+      data,
+      caller,
       name,
+      optional(body, "org"),
+      options.store,
       optional(body, "provider") as "boat" | "modal" | undefined,
+      true,
     );
     if (body.policy !== undefined) {
       const policy = parseMachineSizePolicy(

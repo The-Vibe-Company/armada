@@ -10,7 +10,9 @@ import {
 } from "@armada/core/contract";
 import {
   type GoldenActor,
+  type GoldenRecord,
   goldenForLaunch,
+  goldenForSettings,
   LaunchError,
   type ModelChoice,
   requireRuntimeHarness,
@@ -83,8 +85,7 @@ async function launchGolden(
   if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
   const data = options.data(caller);
-  const actor = await launchActor(data, caller, name, body.org, options.store);
-  const golden = await goldenForLaunch(data.goldens, actor, name, body.provider);
+  const { actor, golden } = await launchActor(data, caller, name, body.org, options.store, body.provider);
   requireRuntimeHarness(golden.provider, harness);
   resolveRepositoryDir(golden, repo);
   if (armadaAccess && harness !== "codex")
@@ -130,22 +131,48 @@ export async function launchActor(
   name: string,
   org: string | undefined,
   store: VaultStore,
-): Promise<GoldenActor> {
+  provider?: SandboxProviderId,
+  forSettings = false,
+): Promise<{ actor: GoldenActor; golden: GoldenRecord }> {
+  const resolveGolden = (actor: GoldenActor, prefetched?: GoldenRecord[]) => {
+    const goldens =
+      prefetched === undefined
+        ? data.goldens
+        : {
+            ...data.goldens,
+            findByName: (orgId: string, query: string) =>
+              orgId === actor.orgId && query === name
+                ? Promise.resolve(prefetched)
+                : data.goldens.findByName(orgId, query),
+          };
+    return (forSettings ? goldenForSettings : goldenForLaunch)(goldens, actor, name, provider);
+  };
   const selected = org === undefined ? undefined : scopedOrg(caller, org);
   if (selected !== undefined) {
     const ref = selected.trim().toLowerCase();
     const id = UUID.test(ref) ? ref : (await resolveOrg(store, caller.userId, selected)).id;
     const member = caller.orgs.find((item) => item.orgId === id);
     if (!member) throw new VaultError("forbidden", "This token is scoped to another org.");
-    return { userId: caller.userId, orgId: member.orgId, role: member.role };
+    const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+    return { actor, golden: await resolveGolden(actor) };
   }
-  const holders: string[] = [];
-  for (const member of caller.orgs)
-    if ((await data.goldens.findByName(member.orgId, name)).length > 0) holders.push(member.orgId);
+  if (caller.orgs.length === 0) throw new VaultError("not_found", "You are not a member of an org.");
+  if (caller.orgs.length === 1) {
+    const member = caller.orgs[0]!;
+    const actor = { userId: caller.userId, orgId: member.orgId, role: member.role };
+    return { actor, golden: await resolveGolden(actor) };
+  }
+  const lookups = await Promise.all(
+    caller.orgs.map(async (member) => ({
+      member,
+      rows: await data.goldens.findByName(member.orgId, name),
+    })),
+  );
+  const holders = lookups.filter((entry) => entry.rows.length > 0);
   if (holders.length > 1) throw new VaultError("invalid", "Name the org for this golden.");
-  const member = caller.orgs.find((item) => item.orgId === (holders[0] ?? caller.orgs[0]?.orgId));
-  if (!member) throw new VaultError("not_found", "You are not a member of an org.");
-  return { userId: caller.userId, orgId: member.orgId, role: member.role };
+  const chosen = holders[0] ?? lookups[0]!;
+  const actor = { userId: caller.userId, orgId: chosen.member.orgId, role: chosen.member.role };
+  return { actor, golden: await resolveGolden(actor, chosen.rows) };
 }
 
 export function launchTemplate(

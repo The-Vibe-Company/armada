@@ -79,7 +79,7 @@ export function commandClient(
       return control<T>(`docker/snapshots/${operation}`, body);
     },
     dockerHost<T>(operation: "list" | "limits" | "register-token" | "retention" | "revoke", body: unknown) {
-      return request<T>(`/api/v1/docker/hosts/${operation}`, { method: "POST", body: JSON.stringify(body) });
+      return control<T>(`docker/hosts/${operation}`, body);
     },
     token<T>(operation: "create" | "list" | "revoke", body?: unknown) {
       if (body === undefined) return request<T>(`/api/v1/token/${operation}`, { method: "POST" });

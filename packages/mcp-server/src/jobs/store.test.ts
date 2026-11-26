@@ -1192,8 +1192,18 @@ test.each(pinnedAdmissionCases)(
     expect(published?.result?.envelope).toEqual(accepted);
     expect(await admit()).toEqual(accepted);
     expect(await receiptState()).toEqual(published);
-    const setup = await createJobsStore(sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1);
-    expect(setup?.payload).toMatchObject({ skills: ["example/tool@1.0.0"] });
+    expect(
+      await createJobsStore(sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1),
+    ).toBeUndefined();
+    const {
+      rows: [setupRow],
+    } = await db.query<{ payload_enc: Uint8Array<ArrayBuffer> }>(
+      "select payload_enc from jobs where sandbox_id=$1 and kind=$2",
+      [sandboxId, MODAL_INITIAL_TURN],
+    );
+    expect(JSON.parse(await decryptSecret(setupRow!.payload_enc, launchEncryptionKey))).toMatchObject({
+      skills: ["example/tool@1.0.0"],
+    });
     expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([
       { sandbox_id: sandboxId, connection_id: connectionId },
     ]);
@@ -1860,27 +1870,40 @@ test("Modal launches Antigravity with a selected account confined to private enr
   expect(JSON.stringify([configuration, rows])).not.toContain(key);
 });
 
-test("Modal admission and deferred enrolment use at most 54 SQL statements", async () => {
+test("Modal admission and deferred enrolment wake jobs and stay within the SQL statement budget", async () => {
   const statements: string[] = [];
   const checkpoints: number[] = [];
   const admission = await modalAdmissionFixture("private", statements);
   const log = spyOn(console, "info");
+  let jobWakes = 0;
+  const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, () => {
+    jobWakes++;
+  });
   try {
     await observeGoldenLaunch("rest", async (timing) => {
-      const { f, id, jobId, makeRunner, enrolPending } = await modalLaunchFixture(admission);
+      const { f, id, makeRunner, enrolPending } = await modalLaunchFixture(admission);
       checkpoints.push(statements.length);
       const runner = makeRunner(undefined, f.sql, false);
       expect(await runner.reconcileOne(signal)).toBe(true);
       await runner.drain();
       checkpoints.push(statements.length);
+      expect(
+        await createJobsStore(f.db, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1),
+      ).toBeUndefined();
+      const wakesBeforeEnrol = jobWakes;
       await enrolPending();
+      expect(jobWakes).toBeGreaterThan(wakesBeforeEnrol);
       checkpoints.push(statements.length);
-      await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+      const wakesBeforeDone = jobWakes;
       expect(await runner.reconcileOne(signal)).toBe(true);
       await runner.drain();
+      expect(jobWakes).toBeGreaterThan(wakesBeforeDone);
       expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='launch'", [id])).rows).toEqual([
         { state: "done" },
       ]);
+      expect(
+        await createJobsStore(f.db, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1),
+      ).toMatchObject({ sandbox_id: id, kind: MODAL_INITIAL_TURN });
       checkpoints.push(statements.length);
       timing.checkpoint("shared_launcher");
     });
@@ -1888,9 +1911,10 @@ test("Modal admission and deferred enrolment use at most 54 SQL statements", asy
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(54);
-    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 33, 7, 6]);
+    expect(statements.length).toBeLessThanOrEqual(60);
+    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 35, 9, 8]);
   } finally {
+    unsubscribe();
     log.mockRestore();
   }
 });
