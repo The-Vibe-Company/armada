@@ -176,18 +176,19 @@ const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_r
   s.source_golden_visibility::text as source_golden_visibility, g.modal_workspace,
   g.modal_environment, g.modal_app_id, s.external_ref`;
 const SANDBOX_INTERIOR = `(s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin'))`;
-const SANDBOX_LIST_COLUMNS = `case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then ${SANDBOX_USAGE} else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
+const SANDBOX_LIST_INTERIOR = `(s.owner_id=$2::uuid or coalesce(lm.role='admin',false))`;
+const SANDBOX_LIST_COLUMNS = `case when ${SANDBOX_LIST_INTERIOR} then ${SANDBOX_USAGE} else null end as usage, s.preservation_note as "preservationNote", nullif(s.provider_sandbox_id,'') as "providerSandboxId",
   s.id, s.org_id as "orgId", s.owner_id as "ownerId",
   s.provider::text as provider, s.harness::text as harness, s.model, s.reasoning_effort as "reasoningEffort",
   coalesce(s.status='stopped' and s.status_reason='idle_paused',false) as "idlePaused", ${publicSandboxStatusSql} as status, s.created_at as "createdAt", s.stopped_at as "stoppedAt", s.expires_at as "expiresAt",
   s.effective_ttl_seconds as "effectiveTtlSeconds",
   case when s.machine_size->>'effective' in ('small','medium','large','xlarge') then s.machine_size->>'effective' else null end as "machineSize",
   'Sandbox ' || s.id::text as "displayLabel",
-  case when (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) then s.task_outcome else null end as "taskOutcome",
-  case when ${SANDBOX_INTERIOR} then s.pull_requests else null end as "pullRequests",
-  case when ${SANDBOX_INTERIOR} then s.external_ref else null end as "externalRef",
-  (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canOpen",
-  (s.owner_id=$2::uuid or exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid and m.role='admin')) as "canManage"`;
+  case when ${SANDBOX_LIST_INTERIOR} then s.task_outcome else null end as "taskOutcome",
+  case when ${SANDBOX_LIST_INTERIOR} then s.pull_requests else null end as "pullRequests",
+  case when ${SANDBOX_LIST_INTERIOR} then s.external_ref else null end as "externalRef",
+  ${SANDBOX_LIST_INTERIOR} as "canOpen",
+  ${SANDBOX_LIST_INTERIOR} as "canManage"`;
 
 // Interior-only filter: a metadata-only org viewer cannot probe another member's external reference.
 const sandboxListMatch = (externalRef: number) => `${SANDBOX_MEMBER}
@@ -669,6 +670,7 @@ export function createSqlData(
                ($9::uuid is null or exists(select 1 from scope_member)) as scope_member
              from (select count(*)::int as total from matched) totals
              left join page p on true left join public.sandboxes s on s.id=p.id
+             left join public.members lm on lm.org_id=s.org_id and lm.user_id=$2::uuid
              order by s.created_at desc,s.id`,
           [
             ...scope,
@@ -828,6 +830,7 @@ async function namedSandboxPage(
      ) select ${SANDBOX_LIST_COLUMNS},a.selection_id,a.selection_name,a.selection_role,coalesce(t.total,0) as total
        from memberships a left join totals t on t.org_id=a.selection_id
        left join pages p on p.org_id=a.selection_id left join public.sandboxes s on s.id=p.id
+       left join public.members lm on lm.org_id=s.org_id and lm.user_id=$2::uuid
        order by lower(a.selection_name),a.selection_id,p.ordinal`,
     [
       ...scope,

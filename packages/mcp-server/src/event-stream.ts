@@ -10,7 +10,8 @@ import { isViewerAuthorization, readViewerGrant } from "./viewer-control.ts";
 import { eventFeedWakeKey, runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 const HEARTBEAT_MS = 15_000;
-const RECHECK_MS = 1_000;
+const HEALTHY_RECHECK_MS = 15_000;
+const UNHEALTHY_RECHECK_MS = 1_000;
 export const AUTH_REVALIDATE_MS = 30_000;
 const denied = () => fail(403, "forbidden", "Sandbox events are not available to this caller.");
 
@@ -68,7 +69,10 @@ function eventReader(request: Request, options: ControlOptions, feed: EventFeed,
   };
 }
 
-export function createEventStream(time = { now: () => performance.now(), wait: waitForTimeout }) {
+export function createEventStream(
+  time = { now: () => performance.now(), wait: waitForTimeout },
+  isNotifyHealthy = () => runtimeWakes.isNotifyHealthy(),
+) {
   return async (request: Request, options: ControlOptions) => {
     if (request.method !== "GET") return fail(405, "invalid", "Use GET.");
     const query = new URL(request.url).searchParams;
@@ -146,7 +150,8 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
                   heartbeatAt = time.now() + HEARTBEAT_MS;
                   return;
                 }
-                if (wait) await wake.wait(signal, Math.min(RECHECK_MS, remaining), time.wait);
+                const recheckMs = isNotifyHealthy() ? HEALTHY_RECHECK_MS : UNHEALTHY_RECHECK_MS;
+                if (wait) await wake.wait(signal, Math.min(recheckMs, remaining), time.wait);
                 if (signal.aborted) return;
                 const page = await reader.read(cursor);
                 if (signal.aborted) return;

@@ -17,6 +17,7 @@ import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import { runtimeHealthMatches } from "./runtime-health.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { publishRuntimeReadiness } from "./sandbox-lifecycle.ts";
+import { runtimeWakes } from "./wake-bus.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
@@ -361,6 +362,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
     if (result instanceof RuntimeProtocolUnsupported) throw result;
+    runtimeWakes.notify(`enrol:${result.sandboxId}`);
     return result;
   }
   /** Read-only bootstrap reporting does not consume or extend the one-use ticket. */
@@ -511,6 +513,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     }
   };
   return {
+    query: ((text, params) => sql.query(text, params)) as Sql["query"],
     issue,
     refreshModalBootstrapManifest,
     enrol,
