@@ -81,12 +81,13 @@ async function postLangfuseScore(
   logError: ((line: string) => void) | undefined,
   orgId: string,
   sandboxId: string,
+  requestSignal: AbortSignal = signal,
 ) {
   try {
     const res = await send(`${config.host}/api/public/scores`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+      signal: AbortSignal.any([requestSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
       headers: { "content-type": "application/json", authorization: authorization(config) },
       body: JSON.stringify(score),
     });
@@ -134,16 +135,18 @@ export async function upsertLangfusePrLinkedScores(
     send?: typeof fetch | undefined;
     signal?: AbortSignal | undefined;
     logError?: ((line: string) => void) | undefined;
+    timeoutMs?: number | undefined;
   } = {},
 ) {
   const send = options.send ?? fetch;
   const signal = options.signal ?? new AbortController().signal;
+  const budget = AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS)]);
   const { rows } = await sql.query<{ prompt_id: string; org_id: string; config_enc: Uint8Array<ArrayBuffer> }>(
     `select e.prompt_id,e.org_id,c.config_enc from public.langfuse_turn_exports e
      join public.sandboxes s on s.id=e.sandbox_id and s.org_id=e.org_id
      join public.org_langfuse c on c.org_id=e.org_id and c.enabled
      join public.jobs j on j.kind='langfuse_export' and j.sandbox_id=e.sandbox_id and j.org_id=e.org_id
-       and j.outcome->>'promptId'=e.prompt_id and j.state='done'
+       and j.outcome->>'promptId'=e.prompt_id and j.state='done' and j.outcome->>'result' is distinct from 'dropped'
      where e.sandbox_id=$1 and e.completed_at is null and c.config_enc is not null
      order by e.observed_at desc limit 100`,
     [sandboxId],
@@ -159,7 +162,7 @@ export async function upsertLangfusePrLinkedScores(
     return 0;
   }
   let updated = 0;
-  for (let offset = 0; offset < rows.length && !signal.aborted; offset += 8) {
+  for (let offset = 0; offset < rows.length && !budget.aborted; offset += 8) {
     const batch = await Promise.allSettled(
       rows
         .slice(offset, offset + 8)
@@ -172,10 +175,14 @@ export async function upsertLangfusePrLinkedScores(
             options.logError,
             r.org_id,
             sandboxId,
+            budget,
           ),
         ),
     );
-    for (const r of batch) if (r.status === "fulfilled" && r.value) updated++;
+    let batchOk = 0;
+    for (const r of batch) if (r.status === "fulfilled" && r.value) batchOk++;
+    updated += batchOk;
+    if (batchOk === 0) break;
   }
   return updated;
 }
@@ -347,6 +354,24 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     await Promise.allSettled(
       scores.map((score) => postLangfuseScore(send, config, score, signal, logError, job.org_id, job.sandbox_id)),
     );
+    if (scores.some((score) => score.name === "pr_linked" && score.value === 0) && !signal.aborted) {
+      const linked = (
+        await sql.query<{ linked: boolean }>(
+          "select jsonb_array_length(coalesce(pull_requests,'[]'::jsonb))>0 as linked from public.sandboxes where id=$1 and org_id=$2",
+          [job.sandbox_id, job.org_id],
+        )
+      ).rows[0]?.linked;
+      if (linked)
+        await postLangfuseScore(
+          send,
+          config,
+          langfusePrLinkedScore(job.sandbox_id, job.prompt_id, true),
+          signal,
+          logError,
+          job.org_id,
+          job.sandbox_id,
+        );
+    }
     return "exported";
   }
 
@@ -395,7 +420,9 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
       }
       const finalOutcome = outcome === "retry" ? "failed" : outcome;
       return {
-        ...(finalOutcome === "failed" ? { status: "fail", reason: "langfuse_export_failed" } : { status: "done" }),
+        ...(finalOutcome === "failed"
+          ? { status: "fail", reason: "langfuse_export_failed" }
+          : { status: "done", outcome: { ...(claim.outcome as Record<string, unknown>), result: finalOutcome } }),
         async commit(tx) {
           await tx.query(
             `insert into public.org_langfuse_export_stats as stats(org_id,exported,failed,dropped,last_export_at)

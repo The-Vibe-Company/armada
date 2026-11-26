@@ -1002,15 +1002,48 @@ test("repo-backed turn export expedites pr_scan and idempotent pr_linked score u
       upserts.push(JSON.parse(String(init?.body ?? "")));
       return new Response(null, { status: 200 });
     }) as typeof fetch;
+    await db.query("select public.enqueue_webhook_turn($1,'dropped-turn','finished')", [id]);
+    await db.query("update org_langfuse set enabled=false where org_id=$1", [people.org]);
+    expect(await runExport(db, exporter, new AbortController().signal, store)).toBe(true);
+    await db.query("update org_langfuse set enabled=true where org_id=$1", [people.org]);
     expect([await upsertLangfusePrLinkedScores(db, key, id, { send }), upserts]).toEqual([
       1,
       [{ ...initial, value: 1 }],
     ]);
+    const timeoutLogs: string[] = [];
+    const callerSignal = new AbortController().signal;
+    expect(
+      await upsertLangfusePrLinkedScores(db, key, id, {
+        signal: callerSignal,
+        logError: (line) => timeoutLogs.push(line),
+        send: (async () => Promise.reject<Response>(new DOMException("hung", "TimeoutError"))) as typeof fetch,
+      }),
+    ).toBe(0);
+    expect([callerSignal.aborted, timeoutLogs[0]?.includes("reason=TimeoutError")]).toEqual([false, true]);
 
     wakes = 0;
     await db.query("delete from jobs where kind='pr_scan' and sandbox_id=$1", [id]);
     await db.query("select public.enqueue_webhook_turn($1,'turn-2','finished')", [id]);
-    expect(await runExport(db, exporter, new AbortController().signal, store)).toBe(true);
+    sent.length = 0;
+    const overlapExporter = createLangfuse(db, key, (async (url, init) => {
+      const href = String(url);
+      sent.push({ url: href, body: String(init?.body ?? "") });
+      if (href.endsWith("/traces"))
+        await db.query("update sandboxes set pull_requests=$2::jsonb where id=$1", [
+          id,
+          JSON.stringify([prFix("org/repo", 7, "open", "feat/x")]),
+        ]);
+      return new Response(null, { status: 200 });
+    }) as typeof fetch);
+    expect(await runExport(db, overlapExporter, new AbortController().signal, store)).toBe(true);
+    const turn2PrScores = sent
+      .filter((r) => r.url.endsWith("/scores"))
+      .map((r) => JSON.parse(r.body) as ReturnType<typeof langfusePrLinkedScore>)
+      .filter((s) => s.name === "pr_linked");
+    expect(turn2PrScores).toEqual([
+      langfusePrLinkedScore(id, "turn-2", false),
+      langfusePrLinkedScore(id, "turn-2", true),
+    ]);
     expect([
       wakes > 0,
       (await db.query("select state from jobs where kind='pr_scan' and sandbox_id=$1", [id])).rows,

@@ -552,7 +552,7 @@ export function createPullRequestScanJob(
             await upsertLangfusePrLinkedScores(sql, github.encryptionKey, row.id, {
               send: options.langfuseFetch,
               signal,
-              logError: options.logError,
+              logError: options.logError ?? console.error,
             });
           } catch (error) {
             if (signal.aborted) throw error;
