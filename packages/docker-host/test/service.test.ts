@@ -10,11 +10,100 @@ import {
   installService,
   instanceName,
   removeInstallation,
+  type ServicePreflightIo,
+  servicePreflight,
   stateDirectory,
   type UpgradeServiceIo,
   upgradeService,
   validateInstallation,
 } from "../src/service.ts";
+
+test("servicePreflight checks docker, flock, systemctl, and linger in order and succeeds when ready", async () => {
+  const home = await mkdtemp(join(tmpdir(), "armada-preflight-"));
+  try {
+    const calls: string[][] = [];
+    await servicePreflight(undefined, {
+      home,
+      platform: "linux",
+      execPath: join(home, ".local/bin/armada-docker-host"),
+      uid: 1000,
+      docker: async (args) => {
+        calls.push(["docker", ...args]);
+        return { exitCode: 0 };
+      },
+      service: async (args) => {
+        calls.push(args);
+        return args[1] === "show-user" ? "yes\n" : "";
+      },
+    });
+    expect(calls).toEqual([
+      ["docker", "info"],
+      ["flock", "--version"],
+      ["systemctl", "--user", "show-environment"],
+      ["loginctl", "enable-linger"],
+      ["loginctl", "show-user", "1000", "--property=Linger", "--value"],
+    ]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test.each([
+  ["docker exit", /Docker preflight failed.*Docker daemon is running/, /flock|systemd|linger/i, { dockerExit: 1 }],
+  ["docker error", /Docker preflight failed.*Docker daemon is running/, /flock|systemd|linger/i, { dockerThrow: true }],
+  ["flock", /Missing required tool 'flock': install util-linux \(flock\)/, /systemd|linger|docker/i, { fail: "flock" }],
+  ["systemctl", /Systemd user session unavailable.*systemctl/, /flock|linger|docker/i, { fail: "systemctl" }],
+  [
+    "enable-linger",
+    /Failed to enable systemd user lingering.*loginctl enable-linger/,
+    /flock|docker/i,
+    { fail: "enable-linger" },
+  ],
+  [
+    "missing uid",
+    /Failed to verify systemd user lingering: Linux user ID unavailable.*loginctl enable-linger/,
+    /flock|docker/i,
+    { uid: undefined },
+  ],
+  [
+    "show-user",
+    /Failed to verify systemd user lingering.*loginctl enable-linger/,
+    /flock|docker/i,
+    { fail: "show-user" },
+  ],
+  [
+    "linger disabled",
+    /Systemd user lingering is not enabled.*loginctl enable-linger/,
+    /flock|docker/i,
+    { linger: "no raw-stderr" },
+  ],
+] as const)(
+  "servicePreflight surfaces a distinct secret-safe error for %s",
+  async (_name, expected, forbidden, cfg) => {
+    const leak = () => Object.assign(new Error("raw-stderr-sentinel"), { code: "ENOENT" });
+    const io: ServicePreflightIo = {
+      home: "/nonexistent-home",
+      platform: "linux",
+      execPath: "/nonexistent-home/.local/bin/armada-docker-host",
+      uid: "uid" in cfg ? cfg.uid : 1000,
+      docker: async () => {
+        if ("dockerThrow" in cfg) throw leak();
+        return { exitCode: "dockerExit" in cfg ? cfg.dockerExit : 0 };
+      },
+      service: async (args) => {
+        if ("fail" in cfg && args.includes(cfg.fail)) throw leak();
+        if (args[1] === "show-user") return "linger" in cfg ? cfg.linger : "yes";
+        return "";
+      },
+    };
+    const caught = await servicePreflight(undefined, io).catch((error: unknown) => error);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(expected);
+    expect((caught as Error).message).not.toMatch(forbidden);
+    expect((caught as Error).message).not.toContain("raw-stderr");
+    expect("code" in (caught as Error)).toBe(false);
+  },
+);
 
 test("managed service persists registration and refuses cleanup of unknown files", async () => {
   const home = await mkdtemp(join(tmpdir(), "armada-service-"));
