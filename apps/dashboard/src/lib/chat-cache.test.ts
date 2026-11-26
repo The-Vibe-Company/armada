@@ -74,4 +74,41 @@ describe("chat-cache", () => {
     await pending;
     expect(cache.get("org-a", "sb-2")).toBeUndefined();
   });
+
+  test("persists unsent drafts per orgId:sandboxId across cache writes/warms and clears on delete or clear", async () => {
+    const cache = createChatCache(2);
+    cache.setDraft("org-a", "sb-1", "half-written prompt");
+    expect(cache.getDraft("org-a", "sb-1")).toBe("half-written prompt");
+    expect(cache.getDraft("org-b", "sb-1")).toBe("");
+
+    cache.set("org-a", "sb-1", entry("e1"));
+    await cache.warm("org-a", "sb-1", {
+      fetchImpl: (async () =>
+        Response.json({
+          status: "ready",
+          configured: true,
+          cursor: "c1",
+          hasMore: false,
+          events: [],
+        })) as unknown as typeof fetch,
+      now: () => 20_000,
+    });
+    expect(cache.getDraft("org-a", "sb-1")).toBe("half-written prompt");
+
+    cache.setDraft("org-a", "sb-2", "draft two");
+    expect(cache.getDraft("org-a", "sb-1")).toBe("half-written prompt");
+    cache.setDraft("org-b", "sb-3", "draft three");
+    expect(cache.getDraft("org-a", "sb-2")).toBe("");
+    expect(cache.getDraft("org-a", "sb-1")).toBe("half-written prompt");
+
+    cache.setDraft("org-a", "sb-1", "");
+    expect(cache.getDraft("org-a", "sb-1")).toBe("");
+
+    cache.delete("org-b", "sb-3");
+    expect(cache.getDraft("org-b", "sb-3")).toBe("");
+
+    cache.setDraft("org-a", "sb-4", "to clear");
+    cache.clear();
+    expect(cache.getDraft("org-a", "sb-4")).toBe("");
+  });
 });

@@ -40,6 +40,32 @@ const THEMES = {
 const DEFAULT_H = 272,
   MIN_H = 160,
   EXPANDED_H = 480;
+export const TERMINAL_HEIGHT_STORAGE_KEY = "armada:terminal-height";
+
+const maxTerminalHeight = () =>
+  Math.max(
+    MIN_H,
+    Math.round((typeof window !== "undefined" && window.innerHeight > 0 ? window.innerHeight : 900) * 0.68),
+  );
+const clampTerminalHeight = (n: number) => Math.min(maxTerminalHeight(), Math.max(MIN_H, Math.round(n)));
+
+function readStoredHeight() {
+  try {
+    const raw = typeof window !== "undefined" ? window.localStorage?.getItem(TERMINAL_HEIGHT_STORAGE_KEY) : null;
+    if (raw === null || raw.trim() === "") return DEFAULT_H;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? clampTerminalHeight(parsed) : DEFAULT_H;
+  } catch {
+    return DEFAULT_H;
+  }
+}
+
+function writeStoredHeight(height: number) {
+  try {
+    window.localStorage?.setItem(TERMINAL_HEIGHT_STORAGE_KEY, String(Math.round(height)));
+  } catch {}
+}
+
 const PHASE_META: Record<RelayConnectionPhase, readonly [string, Tone, boolean]> = {
   idle: ["Idle", "neutral", false],
   minting: ["Connecting…", "warning", true],
@@ -52,18 +78,52 @@ const PHASE_META: Record<RelayConnectionPhase, readonly [string, Tone, boolean]>
   error: ["Disconnected", "destructive", false],
 };
 
-export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onClose: () => void }) {
+export function SandboxTerminal({
+  sandboxId,
+  visible = true,
+  onClose,
+}: {
+  sandboxId: string;
+  visible?: boolean;
+  onClose: () => void;
+}) {
   const { resolvedTheme } = useTheme();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const refs = useRef<{ term: Terminal; fit: FitAddon; client: ReturnType<typeof createRelayClient> } | null>(null);
   const [relay, setRelay] = useState<RelayClientState>({ phase: "minting", canReconnect: false });
-  const [height, setHeight] = useState(DEFAULT_H);
+  const [height, setHeight] = useState(readStoredHeight);
   const [dragging, setDragging] = useState(false);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const drag = useRef<{ y: number; h: number } | null>(null);
+  const persistedHeight = useRef(height);
+  const wasVisible = useRef(visible);
 
   useEffect(() => () => clearTimeout(copyTimer.current), []);
+  useEffect(() => {
+    if (dragging || height === persistedHeight.current) return;
+    persistedHeight.current = height;
+    writeStoredHeight(height);
+  }, [dragging, height]);
+  useEffect(() => {
+    const restored = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (!restored) return;
+    const restore = () => {
+      const current = refs.current;
+      if (!current) return;
+      const el = hostRef.current;
+      if (!el || el.clientWidth === undefined || (el.clientWidth > 0 && el.clientHeight > 0)) {
+        current.fit.fit();
+      }
+      current.term.focus();
+    };
+    const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame(restore) : undefined;
+    if (raf === undefined) restore();
+    return () => {
+      if (raf !== undefined && typeof cancelAnimationFrame === "function") cancelAnimationFrame(raf);
+    };
+  }, [visible]);
   useEffect(() => {
     if (refs.current) refs.current.term.options.theme = resolvedTheme === "dark" ? THEMES.dark : THEMES.light;
   }, [resolvedTheme]);
@@ -119,7 +179,7 @@ export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onC
   }, [sandboxId]);
 
   const expanded = height > DEFAULT_H + 40;
-  const clampH = (n: number) => Math.min(Math.max(MIN_H, Math.round(window.innerHeight * 0.68)), Math.max(MIN_H, n));
+  const clampH = clampTerminalHeight;
   const reconnect = () => {
     if (!refs.current) return;
     refs.current.fit.fit();
@@ -158,10 +218,13 @@ export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onC
   return (
     <section
       aria-label="Sandbox terminal"
+      aria-hidden={!visible || undefined}
       data-slot="sandbox-terminal"
+      data-terminal-visible={visible ? "true" : "false"}
       className={cn(
         "flex shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-[var(--sunken)] shadow-xs",
         dragging && "select-none",
+        !visible && "hidden",
       )}
     >
       <button
@@ -260,7 +323,7 @@ export function SandboxTerminal({ sandboxId, onClose }: { sandboxId: string; onC
             variant="ghost"
             size="icon-xs"
             aria-label="Close terminal"
-            title="Close terminal (Ctrl+`)"
+            title="Disconnect and close terminal"
             onClick={onClose}
             className={iconCls}
           >

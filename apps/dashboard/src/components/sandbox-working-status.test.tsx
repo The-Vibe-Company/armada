@@ -994,6 +994,66 @@ test("SandboxChat observes inner <ol>, stays pinned on tool updates, smoothly co
   }
 });
 
+test("SandboxChat persists unsent composer drafts across sandbox switches and clears on send", async () => {
+  const [sandboxA, sandboxB] = ["77777777-7777-4777-8777-777777777777", "88888888-8888-4888-8888-888888888888"];
+  installDom(async (input) =>
+    Response.json({
+      status: "ready",
+      configured: true,
+      cursor: `ar1_${String(input).includes(sandboxB) ? sandboxB : sandboxA}_1`,
+      hasMore: false,
+      prompt: { state: "finished", conversationId: "c1" },
+      events: [],
+    }),
+  );
+  /* oxlint-disable landmines-testing/no-test-doubles -- Control send settlement in DOM-free renderer. */
+  spyOn(sandboxActions, "sendToSandbox").mockImplementation(async () => ({
+    ok: true,
+    message: "Sent.",
+    promptId: "p1",
+  }));
+  /* oxlint-enable landmines-testing/no-test-doubles */
+  const formStub = { elements: { namedItem: () => null }, reset: noop, requestSubmit: noop };
+  const nodeMock = (el: { type: unknown }) => (el.type === "form" ? formStub : null);
+
+  let renderer!: ReactTestRenderer;
+  const ta = () => renderer.root.findByType("textarea");
+  const open = async (id: string) => {
+    if (renderer) await act(async () => renderer.unmount());
+    await act(async () => {
+      renderer = mountChat(id, "ready", router, nodeMock);
+    });
+  };
+  try {
+    await open(sandboxA);
+    await act(async () => ta().props.onChange({ target: { value: "Draft for sandbox A" } }));
+    await open(sandboxB);
+    expect(ta().props.value).toBe("");
+    await act(async () => ta().props.onChange({ target: { value: "Draft for sandbox B" } }));
+    await open(sandboxA);
+    expect(ta().props.value).toBe("Draft for sandbox A");
+
+    await act(async () =>
+      ta().props.onKeyDown({
+        key: "Enter",
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        preventDefault: noop,
+      }),
+    );
+    expect(ta().props.value).toBe("");
+    await open(sandboxA);
+    expect(ta().props.value).toBe("");
+    await open(sandboxB);
+    expect(ta().props.value).toBe("Draft for sandbox B");
+  } finally {
+    mock.restore();
+    await act(async () => renderer?.unmount());
+  }
+});
+
 test("SandboxListRows navigates with j/k/arrows, opens on Enter, copies on c, and ignores inputs and dialogs", async () => {
   const pushed: string[] = [];
   const copied: string[] = [];

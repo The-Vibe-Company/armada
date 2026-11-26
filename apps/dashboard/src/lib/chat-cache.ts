@@ -30,6 +30,7 @@ export function chatCacheKey(orgId: string, sandboxId: string) {
 
 export function createChatCache(limit = CHAT_CACHE_LIMIT) {
   const entries = new Map<string, ChatCacheEntry>();
+  const drafts = new Map<string, string>();
   const inFlight = new Map<string, AbortController>();
   let epoch = 0;
 
@@ -52,11 +53,32 @@ export function createChatCache(limit = CHAT_CACHE_LIMIT) {
     }
   }
 
+  function getDraft(orgId: string, sandboxId: string) {
+    const key = chatCacheKey(orgId, sandboxId);
+    const draft = drafts.get(key);
+    if (draft === undefined) return "";
+    drafts.delete(key);
+    drafts.set(key, draft);
+    return draft;
+  }
+
+  function setDraft(orgId: string, sandboxId: string, draft: string) {
+    const key = chatCacheKey(orgId, sandboxId);
+    drafts.delete(key);
+    if (!draft) return;
+    drafts.set(key, draft);
+    while (drafts.size > limit) {
+      const oldest = drafts.keys().next().value;
+      if (oldest !== undefined) drafts.delete(oldest);
+    }
+  }
+
   function remove(orgId: string, sandboxId: string) {
     const key = chatCacheKey(orgId, sandboxId);
     inFlight.get(key)?.abort();
     inFlight.delete(key);
     entries.delete(key);
+    drafts.delete(key);
   }
 
   function clear() {
@@ -64,6 +86,7 @@ export function createChatCache(limit = CHAT_CACHE_LIMIT) {
     for (const controller of inFlight.values()) controller.abort();
     inFlight.clear();
     entries.clear();
+    drafts.clear();
   }
 
   async function warm(orgId: string, sandboxId: string, options?: { fetchImpl?: typeof fetch; now?: () => number }) {
@@ -111,6 +134,8 @@ export function createChatCache(limit = CHAT_CACHE_LIMIT) {
   return {
     get,
     set,
+    getDraft,
+    setDraft,
     delete: remove,
     clear,
     warm,
@@ -123,6 +148,8 @@ export function createChatCache(limit = CHAT_CACHE_LIMIT) {
 const defaultCache = createChatCache();
 export const getChatCache = defaultCache.get;
 export const setChatCache = defaultCache.set;
+export const getChatDraft = defaultCache.getDraft;
+export const setChatDraft = defaultCache.setDraft;
 export const deleteChatCache = defaultCache.delete;
 export const clearChatCache = defaultCache.clear;
 export const warmChatCache = defaultCache.warm;

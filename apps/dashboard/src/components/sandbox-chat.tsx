@@ -54,7 +54,14 @@ import {
   toolText,
   transcriptSignature,
 } from "@/lib/chat";
-import { type ChatTurnModel, deleteChatCache, getChatCache, setChatCache } from "@/lib/chat-cache";
+import {
+  type ChatTurnModel,
+  deleteChatCache,
+  getChatCache,
+  getChatDraft,
+  setChatCache,
+  setChatDraft,
+} from "@/lib/chat-cache";
 import { type ChatStreamFrame, chatEventStream } from "@/lib/chat-event-stream";
 import {
   failPendingMessage,
@@ -771,6 +778,7 @@ export function SandboxChat(props: Props) {
             </p>
           ) : (
             <Composer
+              key={`${orgId}:${sandboxId}`}
               {...props}
               status={status}
               idlePaused={idlePaused}
@@ -1312,6 +1320,7 @@ type Intent = "send" | "steer" | "interrupt";
  * Steer redirects it and Interrupt stops it. The draft clears immediately and restores only on definite refusal.
  */
 function Composer({
+  orgId,
   sandboxId,
   harness,
   catalog,
@@ -1338,9 +1347,17 @@ function Composer({
 }) {
   const form = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraftState] = useState(() => getChatDraft(orgId, sandboxId));
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const setDraft = useCallback(
+    (value: string) => {
+      draftRef.current = value;
+      setDraftState(value);
+      setChatDraft(orgId, sandboxId, value);
+    },
+    [orgId, sandboxId],
+  );
   const [result, setResult] = useState<ActionResult | null>(null);
   const [pending, setPending] = useState<Intent | null>(null);
   const [waking, setWaking] = useState(false);
@@ -1462,7 +1479,12 @@ function Composer({
       setWaking(false);
       setResult(outcome);
       if (!outcome.ok) {
-        if (intent !== "interrupt" && isDefiniteComposerRefusal(outcome) && draftRef.current === "") {
+        if (
+          intent !== "interrupt" &&
+          isDefiniteComposerRefusal(outcome) &&
+          draftRef.current === "" &&
+          getChatDraft(orgId, sandboxId) === ""
+        ) {
           if (intent === "send" && submittedKey) sendKey.current = submittedKey;
           setDraft(submittedDraft);
         }
@@ -1550,6 +1572,7 @@ function Composer({
       </Label>
       <Textarea
         ref={textareaRef}
+        data-chat-composer=""
         id={`${fieldId}-message`}
         name="prompt"
         rows={1}
