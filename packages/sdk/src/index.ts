@@ -125,6 +125,18 @@ function formatArmadaErrorMessage(code: FailureCode, status: number, serverCode:
   return status > 0 ? `Armada request failed (${label}, HTTP ${status}).` : `Armada request failed (${label}).`;
 }
 
+function resolveRequestTimeoutMs(
+  perCallTimeoutMs: number | undefined,
+  clientTimeoutMs: number | undefined,
+  operationTimeoutMs: number | undefined,
+) {
+  if (perCallTimeoutMs !== undefined) return perCallTimeoutMs;
+  if (operationTimeoutMs !== undefined) {
+    return clientTimeoutMs !== undefined ? Math.max(clientTimeoutMs, operationTimeoutMs) : operationTimeoutMs;
+  }
+  return clientTimeoutMs ?? 300_000;
+}
+
 /**
  * An Armada request failure. When `retryAfterSeconds` is set from the `Retry-After`
  * header or the failure body, wait at least that many seconds before retrying.
@@ -139,7 +151,7 @@ export class ArmadaError extends Error {
     readonly retryAfterSeconds?: number,
     message?: string,
   ) {
-    super(message ?? formatArmadaErrorMessage(code, status, serverCode));
+    super(message || formatArmadaErrorMessage(code, status, serverCode));
   }
 }
 export interface RequestOptions {
@@ -382,13 +394,7 @@ export class Armada {
     defaultTimeoutMs?: number,
     streamResponse?: RequestPolicy["streamResponse"],
   ) {
-    const timeoutMs =
-      options.timeoutMs ??
-      (defaultTimeoutMs !== undefined
-        ? this.timeoutMs !== undefined
-          ? Math.max(this.timeoutMs, defaultTimeoutMs)
-          : defaultTimeoutMs
-        : (this.timeoutMs ?? 300000));
+    const timeoutMs = resolveRequestTimeoutMs(options.timeoutMs, this.timeoutMs, defaultTimeoutMs);
     const result = await requestApi(apiUrl(this.origin, path), init, {
       fetch: (url, init) => this.fetcher(String(url), init),
       token: this.#token,
