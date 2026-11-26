@@ -1,19 +1,7 @@
 import type { AuthIo } from "../auth-commands.ts";
 import type { Deps, Io } from "../run.ts";
 
-export type UsageGroup =
-  | "org"
-  | "host"
-  | "docker-launch"
-  | "new"
-  | "ls"
-  | "sandbox"
-  | "setup"
-  | "session"
-  | "account"
-  | "automation"
-  | "bind-credential"
-  | "snapshots";
+export type UsageGroup = "sandboxes" | "interactive" | "templates" | "hosts" | "auth";
 
 export type Command = {
   name: string;

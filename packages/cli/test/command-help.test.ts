@@ -139,3 +139,42 @@ test.each([
   expect(code).toBe(2);
   expect(stderr).toBe(`armada: Unknown option '--help'.\nNext step: run ${hint}.\n`);
 });
+
+test("grouped --help, bare armada, help <cmd>, trailing --help, and unconfigured skill help stay offline", async () => {
+  const fail = () => {
+    throw new Error("Help must stay offline");
+  };
+  const capture = async (argv: string[]) => {
+    let out = "",
+      err = "";
+    const code = await run(
+      argv,
+      { out: (t) => (out += t), err: (t) => (err += t) },
+      { env: {}, fetch: Object.assign(fail, { preconnect: fail }), readStdin: fail },
+    );
+    return { code, out, err };
+  };
+  const bare = await capture([]);
+  expect(bare.code).toBe(0);
+  expect(bare.err).toBe("");
+  for (const section of [
+    "Sandboxes:",
+    "Interactive & Relay:",
+    "Templates & Snapshots:",
+    "Hosts & Accounts:",
+    "Auth & API:",
+  ])
+    expect(bare.out).toContain(section);
+  expect(await capture(["--help"])).toEqual(bare);
+
+  expect((await capture(["help", "ls"])).out).toStartWith("Usage: armada ls ");
+  expect((await capture(["help", "snapshot", "new"])).out).toStartWith("Usage: armada snapshot new ");
+  expect((await capture(["help", "skill", "install"])).out).toStartWith("Usage: armada skill install ");
+  expect((await capture(["help", "unknown"])).code).toBe(2);
+
+  expect((await capture(["ls", "--json", "--help"])).out).toStartWith("Usage: armada ls ");
+  expect((await capture(["new", "--provider", "modal", "--help"])).out).toStartWith("Usage: armada new ");
+  expect((await capture(["--profile", "unconfigured", "skill", "install", "--help"])).out).toStartWith(
+    "Usage: armada skill install ",
+  );
+});

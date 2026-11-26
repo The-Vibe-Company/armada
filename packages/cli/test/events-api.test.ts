@@ -196,6 +196,21 @@ test.each(["explicit", "saved"])("events forwards the %s organization selection"
   expect(body).toEqual({ id, follow: false, org: selection === "explicit" ? explicit : saved });
 });
 
+test("events accepts logs/read receipts with optional settled omitted", async () => {
+  let out = "";
+  const code = await run(
+    ["events", id],
+    { out: (text) => (out += text), err: () => {} },
+    {
+      auth: auth(async () =>
+        Response.json({ events: [{ id: "e1", at: 1, kind: "message", text: "hi" }], cursor: null, hasMore: false }),
+      ),
+    },
+  );
+  expect(code).toBe(0);
+  expect(out).toBe("hi\n");
+});
+
 test("logs is an unknown command", async () => {
   let stderr = "";
   const code = await run(["logs"], { out: () => {}, err: (text) => (stderr += text) }, { env: {} });

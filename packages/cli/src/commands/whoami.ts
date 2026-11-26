@@ -7,8 +7,9 @@ import type { Command } from "./command.ts";
 export default {
   name: "whoami",
   summary: "Show the current Armada login or API key",
-  usage: { session: "  armada whoami [--json]" },
+  usage: { auth: "  armada whoami [--json]                   Show current login or API key identity" },
   help: "Usage: armada whoami [--json]\nShow the verified login or API key identity.\n",
+  automaticJson: true,
   async run(argv, { auth }) {
     const { position, flags } = parseAuth(argv);
     rejectUnknown(flags, ["json"]);

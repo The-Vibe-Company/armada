@@ -37,7 +37,7 @@ export function validApiReceipt(path: string, value: unknown): boolean {
         value.events.every(validEvent) &&
         (value.cursor === null || typeof value.cursor === "string") &&
         bool("hasMore") &&
-        bool("settled")
+        (value.settled === undefined || bool("settled"))
       );
     case "/api/v1/golden/list":
       return (

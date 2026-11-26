@@ -48,7 +48,8 @@ describe("golden list through the Armada API", () => {
       },
     );
     expect(code).toBe(0);
-    expect(out).toContain("web  boat  org  snapshot  1 repo");
+    expect(out).toMatch(/NAME\s+PROVIDER\s+VISIBILITY\s+SNAPSHOT\s+REPOS/);
+    expect(out).toMatch(/web\s+boat\s+org\s+snapshot\s+1 repo/);
     expect(err).toBe("");
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/golden/list");
     expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);

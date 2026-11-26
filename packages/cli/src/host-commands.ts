@@ -15,6 +15,7 @@ import { isDockerHostVersionStatus } from "@armada/core/contract";
 import { flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";
+import { formatTableRows } from "./table.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const VERSION_WARNINGS = {
@@ -112,8 +113,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     (operation === "ls" ? count > 1 : count !== (operation === "add" ? 0 : 1))
   )
     return invalid(HELP.trim());
-  const org = single(args, "--org");
-  if (!org || !UUID.test(org)) return invalid("Select an organization or pass --org UUID.");
+  const orgRef = single(args, "--org");
   const name = single(args, "--name")?.trim();
   if (name !== undefined && (!name || name.length > 64 || /[\p{C}]/u.test(name)))
     return invalid("--name requires 1..64 visible characters.");
@@ -121,6 +121,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
   if (operation === "rm" && (!hostId || !UUID.test(hostId))) return invalid("host rm requires a host UUID.");
   const client = await createSdkCommandClient(auth);
   if (operation === "ls") {
+    const org = await resolveHostOrganization(client, orgRef);
     const result = await listHosts(client, org);
     if (hostId !== undefined) {
       const matches = result.hosts.filter((host) =>
@@ -133,14 +134,28 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     else {
       if (result.targetVersion) auth.out(`Target daemon version: ${result.targetVersion}\n`);
       if (result.minimumVersion) auth.out(`Minimum supported daemon version: ${result.minimumVersion}\n`);
-      auth.out("ID\tNAME\tSTATE\tLAST SEEN\tVERSION\tRETAINED\tMACHINE\tPER SANDBOX\tRUNNING/CAPACITY\n");
-      for (const host of result.hosts) {
-        const resources = dockerHostResourceDisplay(host);
-        const version = host.version?.trim();
-        const versionWarning = version && host.versionStatus && VERSION_WARNINGS[host.versionStatus];
-        auth.out(
-          `${host.id}\t${host.name ?? "—"}\t${host.state}\t${host.lastSeenAt ?? "never"}\t${version || "unknown"}${versionWarning ? ` (${versionWarning})` : ""}\t${host.sandboxes}\t${resources.machine}\t${resources.limits}\t${resources.usage}\n`,
-        );
+      const table = formatTableRows(
+        ["ID", "NAME", "STATE", "LAST SEEN", "VERSION", "RETAINED", "MACHINE", "PER SANDBOX", "RUNNING/CAPACITY"],
+        result.hosts.map((host) => {
+          const resources = dockerHostResourceDisplay(host);
+          const version = host.version?.trim();
+          const versionWarning = version && host.versionStatus && VERSION_WARNINGS[host.versionStatus];
+          return [
+            host.id,
+            host.name ?? "—",
+            host.state,
+            host.lastSeenAt ?? "never",
+            `${version || "unknown"}${versionWarning ? ` (${versionWarning})` : ""}`,
+            String(host.sandboxes),
+            resources.machine,
+            resources.limits,
+            resources.usage,
+          ];
+        }),
+      );
+      auth.out(`${table.header}\n`);
+      for (const [index, host] of result.hosts.entries()) {
+        auth.out(`${table.rows[index]}\n`);
         if (host.state === "draining") auth.out(`Draining: ${DOCKER_HOST_DRAINING_MESSAGE}\n`);
         if (hostId === undefined)
           auth.out(
@@ -187,6 +202,7 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
       }
       if (!Object.keys(patch).length) return invalid("Provide --cpus, --memory, --max-sandboxes or --auto.");
     }
+    const org = await resolveHostOrganization(client, orgRef);
     const resolved = await resolveHost(client, org, hostId!);
     await client.dockerHost("limits", { org, hostId: resolved, ...patch });
     auth.out(
@@ -196,6 +212,7 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     );
     return 0;
   }
+  const org = await resolveHostOrganization(client, orgRef);
   if (operation === "rm") {
     const result = await client.dockerHost<{ revoked: boolean }>("revoke", { org, hostId });
     if (result?.revoked !== true) return unavailable("The server did not confirm host revocation.");

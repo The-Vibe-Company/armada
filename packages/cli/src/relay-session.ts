@@ -44,6 +44,7 @@ export type RelayTerminal = {
   writeStdout(c: Uint8Array): boolean;
   onStdoutDrain(fn: () => void): () => void;
   onStdinData(fn: (c: Uint8Array) => void): () => void;
+  onStdinEnd?(fn: () => void): () => void;
   onResize(fn: (cols: number, rows: number) => void): () => void;
 };
 export type RelayDeps = {
@@ -51,6 +52,13 @@ export type RelayDeps = {
   createTcpServer?: (onConn: (socket: RelayTcpSocket) => void) => RelayTcpServer;
   terminal?: RelayTerminal;
   onSignal?: (signal: "SIGINT" | "SIGTERM", fn: () => void) => () => void;
+  connectTimeoutMs?: number;
+  after?: (ms: number, fn: () => void) => () => void;
+};
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const defaultAfter = (ms: number, fn: () => void) => {
+  const timer = setTimeout(fn, ms);
+  return () => clearTimeout(timer);
 };
 export type RelaySession = {
   readonly sandboxId: string;
@@ -220,12 +228,26 @@ export async function openRelaySession(input: {
     handlers?.onClose(code, reason);
   };
   await new Promise<void>((resolve, reject) => {
+    let cancelTimer: (() => void) | undefined;
+    const clearTimer = () => {
+      cancelTimer?.();
+      cancelTimer = undefined;
+    };
     const abort = (msg: string) => {
+      if (opened || closed) return;
+      clearTimer();
       closed = true;
+      try {
+        ws.close(1000);
+      } catch {}
       reject(new AuthError(msg, "unavailable"));
     };
+    const after = input.deps.relay?.after ?? defaultAfter;
+    const timeoutMs = input.deps.relay?.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    cancelTimer = after(timeoutMs, () => abort("Timed out connecting to sandbox relay."));
     ws.addEventListener("open", () => {
       if (opened || closed) return;
+      clearTimer();
       opened = true;
       resolve();
     });

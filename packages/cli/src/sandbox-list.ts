@@ -1,5 +1,6 @@
 import { AuthError } from "@armada/auth";
 import { idlePauseMessage, isSandboxPlacementProvider, SANDBOX_PLACEMENT_LABELS } from "@armada/core";
+import { formatTable } from "./table.ts";
 
 export function sandboxListText(rows: unknown[], now: Date): string {
   if (!rows.length) return "No sandboxes.\n";
@@ -10,7 +11,7 @@ export function sandboxListText(rows: unknown[], now: Date): string {
       return code < 32 || (code >= 127 && code <= 159) ? " " : character;
     }).join("");
   };
-  const lines = rows.map((value) => {
+  const cells = rows.map((value) => {
     if (!value || typeof value !== "object") throw new AuthError("Invalid safe sandbox metadata.", "unavailable");
     const row = value as Record<string, unknown>;
     const created = Date.parse(text(row.createdAt));
@@ -47,7 +48,10 @@ export function sandboxListText(rows: unknown[], now: Date): string {
             ? "open/manage"
             : "open"
           : "metadata only",
-    ].join("  ");
+    ];
   });
-  return `ID  LABEL  PROVIDER  PROVIDER ID  STATUS  OUTCOME  AGE  PRESERVATION  OWNER  ACCESS\n${lines.join("\n")}\n`;
+  return formatTable(
+    ["ID", "LABEL", "PROVIDER", "PROVIDER ID", "STATUS", "OUTCOME", "AGE", "PRESERVATION", "OWNER", "ACCESS"],
+    cells,
+  );
 }

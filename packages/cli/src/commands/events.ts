@@ -66,8 +66,10 @@ const usage = "armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]"
 export default {
   name: "events",
   summary: "Read agent events from a sandbox",
-  usage: `  ${usage}
-                                           Read agent events`,
+  usage: {
+    interactive: `  ${usage}
+                                           Read or follow (-f) agent events`,
+  },
   help: `Usage: ${usage}
 Read one page of agent events. --tail N starts with the last N events (1–1000).
 -f follows new events until the sandbox settles. Ctrl-C stops the reader.

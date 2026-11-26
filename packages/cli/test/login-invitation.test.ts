@@ -127,17 +127,8 @@ test("an invalid environment token is never replaced by interactive login", asyn
   });
 });
 
-for (const initial of [null, { ...saved, expiresAt: "2000-01-01" }, saved]) {
-  test(`bare armada invites a ${initial ? "expired" : "missing"} session before showing help`, async () => {
-    const state = fixture(initial);
-    expect(await state.run([])).toBe(0);
-    expect(state.output()).toMatchObject({ invitations: 1, logins: 1 });
-    expect(state.output().out).toContain("Usage:");
-  });
-}
-
-for (const args of [["--help"], ["--version"], ["whoami", "--help"]]) {
-  test(`${args.join(" ")} stays available without authentication`, async () => {
+for (const args of [[], ["--help"], ["--version"], ["whoami", "--help"]]) {
+  test(`${args.length ? args.join(" ") : "bare armada"} stays available without authentication`, async () => {
     const state = fixture();
     expect(await state.run(args)).toBe(0);
     expect(state.output()).toMatchObject({ invitations: 0, logins: 0, commands: 0 });

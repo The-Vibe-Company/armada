@@ -33,20 +33,43 @@ Quick start / common examples:
   armada stop SANDBOX_ID
   eval "$(armada completion bash)"
 
-Usage:
-  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin
-  armada host add [--name NAME] [--org UUID]
-  armada host ls [HOST] [--org UUID] [--json]
-  armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
-  armada host rm UUID [--org UUID]
-  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode|antigravity [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
-                                           Docker launch through the normal Armada API using the official Armada environment.
-  armada info --setup [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts
-  armada completion bash|zsh|fish           Print a shell completion script
-  armada --version                         Print the version
-  armada --help                            Show this help (also -h or help); no login required
-  armada skill install (--project <directory> | --global) --yes [--revision <commit>]
-                                           Public GitHub Armada tool-knowledge skill; no login. See skill --help.
+Usage: armada [global options] <command> [arguments]
+
+Sandboxes:
+  armada new <snapshot> --agent claude|codex|opencode|antigravity --provider boat|modal ["prompt"] [--model <id>] [--reasoning-effort <level>] [--credential-id <id>] [--repo <dir|owner/repo>] [--ttl 4h] [--skill <pin>] [--connections <id,...> | --no-connections] [--keep-after-merge] [--armada-access [--max-active-children <1..100>]] [--idempotency-key KEY] [--org <org>] [--json]
+                                           Fork a snapshot into a sandbox (see new --help)
+  armada new [prompt] --provider docker [--host UUID|NAME | --golden UUID] --agent claude|codex|opencode|antigravity [--credential-id UUID] [--credential-version N] [--repo owner/repo[@branch]] [--variable KEY:UUID:V] [--secret KEY:UUID:V] [--idempotency-key KEY] [--ttl 4h] [--org ORG] [--json]
+                                           Launch on a registered Docker host (see new --help)
+  armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode|antigravity] [--golden UUID] [--owner UUID|me] [--page N] [--limit 1..200] [--org ORG] [--json] [--page-info]
+                                           List visible sandboxes (default page size 25)
+  armada info [sandbox-id] [--live | --wait [--timeout S]] [--org ORG] [--json]
+                                           Inspect sandbox state, probe provider, or wait for activity
+  armada info --setup [--org ORG] [--json] Check identity, server, GitHub, hosts and accounts
+  armada rm <sandbox-id> --yes [--org ORG] [--json]
+                                           Permanently delete a stopped sandbox and its recovery archives
+  armada stop [sandbox-id] [--turn | --after [--timeout S]] [--org ORG] [--json]
+                                           Stop the sandbox machine or interrupt its current turn
+  armada report [sandbox-id] ready|blocked --prompt-id ID [options]
+                                           Report an explicit outcome for the latest finished turn
+  armada prompt [--steer] <sandbox-id> <text>
+                                           Start a turn or redirect a running turn
+  armada bind-credential <sandbox-id> --credential-id UUID [--org ORG] [--json]
+                                           Recover a legacy Modal credential binding (owner-only)
+
+Interactive & Relay:
+  armada exec [sandbox-id] [--cwd PATH] [--timeout SECONDS] [--org UUID] [--json] -- COMMAND
+                                           Run a shell command in a sandbox
+  armada shell [sandbox-id] [--cwd PATH] [--org UUID]
+                                           Open an interactive PTY shell
+  armada port-forward [sandbox-id] <remote-port> [local-port] [--org UUID] [--json]
+                                           Forward 127.0.0.1:<local-port> to sandbox TCP port
+  armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]
+                                           Read or follow (-f) agent events
+  armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]
+                                           List or download saved sandbox outputs
+
+Templates & Snapshots:
+  armada template --help                   Inspect and launch published template versions
   armada snapshot ls [--provider boat|modal|docker] [--org ORG] [--json]
   armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--wait [--timeout SECONDS]] [--provider boat|modal|docker] [--org ORG] [--private] [--json]
     [--setup FILE] [--idempotency-key KEY] [--host UUID|NAME] [--request-id UUID]
@@ -56,52 +79,36 @@ Usage:
   armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
   armada snapshot show --build JOB_ID [--json]
   armada snapshot show --idempotency-key KEY --org ORG_UUID [--json]
-  armada new <snapshot> --agent claude|codex|opencode|antigravity ["prompt"] [--model <id>] [--reasoning-effort <level>]
-                                           [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
-                --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
-                [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
-                Omit connections to request server defaults; --no-connections opts out.
-                                           Fork a snapshot into a sandbox. With a prompt the agent starts at once;
-                                           without one the sandbox waits, ready, for the first prompt. The model
-                                           and effort apply to every later turn too. --credential-id UUID selects a model account;
-                                           otherwise use your personal or organization default.
-                                           --repo selects the agent's initial working directory, including when idle.
-                                           Defaults:
-                                           claude claude-opus-5-5 medium, codex gpt-6.2-sol medium, opencode armada/deepseek-flash default, antigravity default default
-  armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode|antigravity] [--golden UUID] [--owner UUID|me]
-              [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
-                                           Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
-  armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
-                                           Owner-only legacy Modal binding recovery; stop safely first; no restart
-  armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--org UUID] [--json]
-                                           Inspect recorded state, probe the provider or wait for activity
-  armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
-  armada stop [sandbox-id] [--turn | --after [--timeout SECONDS]] [--org UUID] [--json]
-  armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
-  armada prompt [--steer] <sandbox-id> <text>
-                                           Start a turn or redirect a running turn
-  armada exec [sandbox-id] [--cwd PATH] [--timeout SECONDS] [--org UUID] [--json] -- COMMAND
-                                           Run a shell command
-  armada shell [sandbox-id] [--cwd PATH] [--org UUID]
-                                           Open an interactive PTY shell
-  armada port-forward [sandbox-id] <remote-port> [local-port] [--org UUID]
-                                           Forward 127.0.0.1:<local-port> to sandbox TCP port
-  armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]
-                                           Read agent events
-  armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]
-                                           List or download saved outputs
-  armada api ROUTE [JSON|-]
-  armada login [--url <url>] [--org NAME|UUID|none]        Sign in and authorize the CLI in your browser
-  armada logout
-  armada whoami [--json]
-  armada org list
+                                           Manage provider-scoped snapshots (see snapshot --help)
+
+Hosts & Accounts:
+  armada account --help                    Manage encrypted model accounts (ls|add|login|import|default|limits|rm|test)
+  armada account ls|add|login|rm github    Manage GitHub connection and installations
+  armada account status|logout             Show server account status or revoke login session
+  armada org list                          List your organizations, roles and IDs
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
-                                           Connect an org provider using hidden input, stdin or a file
-  armada account --help                      Discover encrypted model account commands
-  armada account ls|add|login|rm github      GitHub connection and installation
-  armada account status|logout               Armada identity / revoke current login session
-  armada template --help                   Inspect and launch published versions
+                                           Connect an org provider via stdin or private file
+  armada host install --server HTTPS_ORIGIN  Install daemon on Docker host (token on stdin)
+  armada host add [--name NAME] [--org ORG] [--json]
+                                           Register a Docker host and print its installer
+  armada host ls [HOST] [--org ORG] [--json]
+                                           List or inspect registered Docker hosts
+  armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org ORG] [--json]
+                                           Update host resource limits or reset with --auto
+  armada host rm UUID [--org ORG] [--json] Revoke a Docker host registration
+
+Auth & API:
+  armada completion bash|zsh|fish          Print a shell completion script
+  armada login [--url <url>] [--org NAME|UUID|none]
+                                           Sign in and authorize the CLI in your browser
+  armada logout [--json]                   Clear saved local Armada login
+  armada whoami [--json]                   Show current login or API key identity
+  armada api ROUTE [JSON|-]                Call a versioned /api/v1/ API route directly
+  armada skill install (--project <dir> | --global) --yes [--revision <sha>]
+                                           Install Armada tool-knowledge skill from GitHub (no login)
+  armada --version                         Print the CLI version
+  armada --help                            Show this help (also -h, help [command]); no login required
 
 Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.
