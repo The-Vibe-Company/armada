@@ -173,6 +173,7 @@ test.each([true, false])("setup status diagnoses failed session for token mode %
   const f = fixture({});
   if (!token) f.auth.env = {};
   expect(await f.run(["info", "--json"])).toBe(1);
+  expect(f.errors()).toBe("");
   expect(JSON.parse(f.output()).checks).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -270,12 +271,13 @@ test("noninteractive, JSON and fully specified launches never perform interactiv
     throw Error("Must not prompt");
   };
   expect(await prepareLaunch(["--json"], f.auth)).toEqual(["--json"]);
-  expect(
-    await prepareLaunch(
-      ["app", "--provider", "boat", "--agent", "codex", "--credential-id", "account", "--org", "org"],
-      f.auth,
-    ),
-  ).toEqual(["app", "--provider", "boat", "--agent", "codex", "--credential-id", "account", "--org", "org"]);
+  for (const explicit of [
+    ["app", "--provider", "boat", "--agent", "codex", "--credential-id", "account", "--org", "org"],
+    ["app", "--provider", "modal", "--agent", "codex"],
+    ["--provider", "docker", "--host", "workstation", "--agent", "codex"],
+  ]) {
+    expect(await prepareLaunch(explicit, f.auth)).toEqual(explicit);
+  }
   expect(f.paths).toEqual([]);
 });
 

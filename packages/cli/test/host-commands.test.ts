@@ -20,7 +20,7 @@ const summary = {
   upgradeRequired: true,
   sandboxes: 3,
 };
-async function capture(args: string[], fetcher: (request: Request) => Promise<Response>) {
+async function capture(args: string[], fetcher: (request: Request) => Promise<Response>, stdoutIsTTY?: boolean) {
   let out = "",
     err = "",
     now = start,
@@ -36,6 +36,7 @@ async function capture(args: string[], fetcher: (request: Request) => Promise<Re
       },
     },
     {
+      ...(stdoutIsTTY === undefined ? {} : { stdoutIsTTY }),
       localHost: new Proxy({} as LocalHostIo, {
         get() {
           throw new Error("Server host commands must avoid local daemon I/O");
@@ -102,18 +103,23 @@ test("host add prints the server command once, submits its name and waits for th
 test("host add pending waits respect token expiry and five-minute limit without reissuing", async () => {
   for (const expiry of [start + 3000, start + 600_000]) {
     let issued = 0;
-    const result = await capture(["host", "add"], async (request) => {
-      if (new URL(request.url).pathname.endsWith("register-token")) {
-        issued++;
-        return Response.json(ticket(expiry));
-      }
-      return Response.json({ placement: true, hosts: [{ ...summary, state: "offline" }] });
-    });
+    const result = await capture(
+      ["host", "add"],
+      async (request) => {
+        if (new URL(request.url).pathname.endsWith("register-token")) {
+          issued++;
+          return Response.json(ticket(expiry));
+        }
+        return Response.json({ placement: true, hosts: [{ ...summary, state: "offline" }] });
+      },
+      false,
+    );
     expect(result.code).toBe(1);
     expect(issued).toBe(1);
     expect(result.slept).toBe(Math.min(expiry - start, 300_000));
     expect(result.err).toContain(hostId);
     expect(result.err).toContain("no registration was reissued");
+    expect(result.err).not.toContain("command_failed");
   }
 });
 
@@ -312,4 +318,14 @@ test("host ls flags an outdated daemon with a supported protocol", async () => {
   expect(result.out).toMatch(/outdated/i);
   expect(result.out).toContain("dev (unrecognized version)");
   expect(result.out).not.toContain("Upgrade the Docker host daemon");
+});
+
+test("host protocol errors exit 1 as operational failures", async () => {
+  for (const [argv, body] of [
+    [["host", "ls"], { placement: true, hosts: [{ id: "bad" }] }],
+    [["host", "rm", hostId], { revoked: false }],
+    [["host", "add", "--json"], { hostId: "bad" }],
+  ] as const) {
+    expect((await capture([...argv], async () => Response.json(body))).code).toBe(1);
+  }
 });

@@ -101,3 +101,28 @@ test("shell restores TTY on refused stream and rejects bad args before HTTP", as
   expect([await done, term.rawCalls]).toEqual([1, [true, false]]);
   expect(getErr()).toContain("refused");
 });
+
+test("piped shell propagates remote non-zero exit code without appending machine-mode JSON error", async () => {
+  const { io, auth, getErr } = makeRelayAuth(async () => Response.json(TICKET), { ARMADA_SANDBOX: ID });
+  const ws = createFakeWs(),
+    term = createFakeTerminal(false),
+    { promise: ready, resolve: markReady } = Promise.withResolvers<void>();
+  const done = run(["shell"], io, {
+    auth,
+    stdoutIsTTY: false,
+    relay: {
+      terminal: term.terminal,
+      onSignal: () => () => {},
+      createWebSocket() {
+        queueMicrotask(() => {
+          ws.open();
+          queueMicrotask(markReady);
+        });
+        return ws.ws;
+      },
+    },
+  });
+  await ready;
+  ws.receive({ type: RELAY_OPCODE.CLOSE, streamId: 1, code: 1, reason: "eof" });
+  expect([await done, getErr()]).toEqual([1, ""]);
+});

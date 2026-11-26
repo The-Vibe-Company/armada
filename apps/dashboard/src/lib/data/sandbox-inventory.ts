@@ -33,8 +33,7 @@ export async function loadSandboxInventory(
     console.error("Recorded sandbox activity is unavailable.");
     return {};
   });
-  const viewingDeleted = requestedActivity === "deleted";
-  const includeDeleted = sandboxInventoryIncludesDeleted(filters, requestedActivity);
+  const includeDeleted = sandboxInventoryIncludesDeleted(filters);
   const [{ inventory, skipped }, turns, deletedFacetCount] = await Promise.all([
     metadata,
     turnsRead ?? {},
@@ -42,22 +41,13 @@ export async function loadSandboxInventory(
   ]);
   const now = new Date();
   const rows = sortSandboxes(filterSandboxes(inventory, filters, viewerId), filters.sort, now);
-  const allowsDeleted = !filters.status.length || filters.status.includes("deleted");
-  const matchingDeleted =
-    deletedFacetCount === null && allowsDeleted
-      ? filterSandboxes(inventory, { ...filters, status: ["deleted"] }, viewerId)
-      : [];
-  const deletedTabCount = allowsDeleted ? (deletedFacetCount ?? matchingDeleted.length) : 0;
-  const activityPage = sandboxActivityPage(rows, viewerId, requestedActivity, filters.page, turns, now, {
-    rows: viewingDeleted ? sortSandboxes(matchingDeleted, filters.sort, now) : [],
-    count: deletedTabCount,
-  });
+  const activityPage = sandboxActivityPage(rows, viewerId, requestedActivity, filters.page, turns, now);
   const facets = sandboxFacetCounts(inventory, filters, viewerId);
   if (deletedFacetCount !== null) facets.status.set("deleted", deletedFacetCount);
   return {
     ...activityPage,
     now,
-    total: viewingDeleted ? activityPage.counts.deleted : rows.length,
+    total: rows.length,
     inventoryTotal: inventory.filter((row) => row.status !== "deleted").length,
     skipped,
     facets,

@@ -86,6 +86,30 @@ const DIMS = [
   ["cacheWriteTokens", "cache_creation_input_tokens"],
   ["reasoningTokens", "reasoning"],
 ] as const;
+const OUTPUT_INCLUDES_REASONING = new Set(["codex", "opencode", "claude"]);
+
+function normalizeUsageDetails(rows: readonly TurnTokenUsage[], harness: string | undefined) {
+  const sum = (key: (typeof DIMS)[number][0]) =>
+    rows.length && rows.every((row) => typeof row[key] === "number")
+      ? rows.reduce((s, row) => s + (row[key] as number), 0)
+      : undefined;
+  const rawInput = sum("inputTokens");
+  const rawOutput = sum("outputTokens");
+  const cached = sum("cachedTokens");
+  const cacheWrite = sum("cacheWriteTokens");
+  const reasoning = sum("reasoningTokens");
+  const inputSubset = harness === "codex" ? (cached ?? 0) + (cacheWrite ?? 0) : 0;
+  const outputSubset = harness && OUTPUT_INCLUDES_REASONING.has(harness) ? (reasoning ?? 0) : 0;
+  const input = rawInput !== undefined && rawInput >= inputSubset ? rawInput - inputSubset : undefined;
+  const output = rawOutput !== undefined && rawOutput >= outputSubset ? rawOutput - outputSubset : undefined;
+  const out: Record<string, number> = {};
+  if (input !== undefined) out.input = input;
+  if (output !== undefined) out.output = output;
+  if (cached !== undefined) out.cache_read_input_tokens = cached;
+  if (cacheWrite !== undefined) out.cache_creation_input_tokens = cacheWrite;
+  if (reasoning !== undefined) out.reasoning = reasoning;
+  return out;
+}
 
 const hash = (s: string, n: number) => createHash("sha256").update(s).digest("hex").slice(0, n);
 const nano = (at: number) => (BigInt(Math.max(0, Math.trunc(at))) * 1000000n).toString();
@@ -265,15 +289,21 @@ function collectTurn(
   for (const e of history) {
     if (e.kind !== "message") continue;
     if (!e.retracted && e.responseKind !== "tool_result") {
-      const id = e.messageId ?? e.id;
-      messages.set(id, e.textMode === "delta" ? (messages.get(id) ?? "") + e.text : e.text);
-      if (e.at > 0 && (firstAt === undefined || e.at < firstAt)) firstAt = e.at;
       msgModel ??= realModel(e.model);
+      if (e.text.length > 0 || e.tools.length === 0) {
+        const id = e.messageId ?? e.id;
+        const next = e.textMode === "delta" ? (messages.get(id) ?? "") + e.text : e.text;
+        if (next.length > 0 || messages.has(id)) messages.set(id, next);
+        if (e.text.length > 0 && e.at > 0 && (firstAt === undefined || e.at < firstAt)) firstAt = e.at;
+      }
     }
     for (const t of e.tools) {
       const prev = tools.get(t.id);
       const server = t.server ?? prev?.tool.server;
-      const name = e.responseKind === "tool_result" && prev ? prev.tool.name : t.name;
+      const name =
+        prev && (e.responseKind === "tool_result" || t.name === "tool_result" || t.result !== undefined)
+          ? prev.tool.name
+          : t.name;
       const input = t.input !== undefined ? t.input : prev?.tool.input;
       tools.set(t.id, {
         first: prev ? Math.min(prev.first, e.at) : e.at,
@@ -425,8 +455,8 @@ export function langfuseSpans(
     });
 
     const rootIn = exportFull ? boundedScrub(f.start?.text || end.text || undefined, ROOT_MAX) : undefined;
-    const rootOut =
-      exportFull && f.messages.size ? boundedScrub([...f.messages.values()].join("\n"), ROOT_MAX) : undefined;
+    const outText = [...f.messages.values()].filter((m) => m.length > 0).join("\n");
+    const rootOut = exportFull && outText ? boundedScrub(outText, ROOT_MAX) : undefined;
     const rootLevel =
       end.status === "failed" ? "ERROR" : end.status !== "finished" || f.toolErrorCount > 0 ? "WARNING" : "DEFAULT";
     spans.push(
@@ -453,13 +483,7 @@ export function langfuseSpans(
       ),
     );
     for (const [idx, g] of groups.entries()) {
-      const usageDetails = Object.fromEntries(
-        DIMS.flatMap(([d, k]) =>
-          g.rows.every((row) => typeof row[d] === "number")
-            ? [[k, g.rows.reduce((s, row) => s + (row[d] as number), 0)]]
-            : [],
-        ),
-      );
+      const usageDetails = normalizeUsageDetails(g.rows, r.harness);
       const costs = g.rows.map((row) => row.pricing?.usd);
       const costDetails =
         costs.length && costs.every((c) => c != null && Number.isFinite(Number(c)))

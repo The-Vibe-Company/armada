@@ -233,6 +233,7 @@ test("post-claim launch receipts distinguish confirmed refusal from uncertain al
         },
       });
       expect(result.code).toBe(1);
+      expect(result.err).not.toContain("command_failed");
       expect(result.err).toContain(
         reason === "connection_unavailable" ? "Reconnect this tool before retrying." : (help ?? ""),
       );

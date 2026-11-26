@@ -14,9 +14,11 @@ export default {
     rejectUnknown(flags, ["json"]);
     if (position.length) throw new AuthError("Usage: armada whoami [--json]", "usage");
     const api = await createSdkCommandClient(auth);
-    const result = tokenOperations.whoami.output.parse(
+    const parsed = tokenOperations.whoami.output.safeParse(
       await api.request(tokenOperations.whoami.route.path, { method: tokenOperations.whoami.route.method }),
     );
+    if (!parsed.success) throw new AuthError("Armada returned an invalid whoami response.", "unavailable");
+    const result = parsed.data;
     if (flags.has("json")) auth.out(`${JSON.stringify(result)}\n`);
     else if (result.auth === "key")
       auth.out(`${result.userId} (API key ${result.key.name}, expires ${result.key.expiresAt ?? "never"})\n`);

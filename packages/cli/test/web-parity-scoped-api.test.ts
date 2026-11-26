@@ -348,7 +348,7 @@ test("CLI retires launch visibility without changing source golden authority", a
       me,
       await encryptSecret("fixture-model-key", key),
     ]);
-    const launched = await f.cli([
+    const rejected = await f.cli([
       "new",
       "first",
       "--provider",
@@ -359,11 +359,12 @@ test("CLI retires launch visibility without changing source golden authority", a
       "private",
       "--json",
     ]);
+    expect(rejected.code).toBe(2);
+    const launched = await f.cli(["new", "first", "--provider", "boat", "--agent", "codex", "--json"]);
     expect(launched.code).toBe(0);
     const dto = JSON.parse(launched.out);
     expect(dto.sandbox).toMatchObject({ status: "starting" });
     expect(dto).not.toHaveProperty("visibility");
-    expect(launched.err).toContain("deprecated and ignored");
     expect(
       (
         await f.db.query<{ visibility: string; source_golden_visibility: string }>(
@@ -372,7 +373,7 @@ test("CLI retires launch visibility without changing source golden authority", a
         )
       ).rows[0],
     ).toEqual({ visibility: "org", source_golden_visibility: "org" });
-    const text = await f.cli(["new", "first", "--provider", "boat", "--agent", "codex", "--visibility", "private"]);
+    const text = await f.cli(["new", "first", "--provider", "boat", "--agent", "codex"]);
     expect(text.code).toBe(0);
     expect(text.out).toContain("Status: starting");
     expect(text.out).not.toContain("(private)");

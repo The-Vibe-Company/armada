@@ -470,3 +470,100 @@ test("WS preview upgrade checks Origin + cookie, handles post-101 race, >256KiB 
     await f.hub.stop();
   }
 });
+
+test("WS preview evicts earlyClose bridges after open grace and stop() awaits in-flight revalidateBridge", async () => {
+  const peers = new Map<number, TcpPeer>();
+  const f = await fixture((s, received) => {
+    if (peers.has(s.id)) return;
+    const text = dec.decode(received);
+    if (!text.includes("\r\n\r\n")) return;
+    peers.set(s.id, s);
+    const accept = createHash("sha1")
+      .update(/Sec-WebSocket-Key: ([^\r\n]+)/i.exec(text)![1]! + WS_GUID)
+      .digest("base64");
+    s.sendData(
+      enc.encode(
+        `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+      ),
+    );
+  });
+  let gate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+  let recheckStarted = false;
+  const guarded = createRelayPreview({
+    relayHub: {
+      ...f.hub,
+      async checkAccess(...args) {
+        if (gate) {
+          recheckStarted = true;
+          await gate.promise;
+        }
+        return f.hub.checkAccess(...args);
+      },
+    },
+    encryptionKey: ENCRYPTION_KEY,
+    publicUrl: PUBLIC_URL,
+    clock: f.timer.clock,
+  });
+  try {
+    const t = await f.mint({ mode: "preview", port: 5173 });
+    const entered = await guarded.route(
+      new Request(`${PUBLIC_URL}/api/v1/relay/preview/enter`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ticket: t.ticket }),
+      }),
+    );
+    const cookie = entered!.headers.get("set-cookie")!.split(";")[0]!;
+    const wsUrl = `${PUBLIC_URL}/api/v1/sandboxes/${f.id}/ports/5173/ws`;
+    const upgradeOne = async () => {
+      let data: PreviewWsSocketData | undefined;
+      expect(
+        await guarded.upgradeWebSocket(
+          new Request(wsUrl, { headers: { upgrade: "websocket", origin: PUBLIC_URL, cookie } }),
+          (d) => {
+            data = d;
+            return true;
+          },
+        ),
+      ).toBeUndefined();
+      return data!;
+    };
+
+    const d1 = await upgradeOne();
+    [...peers.values()].at(-1)!.close(4403, "revoked");
+    await f.timer.advance(5_000);
+    let lateCode: number | undefined;
+    guarded.websocket.open?.({
+      data: d1,
+      close: (c = 1000) => {
+        lateCode = c;
+      },
+    } as unknown as ServerWebSocket<PreviewWsSocketData>);
+    expect(lateCode).toBe(1012);
+
+    const d2 = await upgradeOne();
+    guarded.websocket.open?.({
+      data: d2,
+      send: () => 1,
+      ping: () => 0,
+      close: () => {},
+    } as unknown as ServerWebSocket<PreviewWsSocketData>);
+    gate = Promise.withResolvers<void>();
+    await f.timer.advance(30_000);
+    expect(recheckStarted).toBe(true);
+    let stopped = false;
+    const stopPromise = guarded.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(stopped).toBe(false);
+    gate.resolve();
+    await stopPromise;
+    expect(stopped).toBe(true);
+  } finally {
+    gate?.resolve();
+    await guarded.stop();
+    await f.preview.stop();
+    await f.hub.stop();
+  }
+});

@@ -68,8 +68,6 @@ test("compiled launch preserves account selection and owner defaults without all
           "codex",
           "--credential-id",
           credentialId,
-          "--visibility",
-          "org",
           "--json",
           ...selection,
         ],
@@ -90,7 +88,7 @@ test("compiled launch preserves account selection and owner defaults without all
       ]);
       expect(code, stderr).toBe(0);
       expect(JSON.parse(stdout)).toEqual(receipt);
-      expect(stderr).toContain("deprecated and ignored");
+      expect(stderr).toBe("");
       const request = requests.at(-1)!;
       expect(request.path).toBe("/api/v1/sandbox/launch");
       expect(request.body.credentialId).toBe(credentialId);

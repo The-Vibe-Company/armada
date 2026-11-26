@@ -14,7 +14,6 @@ const VALUE = new Set([
   "--credential-id",
   "--idempotency-key",
   "--connections",
-  "--visibility",
   "--cwd",
   "--prompt-id",
   "--timeout",
@@ -69,10 +68,10 @@ export function parseArgs(
     if (!VALUE.has(key) && !additionalValues.includes(key))
       throw new GoldenError("invalid_config", `Unknown option '${key}'.`);
     const value = eq === -1 ? argv[index + 1] : arg.slice(eq + 1);
-    if (eq === -1) index += 1;
-    if (value === undefined || value.startsWith("--")) {
+    if (value === undefined || (eq === -1 && value.startsWith("--"))) {
       throw new GoldenError("invalid_config", `${key} needs a value.`);
     }
+    if (eq === -1) index += 1;
     const list = options.get(key) ?? [];
     list.push(value);
     options.set(key, list);
