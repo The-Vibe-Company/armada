@@ -32,7 +32,7 @@ case "$token" in *[!a-f0-9]*|'') echo 'Invalid one-time token.' >&2; exit 1 ;; e
 [ "\${#token}" -eq 64 ] || { echo 'Invalid one-time token.' >&2; exit 1; }
 umask 077
 [ "$(uname -s)" = Linux ] || { echo 'Linux with systemd user services is required.' >&2; exit 1; }
-for tool in curl sha256sum systemctl loginctl docker; do
+for tool in curl sha256sum base64 flock systemctl loginctl docker; do
   command -v "$tool" >/dev/null 2>&1 || { echo "Missing $tool; install it before adding this Docker host." >&2; exit 1; }
 done
 systemctl --user show-environment >/dev/null 2>&1 || {
@@ -56,6 +56,10 @@ server=$(printf '%s' '${origin}' | base64 -d)
 # The CLI and optional global install are pinned to this server release, not latest.
 package='@the-vibe-company/armada@${VERSION}'
 offer_cli() {
+  if command -v bun >/dev/null 2>&1 && ! command -v node >/dev/null 2>&1; then
+    echo 'This npm launcher needs Node for the bare armada command. With Bun only, use: bun x --bun '"$package"
+    return 0
+  fi
   if command -v bun >/dev/null 2>&1; then
     global_command="bun add -g $package"
   else
@@ -65,9 +69,6 @@ offer_cli() {
     printf 'Install the armada command on this machine? [y/N] ' >/dev/tty
     answer=n
     IFS= read -r answer </dev/tty || answer=n
-    if command -v bun >/dev/null 2>&1 && ! command -v node >/dev/null 2>&1; then
-      echo 'This npm launcher needs Node for the bare armada command. With Bun only, use: bun x --bun '"$package"
-    fi
     case "$answer" in
       y|Y|yes|YES)
         if command -v bun >/dev/null 2>&1; then
@@ -138,7 +139,7 @@ fi
 if [ -e "$binary" ]; then
   [ -f "$binary" ] && [ -x "$binary" ] || { echo 'The host binary path must be an executable file.' >&2; exit 1; }
   status=$(host_cmd "$binary" status) || {
-    echo 'Could not read the existing registration. State and the new token have been preserved. Run armada-docker-host status to diagnose it.' >&2; exit 1;
+    echo "Could not read the existing registration. State and the new token have been preserved. Run $binary status\${instance:+ --instance $instance} to diagnose it." >&2; exit 1;
   }
   printf 'Existing Docker host: %s\\n' "$status"
   case "$status" in
@@ -158,7 +159,7 @@ if [ -e "$binary" ]; then
         attempt=$((attempt + 1))
         sleep 1
       done
-      echo 'Existing host is still offline. Registration preserved. Check journalctl --user -u armada-docker-host.service; to replace it safely, run armada-docker-host uninstall, then paste a fresh command.' >&2
+      echo "Existing host is still offline. Registration preserved. Check journalctl --user -u $service; to replace it safely, run $binary uninstall\${instance:+ --instance $instance}, then paste a fresh command." >&2
       exit 1
       ;;
     *'"registered":false'*) echo 'Replacing the unregistered host binary.' ;;
@@ -174,7 +175,7 @@ while [ "$attempt" -lt 60 ]; do
   attempt=$((attempt + 1))
   sleep 1
 done
-echo 'Installed; connection pending. Inspect armada-docker-host status; do not repeat registration.' >&2
+echo "Installed; connection pending. Inspect $binary status\${instance:+ --instance $instance}; do not repeat registration." >&2
 exit 1
 `,
         {

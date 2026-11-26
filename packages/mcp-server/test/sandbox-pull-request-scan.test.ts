@@ -5,6 +5,8 @@ import { insertSandboxFixture } from "../../core/test/sandbox.fixture.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsRunner } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
+import { createLangfuse } from "../src/langfuse.ts";
+import { langfusePrLinkedScore } from "../src/langfuse-spans.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { createPullRequestScanJob } from "../src/sandbox-pull-requests.ts";
 import { sqlOver } from "../src/sql.ts";
@@ -466,5 +468,118 @@ test.each([
                 : "merged",
           ],
   );
+  await f.worker.drain();
+});
+
+test("pr_scan unblocks after turn export expedite and upserts pr_linked=1 only on newly discovered PRs", async () => {
+  const f = await fixture("quiet");
+  const repository = "example/repo";
+  const sha = "a".repeat(40);
+  const tok = await encryptSecret("tok", ENCRYPTION_KEY);
+  await f.db.query(
+    `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+       values($1,123,'owner','Owner',$2,$2,now()+interval '1 hour')`,
+    [f.caller.userId, tok],
+  );
+  await f.db.query(
+    `update sandboxes s set pull_request_source=jsonb_build_object('connectionEpoch',c.connection_epoch,'repositories',$3::jsonb)
+       from github_connections c where s.id=$1 and c.user_id=$2`,
+    [f.id, f.caller.userId, JSON.stringify([{ url: `https://github.com/${repository}.git`, dir: "repo" }])],
+  );
+  await f.db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+    f.caller.orgs[0]!.orgId,
+    await encryptSecret(
+      JSON.stringify({ host: "https://langfuse.test", publicKey: "pub_x", secretKey: "sec_placeholder" }),
+      ENCRYPTION_KEY,
+    ),
+  ]);
+  await f.tick();
+
+  let hasPush = false;
+  let scoreStatus = 200;
+  const posts: { url: string; body: Record<string, unknown> }[] = [];
+  const logs: string[] = [];
+  const lfFetch = (async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const href = String(url);
+    posts.push({ url: href, body: JSON.parse(String(init?.body ?? "{}")) });
+    return new Response(null, { status: href.endsWith("/scores") ? scoreStatus : 200 });
+  }) as typeof fetch;
+  const pull = {
+    number: 12,
+    state: "open",
+    merged_at: null,
+    head: { ref: "topic", sha, repo: { full_name: repository } },
+    base: { repo: { full_name: repository } },
+  };
+  const ghFetch = Object.assign(
+    async (url: Parameters<typeof fetch>[0]) =>
+      String(url) === "https://api.github.com/user"
+        ? Response.json({ id: 123, login: "owner", name: "Owner" })
+        : Response.json(String(url).includes(`/repos/${repository}/pulls?`) ? [pull] : pull),
+    { preconnect: fetch.preconnect },
+  );
+  const jobs = createJobsStore(f.sql);
+  const at = Date.now();
+  const makeScan = (clock: number) =>
+    createPullRequestScanJob(
+      f.sql,
+      jobs,
+      {
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        app: { clientId: "a", clientSecret: "b" },
+        fetch: ghFetch,
+      },
+      async () => ({
+        detached: false,
+        exitCode: 0,
+        stdout: hasPush ? `topic\t${sha}\n` : "",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      }),
+      () => clock,
+      { langfuseFetch: lfFetch, logError: (l) => logs.push(l) },
+    );
+  const step = async (r: ReturnType<typeof createJobsRunner>) => {
+    expect(await r.reconcileOne(new AbortController().signal)).toBe(true);
+    await r.drain();
+  };
+  const prScan = makeScan(at);
+  const lf = createLangfuse(f.sql, ENCRYPTION_KEY, lfFetch, { logError: (l) => logs.push(l) });
+  const runner = createJobsRunner(jobs, { pr_scan: prScan, langfuse_export: lf.exportJob }, undefined, () => () => {});
+
+  await step(runner);
+  expect([await prScan.prepare(), (await f.data.sandboxes.get(f.id))?.pullRequests]).toEqual([false, []]);
+
+  hasPush = true;
+  await f.db.query("select public.enqueue_webhook_turn($1,'turn','finished')", [f.id]);
+  await step(runner);
+  expect(posts.filter((p) => p.url.endsWith("/scores") && p.body.name === "pr_linked").map((p) => p.body)).toEqual([
+    langfusePrLinkedScore(f.id, "turn", false),
+  ]);
+
+  posts.length = 0;
+  await step(runner);
+  expect([(await f.data.sandboxes.get(f.id))?.pullRequests?.length, posts]).toEqual([
+    1,
+    [{ url: "https://langfuse.test/api/public/scores", body: langfusePrLinkedScore(f.id, "turn", true) }],
+  ]);
+
+  posts.length = 0;
+  await f.db.query("update jobs set run_after=now()-interval '1 second' where kind='pr_scan' and sandbox_id=$1", [
+    f.id,
+  ]);
+  await step(createJobsRunner(jobs, { pr_scan: makeScan(at + 20_000) }, undefined, () => () => {}));
+  expect(posts).toEqual([]);
+
+  await f.db.query("update sandboxes set pull_requests='[]'::jsonb where id=$1", [f.id]);
+  await f.db.query("update jobs set run_after=now()-interval '1 second' where kind='pr_scan' and sandbox_id=$1", [
+    f.id,
+  ]);
+  scoreStatus = 500;
+  await step(createJobsRunner(jobs, { pr_scan: makeScan(at + 40_000) }, undefined, () => () => {}));
+  expect((await f.data.sandboxes.get(f.id))?.pullRequests).toHaveLength(1);
+  expect(logs.some((l) => l.includes("status=500") && !l.includes("sec_placeholder"))).toBe(true);
   await f.worker.drain();
 });

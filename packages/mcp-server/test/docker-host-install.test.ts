@@ -21,6 +21,11 @@ test("installer publishes both build digests without credentials and refuses mis
     const script = await response?.text();
     expect(script).toContain("x86_64) digest=" + "a".repeat(64));
     expect(script).toContain("aarch64|arm64) digest=" + "b".repeat(64));
+    expect(script).toContain("for tool in curl sha256sum base64 flock systemctl loginctl docker; do");
+    expect(script).toContain("journalctl --user -u $service");
+    expect(script).toContain(`run $binary uninstall\${instance:+ --instance $instance}`);
+    expect(script).not.toContain("journalctl --user -u armada-docker-host.service");
+    expect(script).not.toContain("run armada-docker-host uninstall");
     expect(script).toContain("sha256sum --check --status");
     expect(script).toContain("token=$2");
     expect(Bun.spawnSync(["sh", "-n"], { stdin: new TextEncoder().encode(script) }).exitCode).toBe(0);
@@ -66,6 +71,8 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     for (const [name, body] of Object.entries({
       uname: 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac',
       docker: "exit 0",
+      flock: "exit 0",
+      sleep: "exit 0",
       systemctl: 'case "$*" in *restart*) touch "$HOME/restarted" ;; esac',
       loginctl: 'case "$1" in show-user) echo yes ;; esac',
       curl: 'for arg do target=$arg; done; case "$target" in *reuse-registration) cat > "$HOME/reuse-header"; echo \'{"hostId":"22222222-2222-4222-8222-222222222222","name":"owner-machine"}\' ;; *) cp "$FIXTURE_ARTIFACT" "$target" ;; esac',
@@ -80,6 +87,16 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
         env: { ...process.env, HOME: home, PATH: tools, FIXTURE_ARTIFACT: artifact },
       });
     expect(run("bad").exitCode).not.toBe(0);
+    await rm(join(tools, "flock"));
+    const missingFlock = run(token);
+    expect(missingFlock.exitCode).not.toBe(0);
+    expect(missingFlock.stderr.toString()).toContain("Missing flock");
+    await writeFile(join(tools, "flock"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await rm(join(tools, "base64"));
+    const missingBase64 = run(token);
+    expect(missingBase64.exitCode).not.toBe(0);
+    expect(missingBase64.stderr.toString()).toContain("Missing base64");
+    await symlink("/usr/bin/base64", join(tools, "base64"));
     // Corrupt bytes must not be installed or executed.
     await writeFile(artifact, host + "# corrupt\n");
     expect(run(token).exitCode).not.toBe(0);
@@ -113,6 +130,18 @@ test("one-line installer verifies bytes, delivers the one-use token privately an
     expect(await Bun.file(join(home, `.local/bin/armada-docker-host@${instance}`)).exists()).toBe(true);
     expect(await readFile(join(home, ".local/bin/armada-docker-host"), "utf8")).toBe(legacyBytes);
     expect(await readFile(join(home, "registration-args"), "utf8")).toContain(`--instance ${instance}`);
+    await writeFile(
+      join(home, `.local/bin/armada-docker-host@${instance}`),
+      `#!/bin/sh\necho '{"registered":true,"connected":false,"server":"${secondOrigin}"}'\n`,
+      { mode: 0o700 },
+    );
+    const offlineMulti = run("d".repeat(64));
+    expect(offlineMulti.exitCode).not.toBe(0);
+    expect(offlineMulti.stderr.toString()).toContain(`journalctl --user -u armada-docker-host@${instance}.service`);
+    expect(offlineMulti.stderr.toString()).toContain(
+      `${join(home, `.local/bin/armada-docker-host@${instance}`)} uninstall --instance ${instance}`,
+    );
+    await rm(join(home, "restarted"), { force: true });
     script = originalScript;
     await writeFile(join(home, "registration"), token);
 
@@ -156,7 +185,14 @@ cat > "$HOME/runner-stdin"
       `x\n--bun\n@the-vibe-company/armada@${VERSION}\nhost\ninstall\n--server\nhttps://armada.example\n`,
     );
     expect((await readFile(join(home, "runner-stdin"), "utf8")).trim()).toBe("e".repeat(64));
-    expect(viaBun.stdout.toString()).toContain(`bun add -g @the-vibe-company/armada@${VERSION}`);
+    expect(viaBun.stdout.toString()).toContain(`bun x --bun @the-vibe-company/armada@${VERSION}`);
+    expect(viaBun.stdout.toString()).not.toContain(`bun add -g @the-vibe-company/armada@${VERSION}`);
+    expect(viaBun.stdout.toString()).not.toContain("Install the armada command on this machine? [y/N]");
+    await writeFile(join(tools, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const viaBunWithNode = run("e".repeat(64));
+    expect(viaBunWithNode.exitCode).toBe(0);
+    expect(viaBunWithNode.stdout.toString()).toContain(`bun add -g @the-vibe-company/armada@${VERSION}`);
+    await rm(join(tools, "node"));
     await rm(join(tools, "bun"));
     await writeFile(join(tools, "npm"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     await writeFile(join(tools, "npx"), runner, { mode: 0o700 });

@@ -3,9 +3,15 @@ import type { AgentEvent, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { AuthUnavailable } from "../src/caller.ts";
 import { createJobsRunner, type JobStore } from "../src/jobs/runner.ts";
-import { createJobsStore } from "../src/jobs/store.ts";
-import { createLangfuse } from "../src/langfuse.ts";
-import { langfuseSpans, langfuseTurnScores, resolveLangfuseContext } from "../src/langfuse-spans.ts";
+import { createJobsStore, JOBS_WAKE } from "../src/jobs/store.ts";
+import { createLangfuse, upsertLangfusePrLinkedScores } from "../src/langfuse.ts";
+import {
+  langfusePrLinkedScore,
+  langfuseSpans,
+  langfuseTurnScores,
+  resolveLangfuseContext,
+} from "../src/langfuse-spans.ts";
+import { runtimeWakes } from "../src/wake-bus.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
@@ -939,4 +945,112 @@ test("Langfuse settings route maps AuthUnavailable and DB errors to 503 and over
     (await req("POST", big, "/test"))?.status,
     (await req("PUT", "bad"))?.status,
   ]).toEqual([413, 413, 400]);
+});
+
+test("repo-backed turn export expedites pr_scan and idempotent pr_linked score upsert reuses score identity", async () => {
+  const { db, people } = await database();
+  const id = crypto.randomUUID();
+  const enc = await encryptSecret("fixture_tok", key);
+  await db.query(
+    `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+     values($1,123,'owner','Owner',$2,$2,now()+interval '1 hour')`,
+    [people.owner, enc],
+  );
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,task_prompt_id,pull_request_source)
+     select $1,g.id,g.org_id,g.owner_id,'boat_pr_race','codex','ready','turn-1',
+       jsonb_build_object('connectionEpoch',c.connection_epoch,'repositories',
+         jsonb_build_array(jsonb_build_object('url','https://github.com/org/repo.git','dir','repo')))
+     from goldens g join github_connections c on c.user_id=g.owner_id where g.owner_id=$2 and g.visibility='private' limit 1`,
+    [id, people.owner],
+  );
+  await db.query("select public.enqueue_webhook_turn($1,'disabled-turn','finished')", [id]);
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'full',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  const store = createJobsStore(db);
+  const futureRunAfter = new Date(Date.now() + 15 * 60_000);
+  await store.enqueue("pr_scan", id, 1, "periodic", null, {
+    orgId: people.org,
+    maxAttempts: 3,
+    runAfter: futureRunAfter,
+  });
+  await db.query("select public.enqueue_webhook_turn($1,'turn-1','finished')", [id]);
+
+  const sent: { url: string; body: string }[] = [];
+  let wakes = 0;
+  const unsub = runtimeWakes.subscribe(JOBS_WAKE, () => wakes++);
+  const exporter = createLangfuse(db, key, (async (url, init) => {
+    sent.push({ url: String(url), body: String(init?.body ?? "") });
+    return new Response(null, { status: 200 });
+  }) as typeof fetch);
+  try {
+    expect(await runExport(db, exporter, new AbortController().signal, store)).toBe(true);
+    const { run_after } = (
+      await db.query<{ run_after: Date }>("select run_after from jobs where kind='pr_scan' and sandbox_id=$1", [id])
+    ).rows[0]!;
+    expect([wakes > 0, run_after.getTime() < futureRunAfter.getTime()]).toEqual([true, true]);
+    const initial = sent
+      .filter((r) => r.url.endsWith("/scores"))
+      .map((r) => JSON.parse(r.body))
+      .find((s) => s.name === "pr_linked");
+    expect(initial).toEqual(langfusePrLinkedScore(id, "turn-1", false));
+
+    const upserts: unknown[] = [];
+    const send = (async (_u: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      upserts.push(JSON.parse(String(init?.body ?? "")));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    await db.query("select public.enqueue_webhook_turn($1,'dropped-turn','finished')", [id]);
+    await db.query("update org_langfuse set enabled=false where org_id=$1", [people.org]);
+    expect(await runExport(db, exporter, new AbortController().signal, store)).toBe(true);
+    await db.query("update org_langfuse set enabled=true where org_id=$1", [people.org]);
+    expect([await upsertLangfusePrLinkedScores(db, key, id, { send }), upserts]).toEqual([
+      1,
+      [{ ...initial, value: 1 }],
+    ]);
+    const timeoutLogs: string[] = [];
+    const callerSignal = new AbortController().signal;
+    expect(
+      await upsertLangfusePrLinkedScores(db, key, id, {
+        signal: callerSignal,
+        logError: (line) => timeoutLogs.push(line),
+        send: Object.assign(async () => Promise.reject(new DOMException("hung", "TimeoutError")), {
+          preconnect: fetch.preconnect,
+        }),
+      }),
+    ).toBe(0);
+    expect([callerSignal.aborted, timeoutLogs[0]?.includes("reason=TimeoutError")]).toEqual([false, true]);
+
+    wakes = 0;
+    await db.query("delete from jobs where kind='pr_scan' and sandbox_id=$1", [id]);
+    await db.query("select public.enqueue_webhook_turn($1,'turn-2','finished')", [id]);
+    sent.length = 0;
+    const overlapExporter = createLangfuse(db, key, (async (url, init) => {
+      const href = String(url);
+      sent.push({ url: href, body: String(init?.body ?? "") });
+      if (href.endsWith("/traces"))
+        await db.query("update sandboxes set pull_requests=$2::jsonb where id=$1", [
+          id,
+          JSON.stringify([prFix("org/repo", 7, "open", "feat/x")]),
+        ]);
+      return new Response(null, { status: 200 });
+    }) as typeof fetch);
+    expect(await runExport(db, overlapExporter, new AbortController().signal, store)).toBe(true);
+    const turn2PrScores = sent
+      .filter((r) => r.url.endsWith("/scores"))
+      .map((r) => JSON.parse(r.body) as ReturnType<typeof langfusePrLinkedScore>)
+      .filter((s) => s.name === "pr_linked");
+    expect(turn2PrScores).toEqual([
+      langfusePrLinkedScore(id, "turn-2", false),
+      langfusePrLinkedScore(id, "turn-2", true),
+    ]);
+    expect([
+      wakes > 0,
+      (await db.query("select state from jobs where kind='pr_scan' and sandbox_id=$1", [id])).rows,
+    ]).toEqual([true, [{ state: "queued" }]]);
+  } finally {
+    unsub();
+  }
 });

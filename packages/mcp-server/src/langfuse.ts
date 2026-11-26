@@ -5,7 +5,15 @@ import { AuthUnavailable, type CallerResult } from "./caller.ts";
 import { readBody } from "./control-body.ts";
 import type { Route } from "./http.ts";
 import type { createJobsRunner } from "./jobs/runner.ts";
-import { type LangfuseSandboxContext, langfuseSpans, langfuseTurnScores } from "./langfuse-spans.ts";
+import { createJobsStore, wakeSandboxJobs } from "./jobs/store.ts";
+import {
+  type LangfuseSandboxContext,
+  type LangfuseScorePayload,
+  langfusePrLinkedScore,
+  langfuseSpans,
+  langfuseTurnScores,
+} from "./langfuse-spans.ts";
+import { PULL_REQUEST_SCAN_ELIGIBLE } from "./sandbox-lifecycle.ts";
 
 interface Config {
   host: string;
@@ -62,6 +70,122 @@ function authorization(config: Config): string {
 }
 
 const MAX_EXPORT_BYTES = 4 * 1024 * 1024;
+let prScanExpediteCount = 0;
+export const prScanExpediteEpoch = () => prScanExpediteCount;
+
+async function postLangfuseScore(
+  send: typeof fetch,
+  config: Config,
+  score: LangfuseScorePayload,
+  signal: AbortSignal,
+  logError: ((line: string) => void) | undefined,
+  orgId: string,
+  sandboxId: string,
+  requestSignal: AbortSignal = signal,
+) {
+  try {
+    const res = await send(`${config.host}/api/public/scores`, {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.any([requestSignal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+      headers: { "content-type": "application/json", authorization: authorization(config) },
+      body: JSON.stringify(score),
+    });
+    await res.body?.cancel().catch(() => {});
+    if (!res.ok) {
+      logError?.(`armada: langfuse score export failed status=${res.status} orgId=${orgId} sandboxId=${sandboxId}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    if (!signal.aborted)
+      logError?.(
+        `armada: langfuse score export error reason=${errorReason(error)} orgId=${orgId} sandboxId=${sandboxId}`,
+      );
+    return false;
+  }
+}
+
+async function expeditePrScan(tx: Sql, sandboxId: string) {
+  const { rows } = await tx.query<{ id: string; org_id: string; generation: string }>(
+    `select s.id,s.org_id,s.lifecycle_generation::text as generation ${PULL_REQUEST_SCAN_ELIGIBLE} and s.id=$1`,
+    [sandboxId],
+  );
+  const row = rows[0];
+  if (!row) return false;
+  const { inserted } = await createJobsStore(tx).enqueueWithDisposition(
+    "pr_scan",
+    row.id,
+    Number(row.generation),
+    "periodic",
+    null,
+    { orgId: row.org_id, maxAttempts: 3 },
+    tx,
+  );
+  if (!inserted) await wakeSandboxJobs(tx, row.id, ["pr_scan"], row.generation);
+  prScanExpediteCount++;
+  return true;
+}
+
+export async function upsertLangfusePrLinkedScores(
+  sql: Sql,
+  key: string,
+  sandboxId: string,
+  options: {
+    send?: typeof fetch | undefined;
+    signal?: AbortSignal | undefined;
+    logError?: ((line: string) => void) | undefined;
+    timeoutMs?: number | undefined;
+  } = {},
+) {
+  const send = options.send ?? fetch;
+  const signal = options.signal ?? new AbortController().signal;
+  const budget = AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS)]);
+  const { rows } = await sql.query<{ prompt_id: string; org_id: string; config_enc: Uint8Array<ArrayBuffer> }>(
+    `select e.prompt_id,e.org_id,c.config_enc from public.langfuse_turn_exports e
+     join public.sandboxes s on s.id=e.sandbox_id and s.org_id=e.org_id
+     join public.org_langfuse c on c.org_id=e.org_id and c.enabled
+     join public.jobs j on j.kind='langfuse_export' and j.sandbox_id=e.sandbox_id and j.org_id=e.org_id
+       and j.outcome->>'promptId'=e.prompt_id and j.state='done' and j.outcome->>'result' is distinct from 'dropped'
+     where e.sandbox_id=$1 and e.completed_at is null and c.config_enc is not null
+     order by e.observed_at desc limit 100`,
+    [sandboxId],
+  );
+  if (!rows.length) return 0;
+  let config: Config;
+  try {
+    config = JSON.parse(await decryptSecret(rows[0]!.config_enc, key)) as Config;
+  } catch (error) {
+    options.logError?.(
+      `armada: langfuse score export error reason=${errorReason(error)} orgId=${rows[0]!.org_id} sandboxId=${sandboxId}`,
+    );
+    return 0;
+  }
+  let updated = 0;
+  for (let offset = 0; offset < rows.length && !budget.aborted; offset += 8) {
+    const batch = await Promise.allSettled(
+      rows
+        .slice(offset, offset + 8)
+        .map((r) =>
+          postLangfuseScore(
+            send,
+            config,
+            langfusePrLinkedScore(sandboxId, r.prompt_id, true),
+            signal,
+            options.logError,
+            r.org_id,
+            sandboxId,
+            budget,
+          ),
+        ),
+    );
+    let batchOk = 0;
+    for (const r of batch) if (r.status === "fulfilled" && r.value) batchOk++;
+    updated += batchOk;
+    if (batchOk === 0) break;
+  }
+  return updated;
+}
 /** Claims reserve an attempt; a job aborted this many times settles as failed. */
 type ExportHandler = Parameters<typeof createJobsRunner>[1][string];
 
@@ -228,30 +352,26 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     }
     const scores = langfuseTurnScores(job.sandbox_id, turnEvents, sandbox, marks);
     await Promise.allSettled(
-      scores.map(async (score) => {
-        try {
-          const res = await send(`${config.host}/api/public/scores`, {
-            method: "POST",
-            redirect: "error",
-            signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-            headers: { "content-type": "application/json", authorization: authorization(config) },
-            body: JSON.stringify(score),
-          });
-          await res.body?.cancel().catch(() => {});
-          if (!res.ok) {
-            logError?.(
-              `armada: langfuse score export failed status=${res.status} orgId=${job.org_id} sandboxId=${job.sandbox_id}`,
-            );
-          }
-        } catch (error) {
-          if (!signal.aborted) {
-            logError?.(
-              `armada: langfuse score export error reason=${errorReason(error)} orgId=${job.org_id} sandboxId=${job.sandbox_id}`,
-            );
-          }
-        }
-      }),
+      scores.map((score) => postLangfuseScore(send, config, score, signal, logError, job.org_id, job.sandbox_id)),
     );
+    if (scores.some((score) => score.name === "pr_linked" && score.value === 0) && !signal.aborted) {
+      const linked = (
+        await sql.query<{ linked: boolean }>(
+          "select jsonb_array_length(coalesce(pull_requests,'[]'::jsonb))>0 as linked from public.sandboxes where id=$1 and org_id=$2",
+          [job.sandbox_id, job.org_id],
+        )
+      ).rows[0]?.linked;
+      if (linked)
+        await postLangfuseScore(
+          send,
+          config,
+          langfusePrLinkedScore(job.sandbox_id, job.prompt_id, true),
+          signal,
+          logError,
+          job.org_id,
+          job.sandbox_id,
+        );
+    }
     return "exported";
   }
 
@@ -300,7 +420,9 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
       }
       const finalOutcome = outcome === "retry" ? "failed" : outcome;
       return {
-        ...(finalOutcome === "failed" ? { status: "fail", reason: "langfuse_export_failed" } : { status: "done" }),
+        ...(finalOutcome === "failed"
+          ? { status: "fail", reason: "langfuse_export_failed" }
+          : { status: "done", outcome: { ...(claim.outcome as Record<string, unknown>), result: finalOutcome } }),
         async commit(tx) {
           await tx.query(
             `insert into public.org_langfuse_export_stats as stats(org_id,exported,failed,dropped,last_export_at)
@@ -311,6 +433,7 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
                 last_export_at=greatest(stats.last_export_at,excluded.last_export_at)`,
             [job.org_id, finalOutcome],
           );
+          if (finalOutcome === "exported") await expeditePrScan(tx, job.sandbox_id);
         },
       };
     },
