@@ -41,9 +41,10 @@ not establish a successful agent outcome.
 There is no standalone CLI `resume`/`recover` command or general archive
 extraction command. For a retained stopped Docker sandbox restart without
 starting a new prompt turn, use the owner REST route `POST /api/v1/sandbox/resume`
-with `id` and a `request_id` UUID (reusing that UUID after an uncertain outcome),
-or `POST /api/v1/sandbox/resume-runtime-v1` for explicit runtime checkpoint
-resume. Escalate other unsupported recovery paths rather than inventing CLI
+with `id` and a `request_id` UUID (reusing that UUID after an uncertain outcome).
+For explicit runtime checkpoint resume that queues a prompt turn, use
+`POST /api/v1/sandbox/resume-runtime-v1` (`id`, `request_id`, `runtimeVersion: 1`,
+`prompt`). Escalate other unsupported recovery paths rather than inventing CLI
 flags or calling undocumented endpoints.
 
 `armada exec SANDBOX -- "git status --short"` can inspect an accessible running

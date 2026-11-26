@@ -14,7 +14,7 @@ IDs, and quote prompts as single arguments.
 
 Most CLI commands (sandbox, snapshot, template, host, account, org, `whoami`, and
 `logout`) emit JSON automatically when stdout is piped or redirected; pass `--json`
-explicitly in interactive terminals (and on `armada port-forward`). On failure,
+explicitly in interactive terminals (and on `armada login` or `armada port-forward`). On failure,
 parse the final stderr line for `error.code`, `error.message`, and `error.hint`.
 An explicit sandbox ID overrides `ARMADA_SANDBOX` and the local
 `.armada/sandbox` file written by a successful `armada new` in that directory. Prefer explicit IDs in
@@ -74,7 +74,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   is not automatically available on the other. Check
   `armada api golden/capabilities '{"provider":"boat"}'` (or substitute modal).
 - `POST /api/v1/sandbox/launch` requires an explicit `provider` and `harness`; the server resolves model credentials at launch and returns HTTP 400 (`invalid`) on malformed requests. Personal sessions accept an org slug or UUID; scoped tokens omit `org` or send their org UUID. Check provider availability via `POST /api/v1/launch/options`.
-- Boat, Modal, Docker, and template launches all return `sandbox.id` and status `starting` before allocation (HTTP 202 fresh, HTTP 200 on keyed replay). Follow `sandbox.id` via `POST /api/v1/sandbox/status` (which also reports queued prompt admission and Docker `snapshotId`/`hostId`/`image`) or logs while the runtime enrols.
+- `POST /api/v1/sandbox/launch` returns `sandbox.id` and status `starting` before allocation (fresh ordinary Boat REST launches return HTTP 202; keyed replays and Modal/Docker launches return HTTP 200). `POST /api/v1/templates/launch` returns HTTP 200 with a template receipt (`requestId`, top-level `id`, and `status: "starting"`). Follow the sandbox ID via `POST /api/v1/sandbox/status` (which also reports queued prompt admission and Docker `snapshotId`/`hostId`/`image`) or logs while the runtime enrols.
 - Idempotency keys: ordinary Docker launches and pinned Modal templates on `sandbox/launch` require `idempotencyKey` (`armada new --provider docker --idempotency-key KEY`); replay the exact request after an uncertain outcome. Template launches via `POST /api/v1/templates/launch` or `armada template launch` use `requestKey` / `--request-key` — check `"requestId" in result` before reading the receipt.
 - The TypeScript SDK infers request, response, and error types from the API contract; use `SendInput` for follow-up prompts and `outputs.list` / `outputs.get` for stored outputs.
 - Choose the harness and a model/effort it supports. Launch selections persist
