@@ -15,9 +15,19 @@ test("a label that starts with the query ranks before a word, a keyword and a su
 
   expect(labels("mcp")).toEqual(["Tools"]);
 
-  expect(labels("odel")).toEqual(["Models"]);
+  expect(labels("odel")).toEqual(["Add a model account", "Models"]);
 
   expect(labels("harness")).toEqual(["Models"]);
+});
+
+test("actions and destinations route to current pages and match docker, model account, and API key searches", () => {
+  expect(COMMANDS.find((command) => command.id === "launch")?.href).toBe("/sandboxes");
+  expect(matchCommands("subscription").some((command) => command.id === "add-account")).toBe(true);
+  expect(matchCommands("model account")[0]?.id).toBe("add-account");
+  expect(matchCommands("api keys").some((command) => command.href === "/settings/api-keys")).toBe(true);
+  for (const query of ["docker", "host", "machine"]) {
+    expect(matchCommands(query).some((command) => command.id === "connect-provider")).toBe(true);
+  }
 });
 
 test("nothing matches an unknown word", () => {

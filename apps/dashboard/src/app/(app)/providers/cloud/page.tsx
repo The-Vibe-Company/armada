@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { CopyButton } from "@/components/copy-button";
 import { CreatedAt } from "@/components/created-at";
+import { Disclosure } from "@/components/disclosure";
 import {
   AddHostDialog,
   HostLimitsDialog,
@@ -462,15 +463,19 @@ function row(
             />
           )}
         </PanelSection>
-        <PanelSection title="Daemon updates">
-          <HostUpdateSettings key={host.id} orgId={orgId} host={host} isAdmin={isAdmin} />
-        </PanelSection>
-        <PanelSection title="Cleanup retention">
-          <HostRetention orgId={orgId} host={host} />
-        </PanelSection>
-        <PanelSection title="Per sandbox and at the same time">
+        <PanelSection title="Sandbox limits">
           <HostLimitsDialog orgId={orgId} host={host} />
         </PanelSection>
+        <div className="border-t pt-4">
+          <Disclosure summary="Daemon updates" defaultOpen={false}>
+            <HostUpdateSettings key={host.id} orgId={orgId} host={host} isAdmin={isAdmin} />
+          </Disclosure>
+        </div>
+        <div className="border-t pt-4">
+          <Disclosure summary="Cleanup retention" defaultOpen={false}>
+            <HostRetention orgId={orgId} host={host} />
+          </Disclosure>
+        </div>
         <PanelSection title="Limits and usage">
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
             <dt className="text-muted-foreground">Added</dt>

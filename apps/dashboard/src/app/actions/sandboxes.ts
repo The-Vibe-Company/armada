@@ -523,7 +523,7 @@ export async function readLaunchDialogOptions(includeBuildCapacity = false) {
         golden: "",
         provider: "docker",
         hostId: host.id,
-        label: `Empty machine · ${host.name ?? DOCKER_HOST_LABEL}`,
+        label: `Base Armada image · ${host.name ?? DOCKER_HOST_LABEL}`,
         group: dockerHostGroup(host.name, host.state),
         hostName: host.name ?? DOCKER_HOST_LABEL,
         repositories: [],

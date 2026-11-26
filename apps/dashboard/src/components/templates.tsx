@@ -15,6 +15,7 @@ import {
 } from "@/app/actions/templates";
 import { SubmitButton } from "@/components/action-form";
 import { CreateDialog } from "@/components/create-dialog";
+import { Disclosure } from "@/components/disclosure";
 import {
   ChoiceChip,
   ComposerLocation,
@@ -54,7 +55,7 @@ import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
 import { PROVIDER_LABELS } from "@/lib/golden-form";
-import { HARNESS_LABELS } from "@/lib/labels";
+import { EFFORT_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { composerChips, launchHoldIds, templateStartAfterRemoval } from "@/lib/launch-composer";
 import { accountProblem, accountsFor, HARNESS_PATH, launchDefault } from "@/lib/model-accounts";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
@@ -193,12 +194,19 @@ function TemplateForm({
   const modelEntry = catalog[harness];
   const efforts =
     modelEntry.models.find((entry) => entry.id === model)?.reasoningEfforts ?? modelEntry.reasoningEfforts;
+  const hasExistingExtras = Boolean(
+    editing &&
+      (editing.definition.connections.length > 0 ||
+        editing.definition.variables.length > 0 ||
+        (editing.definition.secrets?.length ?? 0) > 0 ||
+        editing.definition.skills.length > 0),
+  );
   const word = "inline-flex h-10 max-w-full rounded-md border bg-muted/30 px-2 align-middle text-sm sm:h-8";
   return (
     <form
       ref={preserve}
       action={formAction}
-      className="space-y-4"
+      className="space-y-5"
       data-template-form
       onSubmit={(event) => {
         const message = !name.trim()
@@ -226,7 +234,8 @@ function TemplateForm({
         </>
       )}
       <ResultLine result={state} />
-      <div className="space-y-4 text-sm">
+      <section className="space-y-4 text-sm" data-template-section="basics">
+        <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">1. Basics</h3>
         <div>
           <span className="mb-2 block font-medium">Name</span>
           {editing ? (
@@ -264,10 +273,15 @@ function TemplateForm({
             </SentenceChoice>
           )}
         </div>
-        <p className="flex items-center gap-2 text-xs leading-normal text-foreground">
+        <p className="flex items-center gap-2 text-xs leading-normal text-muted-foreground">
           <LockIcon className="size-3 shrink-0" aria-hidden /> The name and who can use it are permanent.
         </p>
-        <div className="text-sm">
+      </section>
+      <section className="space-y-4 border-t pt-4 text-sm" data-template-section="environment">
+        <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+          2. Environment &amp; Agent
+        </h3>
+        <div>
           <span className="mb-2 block font-medium">Snapshot</span>
           <SentenceChoice
             aria-label="Snapshot"
@@ -294,7 +308,7 @@ function TemplateForm({
             ))}
             {(lookups.hosts ?? []).map((host) => (
               <optgroup key={host.id} label={`Docker host ${host.name ?? "Unnamed host"}`}>
-                <option value={`${host.id}:`}>Official Armada image · {host.name ?? "Unnamed host"}</option>
+                <option value={`${host.id}:`}>Base Armada image · {host.name ?? "Unnamed host"}</option>
                 {(lookups.snapshots ?? [])
                   .filter(
                     (snapshot) =>
@@ -310,9 +324,11 @@ function TemplateForm({
               </optgroup>
             ))}
           </SentenceChoice>
-          {placement
-            ? ", using this exact snapshot or the official image on that Docker host."
-            : ", and picks up each rebuild of it automatically."}
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            {placement
+              ? "Uses this exact snapshot or the base Armada image on that Docker host."
+              : "Picks up each rebuild of this snapshot automatically."}
+          </p>
         </div>
         <div>
           <span className="mb-2 block font-medium">Agent</span>
@@ -373,7 +389,7 @@ function TemplateForm({
           >
             {efforts.map((value) => (
               <option key={value} value={value}>
-                {value}
+                {EFFORT_LABEL[value] ?? value}
               </option>
             ))}
           </SentenceChoice>
@@ -454,129 +470,132 @@ function TemplateForm({
             {problem}
           </p>
         )}
-      </div>
-      <div className="space-y-4 border-t pt-4">
-        <h3 className="text-sm font-medium">What the agent gets</h3>
-        <PickList
-          legend="Tools"
-          name="connections"
-          icon={<PlugIcon />}
-          empty={
-            lookups.connections === null ? (
-              "Tools could not be read. Refresh to choose them."
-            ) : (
-              <>
-                No {scope === "org" ? "organization " : ""}tools yet.{" "}
-                <Link className="underline underline-offset-4" href="/tools">
-                  Add one in Tools
-                </Link>
-                .
-              </>
-            )
-          }
-          options={(lookups.connections ?? [])
-            .filter((row) => scope === "personal" || row.scope === "org")
-            .map((row) => ({
-              id: row.id,
-              label: row.name,
-              note:
-                row.status === "connected" ? (
-                  row.scope === "org" ? (
-                    "Org"
-                  ) : (
-                    "Personal"
-                  )
+      </section>
+      <section className="space-y-4 border-t pt-4" data-template-section="extras">
+        <Disclosure summary="3. Optional extras (Tools, Variables, Secrets, Skills)" defaultOpen={hasExistingExtras}>
+          <div className="space-y-4">
+            <PickList
+              legend="Tools"
+              name="connections"
+              icon={<PlugIcon />}
+              empty={
+                lookups.connections === null ? (
+                  "Tools could not be read. Refresh to choose them."
                 ) : (
                   <>
-                    Not connected ·{" "}
-                    <Link href="/tools" className="underline" target="_blank" rel="noopener noreferrer">
-                      Connect
+                    No {scope === "org" ? "organization " : ""}tools yet.{" "}
+                    <Link className="underline underline-offset-4" href="/tools">
+                      Add one in Tools
                     </Link>
+                    .
                   </>
-                ),
-              disabled: row.status !== "connected",
-            }))}
-          initial={editing?.definition.connections ?? []}
-        />
-        <PickList
-          legend="Variables"
-          name="variables"
-          icon={<BracesIcon />}
-          mono
-          empty={
-            lookups.variables === null ? (
-              "Variables could not be read. Refresh to choose them."
-            ) : (
-              <>
-                No {scope === "org" ? "organization " : ""}variables yet.{" "}
-                <Link className="underline underline-offset-4" href="/variables">
-                  Add one in Variables
-                </Link>
-                .
-              </>
-            )
-          }
-          options={(lookups.variables ?? [])
-            .filter((row) => row.status === "active" && (scope === "personal" || row.scope === "org"))
-            .map((row) => {
-              // A binding under another key than the variable's name keeps that key: say which.
-              const keys = (editing?.definition.variables ?? [])
-                .filter((binding) => binding.variableId === row.id)
-                .map((binding) => binding.key);
-              const scopeLabel = row.scope === "org" ? "Org" : "Personal";
-              const aliased = keys.length > 1 || (keys.length === 1 && keys[0] !== row.name);
-              return { id: row.id, label: row.name, note: aliased ? `as ${keys.join(", ")}` : scopeLabel };
-            })}
-          initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
-          hint="Non-secret values such as SENTRY_ORG. Anyone in the sandbox can read them."
-        />
-        <PickList
-          legend="Secrets"
-          name="secrets"
-          icon={<LockKeyholeIcon />}
-          mono
-          empty={
-            lookups.secrets == null ? (
-              "Secrets could not be read. Refresh to choose them."
-            ) : (
-              <>
-                No {scope === "org" ? "organization " : ""}secrets yet.{" "}
-                <Link className="underline underline-offset-4" href="/variables">
-                  Add one in Variables
-                </Link>
-                .
-              </>
-            )
-          }
-          options={[
-            ...(lookups.secrets ?? [])
-              .filter(
-                (row) =>
-                  (row.status === "active" || editing?.definition.secrets?.some((b) => b.secretId === row.id)) &&
-                  (scope === "personal" || row.scope === "org"),
-              )
-              .map((row) => ({
-                id: row.id,
-                label: row.name,
-                note:
-                  row.status !== "active"
-                    ? "Unavailable — remove to publish"
-                    : row.scope === "org"
-                      ? "Org"
-                      : "Personal",
-              })),
-            ...(editing?.definition.secrets ?? [])
-              .filter(
-                (b, i, all) =>
-                  all.findIndex((v) => v.secretId === b.secretId) === i &&
-                  !lookups.secrets?.some((row) => row.id === b.secretId),
-              )
-              .map((b) => ({ id: b.secretId, label: b.key, note: "Unavailable — remove to publish" })),
-          ]}
-          initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
-          hint="API keys and passwords. Stored encrypted."
-        />
-        <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
+                )
+              }
+              options={(lookups.connections ?? [])
+                .filter((row) => scope === "personal" || row.scope === "org")
+                .map((row) => ({
+                  id: row.id,
+                  label: row.name,
+                  note:
+                    row.status === "connected" ? (
+                      row.scope === "org" ? (
+                        "Org"
+                      ) : (
+                        "Personal"
+                      )
+                    ) : (
+                      <>
+                        Not connected ·{" "}
+                        <Link href="/tools" className="underline" target="_blank" rel="noopener noreferrer">
+                          Connect
+                        </Link>
+                      </>
+                    ),
+                  disabled: row.status !== "connected",
+                }))}
+              initial={editing?.definition.connections ?? []}
+            />
+            <PickList
+              legend="Variables"
+              name="variables"
+              icon={<BracesIcon />}
+              mono
+              empty={
+                lookups.variables === null ? (
+                  "Variables could not be read. Refresh to choose them."
+                ) : (
+                  <>
+                    No {scope === "org" ? "organization " : ""}variables yet.{" "}
+                    <Link className="underline underline-offset-4" href="/variables">
+                      Add one in Variables
+                    </Link>
+                    .
+                  </>
+                )
+              }
+              options={(lookups.variables ?? [])
+                .filter((row) => row.status === "active" && (scope === "personal" || row.scope === "org"))
+                .map((row) => {
+                  // A binding under another key than the variable's name keeps that key: say which.
+                  const keys = (editing?.definition.variables ?? [])
+                    .filter((binding) => binding.variableId === row.id)
+                    .map((binding) => binding.key);
+                  const scopeLabel = row.scope === "org" ? "Org" : "Personal";
+                  const aliased = keys.length > 1 || (keys.length === 1 && keys[0] !== row.name);
+                  return { id: row.id, label: row.name, note: aliased ? `as ${keys.join(", ")}` : scopeLabel };
+                })}
+              initial={editing?.definition.variables.map((binding) => binding.variableId) ?? []}
+              hint="Non-secret values such as SENTRY_ORG. Anyone in the sandbox can read them."
+            />
+            <PickList
+              legend="Secrets"
+              name="secrets"
+              icon={<LockKeyholeIcon />}
+              mono
+              empty={
+                lookups.secrets == null ? (
+                  "Secrets could not be read. Refresh to choose them."
+                ) : (
+                  <>
+                    No {scope === "org" ? "organization " : ""}secrets yet.{" "}
+                    <Link className="underline underline-offset-4" href="/variables">
+                      Add one in Variables
+                    </Link>
+                    .
+                  </>
+                )
+              }
+              options={[
+                ...(lookups.secrets ?? [])
+                  .filter(
+                    (row) =>
+                      (row.status === "active" || editing?.definition.secrets?.some((b) => b.secretId === row.id)) &&
+                      (scope === "personal" || row.scope === "org"),
+                  )
+                  .map((row) => ({
+                    id: row.id,
+                    label: row.name,
+                    note:
+                      row.status !== "active"
+                        ? "Unavailable — remove to publish"
+                        : row.scope === "org"
+                          ? "Org"
+                          : "Personal",
+                  })),
+                ...(editing?.definition.secrets ?? [])
+                  .filter(
+                    (b, i, all) =>
+                      all.findIndex((v) => v.secretId === b.secretId) === i &&
+                      !lookups.secrets?.some((row) => row.id === b.secretId),
+                  )
+                  .map((b) => ({ id: b.secretId, label: b.key, note: "Unavailable — remove to publish" })),
+              ]}
+              initial={editing?.definition.secrets?.map((b) => b.secretId) ?? []}
+              hint="API keys and passwords. Stored encrypted."
+            />
+            <SkillPicker orgId={orgId} value={skills} onChange={setSkills} />
+          </div>
+        </Disclosure>
         {lost && (
           <p role="alert" className="text-sm text-destructive" data-template-lost>
             {lost}
@@ -590,7 +609,7 @@ function TemplateForm({
             {editing ? `Save as version ${editing.revision + 1}` : "Save template"}
           </SubmitButton>
         </div>
-      </div>
+      </section>
     </form>
   );
 }

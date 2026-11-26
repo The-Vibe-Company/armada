@@ -265,7 +265,7 @@ export function ComposerLocation({
           )}
           <div className="flex flex-wrap gap-3 border-t p-2 text-sm underline">
             <Link href="/snapshots">Open Snapshots</Link>
-            <Link href="/providers/cloud">Open Docker hosts</Link>
+            <Link href="/providers/cloud">Manage machines</Link>
           </div>
         </ChoiceChip>
       )}
@@ -470,7 +470,7 @@ export function LaunchComposer({
         >
           {pending
             ? dockerHost
-              ? "Preparing the official Armada environment on your host and starting the sandbox… The first launch can take a few minutes."
+              ? "Preparing the base Armada image on your host and starting the sandbox… The first launch can take a few minutes."
               : "Launching…"
             : docker
               ? "Opens the sandbox page and its conversation."
@@ -490,7 +490,7 @@ export function LaunchComposer({
           <div className="flex max-w-full flex-wrap gap-2">{location}</div>
           <div className="ml-auto flex max-w-full flex-wrap justify-end gap-2">{options}</div>
         </div>
-        {!task.trim() && !template && chooser}
+        {!template && chooser}
       </div>
     </ChipFocus.Provider>
   );

@@ -27,7 +27,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useMutationState } from "@/components/use-mutation-state";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
-import { type DockerHost, expiryCountdown, HOST_NAME_MAX, revokeWarning } from "@/lib/docker-hosts";
+import {
+  type DockerHost,
+  expiryCountdown,
+  formatRetentionDuration,
+  HOST_NAME_MAX,
+  revokeWarning,
+} from "@/lib/docker-hosts";
 import { cn } from "@/lib/utils";
 
 /** How often the open dialog asks whether the new host has connected; the daemon itself polls every 20 seconds. */
@@ -513,27 +519,29 @@ export function HostRetention({ orgId, host }: { orgId: string; host: DockerHost
     <div className="space-y-3 text-sm">
       <p>
         Retention:{" "}
-        {host.retentionSeconds == null ? "Unknown — update the Docker host daemon" : `${host.retentionSeconds} seconds`}
+        {host.retentionSeconds == null
+          ? "Unknown — update the Docker host daemon"
+          : formatRetentionDuration(host.retentionSeconds)}
       </p>
       <p>
         Docker disk free:{" "}
         {host.diskFreeBytes == null
           ? "Unknown — update/check the daemon"
-          : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB (${host.diskFreeBytes} bytes)`}
+          : `${(host.diskFreeBytes / 1e9).toFixed(2)} GB`}
         . Launch floor: 10 GB.
       </p>
       <p>
         Stopped sandbox space:{" "}
         {host.stoppedSandboxBytes == null
           ? "Unknown — not reported"
-          : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB (${host.stoppedSandboxBytes} bytes)`}
+          : `${(host.stoppedSandboxBytes / 1e9).toFixed(2)} GB`}
       </p>
       <p>Next cleanup: {host.nextCleanupAt ? new Date(host.nextCleanupAt).toISOString() : "None reported"}</p>
       <p className="text-xs text-muted-foreground">
         As of last check-in: {host.lastSeenAt ?? "Never"}. Offline Docker hosts enforce their last saved policy.
       </p>
       {host.retentionOverrideSeconds != null && host.retentionOverrideSeconds !== host.retentionSeconds && (
-        <p>Requested: {host.retentionOverrideSeconds} seconds; waiting for check-in.</p>
+        <p>Requested: {formatRetentionDuration(host.retentionOverrideSeconds)}; waiting for check-in.</p>
       )}
       {host.canManageLimits && host.state !== "revoked" ? (
         <form ref={preserve} action={action} className="space-y-2">

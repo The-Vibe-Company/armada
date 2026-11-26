@@ -200,7 +200,7 @@ export function DockerLaunchForm({
             <LaunchComposer
               id={id}
               headline={`What should we build on ${hostName}?`}
-              subline="Environment: Armada official (fetched by your host the first time)"
+              subline="Environment: Base Armada image (fetched by your host the first time)"
               loadingError={loadingError}
               docker
               dockerHost

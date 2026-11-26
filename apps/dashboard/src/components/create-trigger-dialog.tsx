@@ -98,10 +98,10 @@ export function CreateTriggerDialog({
               </NativeSelect>
             </div>
             <div className="space-y-2">
-              <Label htmlFor={`${fields}-pool`}>Account pool harness</Label>
+              <Label htmlFor={`${fields}-pool`}>Agent</Label>
               <NativeSelect id={`${fields}-pool`} name="poolHarness" required defaultValue="" className="w-full">
                 <option value="" disabled>
-                  Choose a harness
+                  Choose an agent
                 </option>
                 {HARNESSES.map((harness) => (
                   <option key={harness} value={harness}>
@@ -110,7 +110,7 @@ export function CreateTriggerDialog({
                 ))}
               </NativeSelect>
               <p className="text-xs text-muted-foreground">
-                Use the template’s harness. Your default account must be available for it.
+                Use the template’s agent. Your default account must be available for it.
               </p>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

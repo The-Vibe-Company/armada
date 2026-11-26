@@ -29,6 +29,7 @@ export function ShellToolbar({ organization, launch }: { organization: string; l
   const { openMobile, triggerRef } = useSidebar();
   const destination = NAV_GROUPS.flatMap((group) => group.links).find((link) => isActiveLink(pathname, link.href));
   const sandboxId = pathname.startsWith("/sandboxes/") ? pathname.split("/")[2] : undefined;
+  const isApiKeys = pathname === "/settings/api-keys" || pathname.startsWith("/settings/api-keys/");
   return (
     <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-2 border-b bg-background/85 px-2 text-[13px] backdrop-blur-sm md:px-7">
       <SidebarTrigger
@@ -56,6 +57,14 @@ export function ShellToolbar({ organization, launch }: { organization: string; l
               /
             </span>
             {sandboxId.slice(0, 8)}
+          </span>
+        )}
+        {isApiKeys && (
+          <span className="inline-flex min-w-0 items-center gap-2 truncate font-medium">
+            <span aria-hidden className="text-[var(--faint)]">
+              /
+            </span>
+            <span className="truncate">API keys</span>
           </span>
         )}
       </nav>

@@ -124,6 +124,7 @@ export const LaunchSnapshotBuild = memo(function LaunchSnapshotBuild({
           initialPlacement={recoveredDocker?.snapshotHostId}
           hosts={build.hosts}
           orgId={orgId}
+          orgName={build.orgName}
           isAdmin={build.isAdmin}
           canBuild={build.hosts.length > 0}
           githubConnected={build.githubConnected}

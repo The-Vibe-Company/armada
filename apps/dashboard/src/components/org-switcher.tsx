@@ -12,6 +12,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useMutationState } from "@/components/use-mutation-state";
@@ -124,6 +125,10 @@ export function OrgSwitcher({
               {org.id === selected && <CheckIcon aria-hidden />}
             </DropdownMenuItem>
           ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem asChild>
+            <Link href="/orgs">All organizations</Link>
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       <p role="status" className="sr-only">

@@ -36,3 +36,22 @@ test("page actions are in the same header as the title on the initial render", (
 
   expect(html).toMatch(/<header[^>]*>.*<h1[^>]*>Templates<\/h1>.*<button[^>]*>New template<\/button>.*<\/header>/);
 });
+
+test("ShellToolbar appends API keys breadcrumb only on /settings/api-keys", () => {
+  const renderToolbar = (path: string) =>
+    renderToString(
+      <PathnameContext.Provider value={path}>
+        <SidebarProvider>
+          <ShellToolbar organization="Acme" launch={null} />
+        </SidebarProvider>
+      </PathnameContext.Provider>,
+    );
+
+  const apiKeysHtml = renderToolbar("/settings/api-keys");
+  expect(apiKeysHtml).toContain("Your connections");
+  expect(apiKeysHtml).toContain("API keys");
+
+  const settingsHtml = renderToolbar("/settings");
+  expect(settingsHtml).toContain("Your connections");
+  expect(settingsHtml).not.toContain("API keys");
+});

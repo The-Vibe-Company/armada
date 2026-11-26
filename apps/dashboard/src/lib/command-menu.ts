@@ -18,23 +18,23 @@ const CATALOG: readonly Command[] = [
   {
     id: "launch",
     label: "Launch a sandbox",
-    href: "/snapshots",
+    href: "/sandboxes",
     group: "Actions",
     keywords: ["new", "start", "run"],
   },
   {
     id: "add-account",
-    label: "Add a subscription",
+    label: "Add a model account",
     href: "/harness",
     group: "Actions",
-    keywords: ["claude", "codex", "chatgpt", "account", "api", "key"],
+    keywords: ["claude", "codex", "chatgpt", "subscription", "account", "api", "key"],
   },
   {
     id: "connect-provider",
     label: "Connect a sandbox provider",
     href: "/providers/cloud",
     group: "Actions",
-    keywords: ["boat", "modal", "hosting", "key", "cloud"],
+    keywords: ["boat", "modal", "hosting", "key", "cloud", "docker", "host", "machine"],
   },
   {
     id: "routines",
@@ -81,9 +81,16 @@ const CATALOG: readonly Command[] = [
     label: "Cloud providers",
     href: "/providers/cloud",
     group: "Go to",
-    keywords: ["boat", "modal", "provider", "account"],
+    keywords: ["boat", "modal", "provider", "account", "docker", "host"],
   },
   { id: "settings", label: "Settings", href: "/settings", group: "Go to", keywords: ["github", "account"] },
+  {
+    id: "api-keys",
+    label: "Armada API keys",
+    href: "/settings/api-keys",
+    group: "Go to",
+    keywords: ["api", "keys", "tokens", "service", "cli"],
+  },
 ];
 
 // Navigation owns visible destination names; keep historical command names searchable.

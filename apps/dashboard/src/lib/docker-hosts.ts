@@ -368,3 +368,29 @@ export function dockerHostActionFailure(
     return "The server could not complete this launch. Reload Hosts and check the host's capacity and model account before trying again.";
   return "The host change could not be confirmed. Reload Hosts to check its current state before trying again.";
 }
+
+export function formatRetentionDuration(seconds: number) {
+  if (seconds === 0) return "0 seconds (next sweep)";
+  if (seconds % 86_400 === 0) {
+    const days = seconds / 86_400;
+    return `${days} ${days === 1 ? "day" : "days"}`;
+  }
+  if (seconds % 3_600 === 0) {
+    const hours = seconds / 3_600;
+    return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const secs = seconds % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (secs > 0) parts.push(`${secs}s`);
+  return parts.join(" ");
+}

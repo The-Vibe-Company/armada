@@ -5,6 +5,7 @@ import {
   dockerHostActionFailure,
   dockerHostLimitsInput,
   expiryCountdown,
+  formatRetentionDuration,
   hostBuildBlocker,
   hostName,
   hostNameInput,
@@ -86,6 +87,18 @@ test("the expiry counts down as m:ss and reads expired once it passes", () => {
   expect(expiryCountdown(expiresAt, NOW + 211_000)).toBe("1:29");
   expect(expiryCountdown(expiresAt, NOW + 300_000)).toBeNull();
   expect(expiryCountdown(expiresAt, NOW + 600_000)).toBeNull();
+});
+
+test("stopped-sandbox retention formats cleanly into days, hours, minutes, or compact units", () => {
+  expect(formatRetentionDuration(0)).toBe("0 seconds (next sweep)");
+  expect(formatRetentionDuration(45)).toBe("45s");
+  expect(formatRetentionDuration(90)).toBe("1m 30s");
+  expect(formatRetentionDuration(1800)).toBe("30 minutes");
+  expect(formatRetentionDuration(3600)).toBe("1 hour");
+  expect(formatRetentionDuration(43200)).toBe("12 hours");
+  expect(formatRetentionDuration(86400)).toBe("1 day");
+  expect(formatRetentionDuration(604800)).toBe("7 days");
+  expect(formatRetentionDuration(90061)).toBe("1d 1h 1m 1s");
 });
 
 test("a host's reported daemon version is parsed; a blank or missing one reads as unknown", () => {
