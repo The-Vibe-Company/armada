@@ -6,6 +6,7 @@ export default {
   summary: "List organizations and configure providers",
   usage: {
     hosts: `  armada org list                          List your organizations, roles and IDs
+  armada org use <NAME|UUID|none> [--json] Set or clear your default organization
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
                                            Connect an org provider via stdin or private file`,
@@ -14,6 +15,7 @@ export default {
 List organizations and configure providers.
 Use a leaf command with --help or -h for flags and authorization requirements.
   list         List your organizations, roles and IDs.
+  use          Set or clear your default organization without signing in again.
   setup        Inspect provider configuration, not lifecycle readiness.
   connect      Connect Boat/Modal as an organization admin.
 Explicit --org overrides a saved default on commands that consume it.
@@ -23,8 +25,14 @@ Example: armada org list --json
   subcommandHelp: {
     "org list": `Usage: armada org list [--json]
 List your organizations after Armada login, including their IDs and your roles.
-Use an exact organization name or UUID with armada login --org NAME|UUID.
+Use an exact organization name or UUID with armada org use NAME|UUID.
 Example: armada org list --json
+`,
+    "org use": `Usage: armada org use <NAME|UUID|none> [--json]
+Set your default organization using the existing session, or pass none to clear it.
+Matches an organization by exact name or UUID from armada org list.
+Explicit --org overrides a saved default on commands that consume it.
+Example: armada org use my-team
 `,
     "org setup": `Usage: armada org setup [--org <name>] [--json]
 Show organization provider setup status. Sign in before running the operation.

@@ -9,7 +9,7 @@ export default sandboxOperation({
 Permanently delete a stopped sandbox after Armada login and server authorization.
 Warning: deletion removes the disk AND recovery archives. --yes is required confirmation.
 This is not stop. Inspect status and preserve needed work before deleting.
-Use a sandbox UUID from armada ls --json; names are not accepted.
+Use a sandbox UUID or unique prefix from armada ls; names are not accepted.
 Example: armada rm SANDBOX_UUID --yes --org ORG_UUID --json
 `,
 });

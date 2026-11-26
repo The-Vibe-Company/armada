@@ -6,6 +6,7 @@ import { GoldenError, shellQuote } from "@armada/core";
 import { hostInstallClient } from "@armada/sdk/host-install";
 import { parseArgs, single } from "./args.ts";
 import type { Io } from "./run.ts";
+import { stripControl } from "./table.ts";
 
 interface FileInfo {
   directory: boolean;
@@ -28,7 +29,7 @@ export interface LocalHostIo {
     args: string[],
     stdin?: string,
     timeoutMs?: number,
-  ): Promise<{ code: number; stdout: string }>;
+  ): Promise<{ code: number; stdout: string; stderr?: string }>;
   listInstances?(): Promise<string[]>;
   readServer?(path: string): Promise<string | undefined>;
   now(): number;
@@ -91,12 +92,15 @@ export function productionLocalHostIo(
       const child = Bun.spawn([program, ...args], {
         stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
         stdout: "pipe",
-        stderr: "ignore",
+        stderr: "pipe",
         timeout: timeoutMs,
         killSignal: "SIGKILL",
       });
-      const stdout = await new Response(child.stdout).text();
-      return { code: await child.exited, stdout };
+      const [stdout, stderr] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      return { code: await child.exited, stdout, stderr };
     },
     now: Date.now,
     sleep: Bun.sleep,
@@ -377,13 +381,18 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       } catch {}
     }
     io.out(current ? "Replacing the unregistered Docker host binary.\n" : "Installing Docker host user service.\n");
-    if (
-      (await native.execute(binary, ["install", "--server", server, ...instanceArgs(binary)], `${token}\n`, 660_000))
-        .code !== 0
-    )
+    const install = await native.execute(
+      binary,
+      ["install", "--server", server, ...instanceArgs(binary)],
+      `${token}\n`,
+      660_000,
+    );
+    if (install.code !== 0) {
+      const detail = safePreflightLines(install.stderr, token);
       return failed(
-        `Docker host installation did not complete. Run ${statusCommand(binary)} and inspect systemd/Docker access before retrying.`,
+        `${detail ? `${detail} ` : ""}Docker host installation did not complete. Run ${statusCommand(binary)} and inspect systemd/Docker access before retrying.`,
       );
+    }
     io.out("Waiting up to 60 seconds for the Docker host to connect…\n");
     return connected(native, binary, io);
   } catch (error) {
@@ -399,4 +408,25 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       "Docker host command failed; private state and credentials were not printed. Check Docker/systemd access and the installed daemon before retrying registration.",
     );
   }
+}
+
+const SENSITIVE_PATTERN =
+  /(?:bearer\s+\S+|armada_(?:sk|epoch)_[A-Za-z0-9_-]+|gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+|https?:\/\/[^/\s]+:[^/\s]+@\S+|[a-f0-9]{32,}|(?:token|secret|password|authorization|api[_-]?key|credential)\s*[:=]\s*\S+)/gi;
+
+function safePreflightLines(stderr: string | undefined, token: string) {
+  if (!stderr) return "";
+  const lowerToken = token.toLowerCase();
+  const tokenRe = token ? new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi") : undefined;
+  const safe: string[] = [];
+  for (const rawLine of stderr.split(/\r?\n/)) {
+    if (safe.length >= 3) break;
+    const trimmed = rawLine.trim();
+    if (!trimmed || /^\s*(?:at\s+|[{[])/.test(trimmed)) continue;
+    let clean = stripControl(trimmed).replace(/\s+/g, " ").trim();
+    if (tokenRe) clean = clean.replace(tokenRe, "[REDACTED]");
+    clean = clean.replace(SENSITIVE_PATTERN, "[REDACTED]");
+    if (!clean || clean === "[REDACTED]" || (lowerToken && clean.toLowerCase().includes(lowerToken))) continue;
+    safe.push(clean.length > 200 ? `${clean.slice(0, 199)}…` : clean);
+  }
+  return safe.join(" ");
 }

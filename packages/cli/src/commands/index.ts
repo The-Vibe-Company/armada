@@ -55,7 +55,7 @@ export function sandboxUsage(group: UsageGroup): string {
 }
 
 const KNOWN_BOOLEAN_FLAGS = new Set(
-  "--private --json --no-browser --no-connections --page-info --yes --live --setup --wait --turn --after --steer --replace --auto --unlimited --armada-access --keep-after-merge -f --follow --global".split(
+  "--private --json --no-browser --no-connections --page-info --active --wide --yes --live --setup --wait --turn --after --steer --replace --auto --unlimited --armada-access --keep-after-merge -f --follow --global".split(
     " ",
   ),
 );

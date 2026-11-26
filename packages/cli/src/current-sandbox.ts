@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { AuthError } from "@armada/auth";
 import type { ListInput, ListResult } from "@armada/core/contract";
 import type { AuthIo } from "./auth-commands.ts";
@@ -8,36 +9,72 @@ import type { AuthIo } from "./auth-commands.ts";
 const fullId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const uuidTemplate = "00000000-0000-0000-0000-000000000000";
 
+export function isFullUuid(value: string) {
+  return fullId.test(value);
+}
+
+export function isUuidPrefix(value: string) {
+  return (
+    value.length > 0 && value.length <= uuidTemplate.length && fullId.test(value + uuidTemplate.slice(value.length))
+  );
+}
+
 export interface CurrentSandboxFile {
   read(): Promise<string | undefined>;
   write(id: string): Promise<void>;
 }
 
-export function currentSandboxFile(cwd: string) {
-  const dir = join(cwd, ".armada");
+async function hasGitRoot(dir: string) {
+  try {
+    await lstat(join(dir, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function currentSandboxFile(cwd: string, home = homedir()) {
+  const root = resolve(cwd);
+  const homeDir = home ? resolve(home) : undefined;
+  const dir = join(root, ".armada");
   const path = join(dir, "sandbox");
-  const checkDirectory = async () => {
-    if (!(await lstat(dir)).isDirectory()) throw new Error(".armada must be a directory in the current workspace.");
+  const checkDirectory = async (target: string) => {
+    if (!(await lstat(target)).isDirectory()) throw new Error(".armada must be a directory in the current workspace.");
+  };
+  const readAt = async (base: string) => {
+    const armadaDir = join(base, ".armada");
+    try {
+      await checkDirectory(armadaDir);
+      const handle = await open(
+        join(armadaDir, "sandbox"),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        if (!(await handle.stat()).isFile()) throw new Error(".armada/sandbox must be a regular file.");
+        return await handle.readFile("utf8");
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw new AuthError("Could not read .armada/sandbox. Check its permissions or pass a sandbox ID.", "usage");
+    }
   };
   return {
     async read() {
-      try {
-        await checkDirectory();
-        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        try {
-          if (!(await handle.stat()).isFile()) throw new Error(".armada/sandbox must be a regular file.");
-          return await handle.readFile("utf8");
-        } finally {
-          await handle.close();
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-        throw new AuthError("Could not read .armada/sandbox. Check its permissions or pass a sandbox ID.", "usage");
+      let current = root;
+      for (;;) {
+        const value = await readAt(current);
+        if (value !== undefined) return value;
+        if (current === homeDir || (await hasGitRoot(current))) return undefined;
+        const parent = dirname(current);
+        if (parent === current) return undefined;
+        current = parent;
       }
     },
     async write(id: string) {
       await mkdir(dir, { recursive: true });
-      await checkDirectory();
+      await checkDirectory(dir);
       const temporaryDir = await mkdtemp(join(dir, "sandbox-"));
       try {
         const temporaryFile = join(temporaryDir, "id");

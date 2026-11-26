@@ -78,3 +78,35 @@ test("rm --yes requires an explicit sandbox ID and never falls back to ARMADA_SA
   expect([result.exit, result.requests.length, fileReads]).toEqual([2, 0, 0]);
   expect(JSON.parse(result.stderr).error.message).toContain("armada rm <sandbox-id>");
 });
+
+test("rm --yes resolves a unique short UUID prefix and rejects invalid names before API calls", async () => {
+  const requests: { method: string | undefined; path: string }[] = [];
+  let out = "",
+    err = "";
+  const auth: AuthIo = {
+    env: { ARMADA_URL: "https://armada.test", ARMADA_TOKEN: "fixture-token" },
+    session: memorySessionStore(),
+    now: () => new Date("2026-11-20T00:00:00Z"),
+    open: () => {},
+    out: (t) => (out += t),
+    err: (t) => (err += t),
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      requests.push({ method: init?.method, path: url.pathname + url.search });
+      return url.pathname === "/api/v1/sandbox/list"
+        ? Response.json({ sandboxes: [{ id: sandboxId }], hasMore: false, nextPage: null })
+        : Response.json({ id: sandboxId, status: "deleted" });
+    },
+  };
+  expect(await run(["rm", "11111111", "--yes", "--org", orgId], auth, { auth, stdoutIsTTY: false })).toBe(0);
+  expect(JSON.parse(out)).toEqual({ id: sandboxId, status: "deleted" });
+  expect(requests).toEqual([
+    { method: "POST", path: "/api/v1/sandbox/list" },
+    { method: "DELETE", path: `/api/v1/sandboxes/${sandboxId}?org=${orgId}` },
+  ]);
+  requests.length = 0;
+  err = "";
+  expect(await run(["rm", "not-a-uuid", "--yes"], auth, { auth, stdoutIsTTY: false })).toBe(2);
+  expect(requests).toEqual([]);
+  expect(JSON.parse(err).error.message).toContain("UUID or UUID prefix");
+});

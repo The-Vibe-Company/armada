@@ -37,12 +37,16 @@ test("safe sandbox list renders metadata-only access without interior lookups an
     canManage: true,
   };
   const unknown = { ...row, canOpen: undefined, canManage: undefined };
-  for (const mode of ["text", "json", "page-info"]) {
+  for (const mode of ["text", "wide", "json", "page-info"]) {
     let out = "";
     const requests: { path: string; body: unknown }[] = [];
     const filters = mode === "json" ? ["--status", "running", "--ref", "job/42"] : [];
     const code = await run(
-      ["ls", ...filters, ...(mode === "json" ? ["--json"] : mode === "page-info" ? ["--page-info"] : [])],
+      [
+        "ls",
+        ...filters,
+        ...(mode === "json" ? ["--json"] : mode === "page-info" ? ["--page-info"] : mode === "wide" ? ["--wide"] : []),
+      ],
       {
         out: (text) => {
           out += text;
@@ -86,7 +90,7 @@ test("safe sandbox list renders metadata-only access without interior lookups an
         page: 1,
         hasMore: false,
       });
-    else {
+    else if (mode === "wide") {
       expect(out).toMatch(
         /ID\s+LABEL\s+PROVIDER\s+PROVIDER ID\s+STATUS\s+OUTCOME\s+AGE\s+PRESERVATION\s+OWNER\s+ACCESS/,
       );
@@ -100,8 +104,33 @@ test("safe sandbox list renders metadata-only access without interior lookups an
       const statusCol = lines[0]!.indexOf("STATUS");
       expect(lines[1]!.slice(statusCol).startsWith("running")).toBe(true);
       expect(lines[2]!.slice(statusCol).startsWith("Paused")).toBe(true);
+    } else {
+      expect(out).toMatch(/^ID\s+LABEL\s+PROVIDER\s+STATUS\s+OUTCOME\s+AGE$/m);
+      expect(out).not.toContain("PROVIDER ID");
+      expect(out).toContain("11111111  ");
+      expect(out).not.toContain(row.id);
+      expect(out).toMatch(/Boat\s+Paused — wakes on your next message\s+ready\s+2h/);
     }
   }
+});
+
+test("ls --active filters starting, ready and running and rejects combining with --status", async () => {
+  let body: unknown;
+  const auth = {
+    out: () => {},
+    err: () => {},
+    env: { ARMADA_TOKEN: "fixture-session" },
+    fetch: async (_input: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return Response.json({ sandboxes: [] });
+    },
+    now: () => new Date(0),
+    open: () => {},
+    session: memorySessionStore(),
+  };
+  expect(await run(["ls", "--active", "--json"], auth, { auth })).toBe(0);
+  expect(body).toEqual({ status: ["starting", "ready", "running"] });
+  expect(await run(["ls", "--active", "--status", "running"], auth, { auth })).toBe(2);
 });
 
 test("invalid sandbox list pages and metadata exit 1 as operational failures", async () => {

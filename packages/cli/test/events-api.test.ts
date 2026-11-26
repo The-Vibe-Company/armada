@@ -217,3 +217,89 @@ test("logs is an unknown command", async () => {
   expect(code).toBe(2);
   expect(stderr).toContain("unknown command 'logs'");
 });
+
+test("events -f streams live events over SSE without sleep polling and exits on settlement", async () => {
+  const calls: string[] = [];
+  let sleeps = 0,
+    out = "";
+  const frame = (frameId: string, body: Record<string, unknown>) =>
+    `id: ${frameId}\ndata: ${JSON.stringify({ id: frameId, sandboxId: id, ref: "1", createdAt: "2026-11-20T00:00:00.000Z", ...body })}\n\n`;
+  const sse =
+    frame("10", {
+      kind: "runtime_event",
+      sequence: "1",
+      event: { id: "e2", at: 2, kind: "message", text: "live update", partial: false, tools: [] },
+    }) + frame("11", { kind: "transition", sequence: null, status: "stopped" });
+  const code = await run(
+    ["events", id, "-f"],
+    { out: (t) => (out += t), err: () => {} },
+    {
+      auth: auth(async (input) => {
+        const url = new URL(String(input));
+        calls.push(url.pathname + url.search);
+        return url.pathname === "/api/v1/logs/read"
+          ? Response.json({
+              events: [{ id: "e1", at: 1, kind: "message", text: "initial" }],
+              cursor: "1",
+              hasMore: false,
+              settled: false,
+            })
+          : new Response(sse, { headers: { "content-type": "text/event-stream" } });
+      }),
+      sleep: async () => {
+        sleeps++;
+      },
+    },
+  );
+  expect([code, sleeps, out]).toEqual([0, 0, "initial\nlive update\n"]);
+  expect(calls).toEqual(["/api/v1/logs/read", `/api/v1/events?sandbox=${id}&cursor=tail`]);
+});
+
+test("events formats tool_use and tool_result concisely in TTY mode while keeping --json as NDJSON", async () => {
+  const large = "x".repeat(300);
+  const sample = [
+    {
+      id: "t1",
+      at: 1,
+      kind: "message",
+      text: "",
+      partial: false,
+      tools: [{ id: "c1", name: "Bash", input: { command: "git status" } }],
+    },
+    {
+      id: "t2",
+      at: 2,
+      kind: "message",
+      text: "",
+      partial: false,
+      responseKind: "tool_result",
+      tools: [{ id: "c1", name: "tool_result", result: { output: large, isError: false } }],
+    },
+    { id: "t3", at: 3, kind: "other", type: "tool_use", data: { name: "Read", input: { file_path: "src/index.ts" } } },
+    { id: "t4", at: 4, kind: "other", type: "tool_result", data: { output: "boom", isError: true } },
+  ];
+  let ttyOut = "",
+    jsonOut = "";
+  const fetchEvents = async () => Response.json({ events: sample, cursor: null, hasMore: false, settled: true });
+  expect(
+    await run(
+      ["events", id],
+      { out: (t) => (ttyOut += t), err: () => {} },
+      { stdoutIsTTY: true, auth: auth(fetchEvents) },
+    ),
+  ).toBe(0);
+  expect(ttyOut).toContain("[tool Bash] git status\n");
+  expect(ttyOut).toContain("[tool_result] ");
+  expect(ttyOut).not.toContain(large);
+  expect(ttyOut).toContain("[tool Read] src/index.ts\n");
+  expect(ttyOut).toContain("[tool_result error] boom\n");
+  expect(
+    await run(["events", id, "--json"], { out: (t) => (jsonOut += t), err: () => {} }, { auth: auth(fetchEvents) }),
+  ).toBe(0);
+  expect(
+    jsonOut
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+  ).toEqual(sample);
+});

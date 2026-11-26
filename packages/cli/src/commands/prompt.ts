@@ -1,20 +1,20 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError } from "@armada/core";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "../args.ts";
-import { resolveSandboxId } from "../current-sandbox.ts";
+import { isFullUuid, isUuidPrefix, readCurrentSandbox, resolveSandboxReference } from "../current-sandbox.ts";
 import { type ArmadaCommandClient, createSdkCommandClient } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 export default {
   name: "prompt",
   summary: "Start a turn or redirect a running turn",
-  usage: `  armada prompt [--steer] <sandbox-id> <text>
+  usage: `  armada prompt [--steer] [sandbox-id] <text>
                                            Start a turn or redirect a running turn`,
   help: `Usage: armada prompt [--steer] [--org UUID] [--json] [sandbox-id] [--] <text>
 A new prompt automatically resumes a retained stopped sandbox. Use --steer to redirect a running turn.
 Steering can join a turn natively or interrupt and restart the same conversation.
 Check the receipt's delivery field to see which happened.
-Omit the ID and put the text after -- to use the current sandbox.
+Omit the ID when ARMADA_SANDBOX or .armada/sandbox is set; use -- if text starts with an option or UUID prefix.
 New turns accept --request-id UUID, --model ID and --reasoning-effort LEVEL.
 Runtime model and effort remain launch-pinned. Full-account prompts can queue FIFO before execution.
 For uncertain runtime delivery, reuse the request ID with identical input.
@@ -34,13 +34,20 @@ Example: armada prompt SANDBOX_UUID --steer -- "Focus on the failing test"
     ]);
 
     const end = argv.indexOf("--");
+    const explicitImplicit = end >= 0 && args.positionals.length === argv.length - end - 1;
+    const first = args.positionals[0];
+    const looksLikeSandbox =
+      !explicitImplicit &&
+      first !== undefined &&
+      (isFullUuid(first) || (args.positionals.length > 1 && first.length >= 4 && isUuidPrefix(first)));
+    const current = looksLikeSandbox ? undefined : await readCurrentSandbox(auth.env, deps.sandboxFile);
     const [selector, ...words] =
-      end >= 0 && args.positionals.length === argv.length - end - 1
+      explicitImplicit || (!looksLikeSandbox && current && args.positionals.length > 0)
         ? [undefined, ...args.positionals]
         : args.positionals;
     const text = words.join(" ");
     if (!text.trim())
-      throw new GoldenError("invalid_config", "Provide prompt text. Use -- TEXT for the current sandbox.");
+      throw new GoldenError("invalid_config", "Provide prompt text. Pass a sandbox ID or set ARMADA_SANDBOX.");
 
     const org = single(args, "--org");
     const requestId = single(args, "--request-id");
@@ -49,7 +56,7 @@ Example: armada prompt SANDBOX_UUID --steer -- "Focus on the failing test"
     const effort = single(args, "--reasoning-effort");
     let api: Promise<ArmadaCommandClient> | undefined;
     const client = () => (api ??= createSdkCommandClient(auth));
-    const id = await resolveSandboxId(selector, auth.env, deps.sandboxFile, org, async (body) =>
+    const id = await resolveSandboxReference(selector, current, org, async (body) =>
       (await client()).sandboxes.list(body),
     );
     if (steer) {

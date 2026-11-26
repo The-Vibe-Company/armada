@@ -72,6 +72,15 @@ function loginPayload(result: AuthResponse): unknown {
   throw new AuthError("Armada sign-in could not complete. Start a new login.", "unavailable");
 }
 
+export function resolveOrgReference<T extends { id: string; name: string }>(orgs: readonly T[], ref: string) {
+  const matches = orgs.filter(
+    (entry) => entry.id.toLowerCase() === ref.toLowerCase() || entry.name.toLowerCase() === ref.toLowerCase(),
+  );
+  if (matches.length !== 1 || !matches[0])
+    throw new AuthError("Choose one of your organizations by UUID or exact name.", "usage");
+  return matches[0];
+}
+
 export async function loginCommand(
   io: AuthIo,
   how: { url?: string | undefined; json?: boolean; org?: string | undefined } = {},
@@ -137,18 +146,23 @@ export async function loginCommand(
       case "authorized": {
         const { accessToken, refreshToken, expiresAt, email } = result;
         let org: string | undefined;
+        let saveOrg = how.org !== undefined;
         if (how.org !== undefined && how.org !== "none") {
-          const ref = how.org;
-          const result = organizationOperations.listOrganizations.output.safeParse(
+          const listed = organizationOperations.listOrganizations.output.safeParse(
             loginPayload(await client.listOrganizations(accessToken, timeout)),
           );
-          if (!result.success) throw new AuthError("Armada returned an invalid organization list.", "unavailable");
-          const matches = result.data.orgs.filter(
-            (entry) => entry.id === ref || entry.name.toLowerCase() === ref.toLowerCase(),
-          );
-          if (matches.length !== 1 || !matches[0])
-            throw new AuthError("Choose one of your organizations by UUID or exact name.", "usage");
-          org = matches[0].id;
+          if (!listed.success) throw new AuthError("Armada returned an invalid organization list.", "unavailable");
+          org = resolveOrgReference(listed.data.orgs, how.org).id;
+        } else if (how.org === undefined && preferences) {
+          try {
+            const listed = organizationOperations.listOrganizations.output.safeParse(
+              loginPayload(await client.listOrganizations(accessToken, timeout)),
+            );
+            if (listed.success && listed.data.orgs.length === 1 && listed.data.orgs[0]) {
+              org = listed.data.orgs[0].id;
+              saveOrg = true;
+            }
+          } catch {}
         }
         const session = {
           loginId: crypto.randomUUID(),
@@ -157,8 +171,12 @@ export async function loginCommand(
           refreshToken,
           expiresAt,
         } satisfies Session;
-        if (how.org !== undefined && preferences) {
-          await saveLoginSelection(io.session, session, preferences, org);
+        if (saveOrg && preferences) {
+          if (how.org !== undefined) await saveLoginSelection(io.session, session, preferences, org);
+          else {
+            await io.session.write(session);
+            await preferences.write(origin, org).catch(() => {});
+          }
         } else {
           await io.session.write(session);
         }
