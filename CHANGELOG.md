@@ -1,5 +1,17 @@
 # Changelog
 
+## [14.6.0](https://github.com/The-Vibe-Company/armada/compare/v14.5.0...v14.6.0) (2026-11-26)
+
+
+### Features
+
+* **agent-runtime:** add outbound relay client with native PTY and loopback TCP ([#4350](https://github.com/The-Vibe-Company/armada/issues/4350)) ([a18f518](https://github.com/The-Vibe-Company/armada/commit/a18f5182a584d12d26afa0777554a7666a6f376e))
+* **cli:** add armada shell and armada port-forward commands ([#4351](https://github.com/The-Vibe-Company/armada/issues/4351)) ([4468a0d](https://github.com/The-Vibe-Company/armada/commit/4468a0d66856c26de571c502da950f0a71f03780))
+* **core:** define relay binary wire protocol and control contract ([#4347](https://github.com/The-Vibe-Company/armada/issues/4347)) ([eab4d3f](https://github.com/The-Vibe-Company/armada/commit/eab4d3ffebbf03ee0d4c64575e0efc698e03d125))
+* **dashboard:** add interactive terminal dock and port preview to sandbox detail ([#4353](https://github.com/The-Vibe-Company/armada/issues/4353)) ([862e74a](https://github.com/The-Vibe-Company/armada/commit/862e74aafe72ac900fa0ba4d0732f12c50a9325d))
+* **mcp-server:** add authenticated HTTP and WebSocket port preview proxy ([#4352](https://github.com/The-Vibe-Company/armada/issues/4352)) ([d484937](https://github.com/The-Vibe-Company/armada/commit/d4849371c930bf51bc395210ab19b5cc4335709f))
+* **mcp-server:** add relay hub, runtime/client WebSockets and ticket auth ([#4349](https://github.com/The-Vibe-Company/armada/issues/4349)) ([1c29853](https://github.com/The-Vibe-Company/armada/commit/1c29853667bf1e2060cc8b8e0b1fc55442c9e3a9))
+
 ## [14.5.0](https://github.com/The-Vibe-Company/armada/compare/v14.4.1...v14.5.0) (2026-11-25)
 
 
