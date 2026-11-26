@@ -11,10 +11,14 @@ import type { Command } from "./command.ts";
 const contract = sandboxOutputOperations.readSandboxOutput;
 
 const outputs: Command["run"] = async (argv, { io, deps, auth }) => {
-  const args = parseArgs(argv, ["-o"]);
-  acceptedOptions(args, "outputs", ["--id", "--org", "--json", "-o"]);
+  const args = parseArgs(argv, ["-o", "--output"]);
+  acceptedOptions(args, "outputs", ["--id", "--org", "--json", "-o", "--output"]);
   const [name] = args.positionals;
-  const destination = single(args, "-o");
+  const shortOutput = single(args, "-o");
+  const longOutput = single(args, "--output");
+  if (shortOutput !== undefined && longOutput !== undefined)
+    throw new GoldenError("invalid_config", "Use -o or --output, not both.");
+  const destination = shortOutput ?? longOutput;
   if (args.positionals.length > 1 || (destination !== undefined && (!name || !destination)))
     throw new GoldenError("invalid_config", "Use armada outputs [NAME] [-o DIR] [--id ID].");
   if (
@@ -64,7 +68,12 @@ const outputs: Command["run"] = async (argv, { io, deps, auth }) => {
     await writeFile(temporaryFile, "", { mode: 0o600 });
     if (response.body) await Bun.write(temporaryFile, response);
     await link(temporaryFile, path);
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EEXIST")
+      throw new AuthError(
+        `Output file ${JSON.stringify(path)} already exists. Choose a different destination directory or remove the existing file.`,
+        "conflict",
+      );
     throw new AuthError("Could not save the sandbox output. Check the destination and retry.", "unavailable");
   } finally {
     if (temporaryDir) await rm(temporaryDir, { recursive: true, force: true });

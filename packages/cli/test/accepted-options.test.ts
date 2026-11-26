@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parseArgs, single } from "../src/args.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -41,4 +42,26 @@ test("command boundaries reject recognized but unused flags before making reques
     expect(requests).toBe(0);
     expect(JSON.parse(stderr).error.code).toBe("invalid_config");
   }
+});
+
+test("option parsing accepts --flag=--value, auth-args rejects -x/--json=val, and piped skill install avoids command_failed", async () => {
+  expect(single(parseArgs(["--reason=--leading-dashes"], ["--reason"]), "--reason")).toBe("--leading-dashes");
+  for (const argv of [
+    ["whoami", "-x"],
+    ["whoami", "--json=false"],
+    ["login", "--json=foo"],
+  ]) {
+    let stderr = "";
+    expect(await run(argv, { out: () => {}, err: (text) => (stderr += text) }, { env: {} })).toBe(2);
+    expect(stderr).toMatch(/Unknown flag|--json takes no value/);
+  }
+  let skillErr = "";
+  expect(
+    await run(
+      ["skill", "install", "--project", "/nonexistent/\0bad", "--yes"],
+      { out: () => {}, err: (text) => (skillErr += text) },
+      { stdoutIsTTY: false },
+    ),
+  ).toBe(1);
+  expect(skillErr).not.toContain("command_failed");
 });

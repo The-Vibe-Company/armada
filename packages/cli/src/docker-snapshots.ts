@@ -1,9 +1,18 @@
+import { AuthError } from "@armada/auth";
 import { type GoldenConfig, GoldenError, parseDockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
 import { type Args, flag, single, uuid } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { resolveHost } from "./host-commands.ts";
 import { createSdkCommandClient } from "./sdk-session.ts";
 import { waitForSnapshot } from "./snapshot-wait.ts";
+
+function parseSnapshot(input: unknown) {
+  try {
+    return parseDockerSnapshotRecord(input);
+  } catch {
+    throw new AuthError("Armada returned an invalid snapshot response.", "unavailable");
+  }
+}
 export async function dockerSnapshotCommand(
   operation: "ls" | "new" | "update" | "rebuild" | "rm" | "show",
   args: Args,
@@ -35,8 +44,9 @@ export async function dockerSnapshotCommand(
   if (operation === "ls") {
     if (args.positionals.length) throw new GoldenError("invalid_config", "snapshot ls takes no name.");
     const data = await post("list", {});
-    if (!Array.isArray(data.snapshots)) throw Error("Invalid snapshot response.");
-    const rows = data.snapshots.map(parseDockerSnapshotRecord);
+    if (!Array.isArray(data.snapshots))
+      throw new AuthError("Armada returned an invalid snapshot response.", "unavailable");
+    const rows = data.snapshots.map(parseSnapshot);
     const currentVersion = typeof data.currentVersion === "string" ? data.currentVersion : null;
     io.out(
       flag(args, "--json")
@@ -62,10 +72,10 @@ export async function dockerSnapshotCommand(
     io.err(
       `Rebuild request ${requestId}. The old snapshot stays usable. Retry with the same --request-id after an unknown outcome.\n`,
     );
-    const row = parseDockerSnapshotRecord((await post("rebuild", { id, requestId })).snapshot);
+    const row = parseSnapshot((await post("rebuild", { id, requestId })).snapshot);
     if (row.id !== requestId)
       throw new GoldenError(
-        "invalid_config",
+        "build_failed",
         "Rebuild outcome unknown: the server returned a different snapshot. Inspect the printed request ID before retrying.",
       );
     io.out(
@@ -80,7 +90,7 @@ export async function dockerSnapshotCommand(
       throw new GoldenError("invalid_config", "snapshot show requires a snapshot UUID.");
     const id = args.positionals[0];
     uuid(id, "snapshot ID");
-    const row = parseDockerSnapshotRecord((await post("get", { id })).snapshot);
+    const row = parseSnapshot((await post("get", { id })).snapshot);
     io.out(JSON.stringify(row, null, 2) + "\n");
     return 0;
   }
@@ -98,7 +108,7 @@ export async function dockerSnapshotCommand(
   const seconds = waitSeconds();
   const hostId = await resolveHost(client, org, selector);
   io.err(`Snapshot request ${requestId}. Reuse this --request-id with identical input after an unknown outcome.\n`);
-  let row = parseDockerSnapshotRecord(
+  let row = parseSnapshot(
     (
       await post("create", {
         name: args.positionals[0],
@@ -120,7 +130,7 @@ export async function dockerSnapshotCommand(
       seconds,
       sleep,
       ({ status }) => status === "building",
-      async (signal) => parseDockerSnapshotRecord((await post("get", { id: requestId }, signal)).snapshot),
+      async (signal) => parseSnapshot((await post("get", { id: requestId }, signal)).snapshot),
     );
   } catch {
     throw new GoldenError(

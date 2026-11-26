@@ -63,13 +63,36 @@ export interface Deps {
 
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   const machineOutput = deps.stdoutIsTTY === false || jsonRequested(argv);
+  let wroteOut = false;
+  let wroteErr = false;
+  const observedIo: Io = {
+    out: (text) => {
+      if (text.length > 0) wroteOut = true;
+      io.out(text);
+    },
+    err: (text) => {
+      if (text.length > 0) wroteErr = true;
+      io.err(text);
+    },
+  };
+  const observeAuth = (target: AuthIo) => ({
+    ...target,
+    out: (text: string) => {
+      if (text.length > 0) wroteOut = true;
+      target.out(text);
+    },
+    err: (text: string) => {
+      if (text.length > 0) wroteErr = true;
+      target.err(text);
+    },
+  });
   const writeFailure = (code: string, message: string, hint: string | null) =>
     io.err(`${JSON.stringify({ error: { code, message, hint } })}\n`);
   const finish = (exitCode: number) => {
-    if (machineOutput && exitCode !== 0) {
+    if (machineOutput && exitCode !== 0 && !wroteOut && !wroteErr && argv[0] !== "shell") {
       const code = exitCode === 2 ? "usage" : exitCode === 3 ? "unauthorized" : "command_failed";
       const message = "Armada could not complete the command.";
-      writeFailure(code, message, failureHint({ code, message }, argv, Boolean(auth?.env.ARMADA_TOKEN)).trim());
+      writeFailure(code, message, failureHint({ code, message }, argv, Boolean(auth?.env.ARMADA_TOKEN)).trim() || null);
     }
     return exitCode;
   };
@@ -84,7 +107,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       return finish(
         await localHostCommand(
           localArgs.slice(2),
-          io,
+          observedIo,
           deps.localHost ??
             productionLocalHostIo({
               ...(deps.fetch ? { fetch: deps.fetch } : {}),
@@ -92,7 +115,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             }),
         ),
       );
-    if (localArgs.length === 1 && localArgs[0] === "skill") return finish(await skillCommand(["--help"], io));
+    if (localArgs.length === 1 && localArgs[0] === "skill") return finish(await skillCommand(["--help"], observedIo));
     const bareCommand = localArgs.length === 1 ? findCommand(localArgs[0] ?? "") : undefined;
     if (bareCommand?.helpWhenBare) {
       io.out(bareCommand.help);
@@ -112,7 +135,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
     argv = selected.args;
-    deps = { ...deps, env: selected.env };
+    deps = { ...deps, env: selected.env, ...(deps.auth ? { auth: observeAuth(deps.auth) } : {}) };
     const command = argv[0];
     if (
       selected.env.ARMADA_PROFILE !== undefined &&
@@ -134,15 +157,15 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             "usage",
           );
       }
-      deps = { ...deps, env, auth: { ...(deps.auth ?? productionAuthIo(io, env)), env, ...stores } };
+      deps = { ...deps, env, auth: { ...(deps.auth ?? productionAuthIo(observedIo, env)), env, ...stores } };
     }
-    auth = authOf(io, deps);
+    auth = authOf(observedIo, deps);
     try {
       if (argv.length === 0) {
         const client = await createSdkCommandClient(auth);
         await client.control("account/status", {});
       }
-      return finish(await dispatch(argv, io, deps));
+      return finish(await dispatch(argv, observedIo, deps));
     } catch (error) {
       if (
         !sessionFailure(error) ||
@@ -157,7 +180,9 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         signingIn = true;
         await loginCommand(auth);
         signingIn = false;
-        return finish(await dispatch(argv, io, { ...deps, auth }));
+        wroteOut = false;
+        wroteErr = false;
+        return finish(await dispatch(argv, observedIo, { ...deps, auth }));
       }
       if (argv.length === 0 && !machineOutput) {
         io.err("You are not signed in. Run armada login.\n");
@@ -168,7 +193,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
   } catch (caught) {
     const error =
-      sessionFailure(caught) && argv[0] !== "login" && !signingIn && !auth?.env.ARMADA_TOKEN
+      sessionFailure(caught) &&
+      argv[0] !== "login" &&
+      !(caught instanceof ArmadaApiError && argv[0] === "api") &&
+      !signingIn &&
+      !auth?.env.ARMADA_TOKEN
         ? new AuthError("You are not signed in. Run armada login.", "unauthorized")
         : caught;
     const renderMessage =

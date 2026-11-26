@@ -86,8 +86,27 @@ async function createRawApiClient(io: ArmadaApiIo) {
           "unavailable",
         );
       const { response, payload, bodyReadFailed } = result;
-      if (!response.ok)
-        throw new ArmadaApiError("api_error", response.status, `Armada API request failed (HTTP ${response.status}).`);
+      if (!response.ok) {
+        const error =
+          payload && typeof payload === "object" && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>).error
+            : undefined;
+        const rawMessage =
+          error && typeof error === "object" && typeof (error as Record<string, unknown>).message === "string"
+            ? ((error as Record<string, unknown>).message as string).trim()
+            : "";
+        const serverCode =
+          response.status === 401
+            ? "unauthorized"
+            : result.failure?.serverCode && result.failure.serverCode.length <= 80
+              ? result.failure.serverCode
+              : "api_error";
+        throw new ArmadaApiError(
+          serverCode,
+          response.status,
+          rawMessage || `Armada API request failed (HTTP ${response.status}).`,
+        );
+      }
       if (bodyReadFailed) throw new AuthError("Armada API response could not be read.", "unavailable");
       if (response.status === 204 || response.status === 205) return "";
       return rawJsonText(rawResponses.get(response), payload);

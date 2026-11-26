@@ -164,9 +164,9 @@ export async function launchDocker(
     });
     const result = parseLaunchAdmissionReceipt("docker", response);
     if (!result)
-      throw new GoldenError(
-        "invalid_config",
+      throw new AuthError(
         "Docker launch outcome unknown: server did not confirm the requested logical sandbox.",
+        "unavailable",
       );
     if (result.sandbox.status !== "failed" && result.sandbox.status !== "deleted")
       await rememberSandbox(result.sandbox.id, sandboxFile, io);

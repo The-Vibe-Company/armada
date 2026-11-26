@@ -157,3 +157,19 @@ test("a refused code can be retried with a fresh CLI sign-in immediately", async
   expect(server.submitted).toEqual([]);
   expect((await signIn(server, code)).exit).toBe(0);
 });
+
+test("antigravity login wraps malformed start and complete responses into typed exit-1 errors", async () => {
+  for (const stage of ["start", "complete"] as const) {
+    const { exit, output } = await signIn(
+      {
+        fetch: async (input) =>
+          String(input).endsWith(loginPath)
+            ? Response.json(stage === "start" ? { bad: true } : { loginId: account, authorizationUrl: link })
+            : Response.json({ bad: true }),
+      } as ReturnType<typeof fixture>,
+      code,
+    );
+    expect(exit).toBe(1);
+    expect(output.join("")).toContain("invalid Antigravity");
+  }
+});
