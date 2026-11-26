@@ -15,6 +15,7 @@ import {
 import { z } from "zod";
 import type { Job, JobKind, JobResult } from "./jobs/runner.ts";
 import { type createJobsStore, rescheduleRecurringJob, withJobLease } from "./jobs/store.ts";
+import { prScanExpediteEpoch, upsertLangfusePrLinkedScores } from "./langfuse.ts";
 import {
   clearPullRequestMergeProof,
   commitPullRequestScan,
@@ -156,11 +157,19 @@ export function createPullRequestScanJob(
   github: GitHubResolveDeps,
   exec: (target: PullRequestScanTarget, request: ExecRequest) => Promise<ExecResult>,
   now = Date.now,
+  options: { langfuseFetch?: typeof fetch; logError?: (line: string) => void } = {},
 ) {
   const retryAfter = (minutes: number) => new Date(now() + minutes * 60_000);
   let nextSeed = 0;
   let nextScan = 0;
+  let seenExpediteEpoch = prScanExpediteEpoch();
   async function prepare() {
+    const currentExpediteEpoch = prScanExpediteEpoch();
+    if (currentExpediteEpoch !== seenExpediteEpoch) {
+      seenExpediteEpoch = currentExpediteEpoch;
+      nextSeed = Math.min(nextSeed, now());
+      nextScan = Math.min(nextScan, now());
+    }
     if (now() >= nextSeed) {
       const { rows } = await sql.query<{ id: string; org_id: string; generation: string }>(
         `select s.id,s.org_id,s.lifecycle_generation::text as generation ${PULL_REQUEST_SCAN_ELIGIBLE}
@@ -527,6 +536,30 @@ export function createPullRequestScanJob(
       }
       signal.throwIfAborted();
       const list = [...found.values()];
+      if (github.encryptionKey && list.length > 0 && (await canDispatch())) {
+        const priorUrls = new Set(
+          (
+            (
+              await sql.query<{ pull_requests: SandboxPullRequest[] | null }>(
+                "select pull_requests from public.sandboxes where id=$1",
+                [row.id],
+              )
+            ).rows[0]?.pull_requests ?? []
+          ).map((pr) => pr.url.toLowerCase()),
+        );
+        if (list.some((pr) => !priorUrls.has(pr.url.toLowerCase()))) {
+          try {
+            await upsertLangfusePrLinkedScores(sql, github.encryptionKey, row.id, {
+              send: options.langfuseFetch,
+              signal,
+              logError: options.logError,
+            });
+          } catch (error) {
+            if (signal.aborted) throw error;
+          }
+          signal.throwIfAborted();
+        }
+      }
       const proof =
         row.active &&
         // A read taken during a turn can precede that turn's last push. The

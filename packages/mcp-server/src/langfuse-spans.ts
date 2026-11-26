@@ -325,7 +325,7 @@ function collectTurn(
     timingComplete,
     durationMs: start?.at && end.at >= startAt ? end.at - startAt : undefined,
     turnKey,
-    traceId: hash(turnKey, 32),
+    traceId: langfuseTurnTraceId(sandboxId, promptId),
     rootSpanId: hash(turnKey, 16),
     messages,
     msgModel,
@@ -537,6 +537,21 @@ export function langfuseSpans(
   return spans;
 }
 
+export function langfuseTurnTraceId(sandboxId: string, promptId: string) {
+  return hash(`${sandboxId}/${promptId}`, 32);
+}
+
+export function langfusePrLinkedScore(sandboxId: string, promptId: string, linked: boolean) {
+  const traceId = langfuseTurnTraceId(sandboxId, promptId);
+  return {
+    id: hash(`${traceId}:pr_linked`, 32),
+    traceId,
+    name: "pr_linked" as const,
+    value: linked ? 1 : 0,
+    dataType: "BOOLEAN" as const,
+  } satisfies LangfuseScorePayload;
+}
+
 export function langfuseTurnScores(
   sandboxId: string,
   events: readonly AgentEvent[],
@@ -552,7 +567,7 @@ export function langfuseTurnScores(
     add("turn_success", end.status === "finished" ? 1 : 0, "BOOLEAN");
     if (f.toolCount > 0) add("tool_error_rate", Number((f.toolErrorCount / f.toolCount).toFixed(4)), "NUMERIC");
     if (f.ttftMs !== undefined) add("ttft_ms", f.ttftMs, "NUMERIC");
-    add("pr_linked", f.resolved.prUrl || f.resolved.prNumber ? 1 : 0, "BOOLEAN");
+    scores.push(langfusePrLinkedScore(sandboxId, f.promptId, Boolean(f.resolved.prUrl || f.resolved.prNumber)));
   }
   return scores;
 }
