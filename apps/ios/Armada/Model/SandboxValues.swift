@@ -30,6 +30,20 @@ struct SandboxSummary: Identifiable, Hashable, Sendable {
     let canManage: Bool
 
     var agentLabel: String { harness?.label ?? harnessRaw }
+
+    /// Matches a search query against the allowlisted row metadata: display label, logical or
+    /// provider ID (including short prefixes), harness/agent name, model, and provider.
+    /// Whitespace-separated terms must each match at least one field, case-insensitively.
+    func matchesSearch(_ query: String) -> Bool {
+        let tokens = query.split(whereSeparator: \.isWhitespace)
+        guard !tokens.isEmpty else { return true }
+        var fields = [displayLabel, id, harnessRaw, agentLabel, provider.label, provider.rawValue]
+        if let providerSandboxID { fields.append(providerSandboxID) }
+        if let model { fields.append(model) }
+        return tokens.allSatisfy { token in
+            fields.contains { $0.localizedCaseInsensitiveContains(token) }
+        }
+    }
 }
 
 struct SandboxPage: Sendable {

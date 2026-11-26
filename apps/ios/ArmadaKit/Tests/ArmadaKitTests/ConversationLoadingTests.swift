@@ -376,3 +376,17 @@ private final class ManualClock: Clock, @unchecked Sendable {
     await wakeClock.waitForSleep(); wakeLoader.wake(); await wakeTask.value
     #expect(wakeLog.all == ["read latest", "show e1", "read newer c1", "show e1,e2", "read newer c2"])
 }
+
+@MainActor
+@Test func restartAfterCancelResetsStaleWakeAndBackoff() async {
+    let clock1 = ManualClock(), log = Log(), loader = ConversationLoader<Entry>(key: "bg-resume", cache: nil)
+    let script1 = Script([page(["e1"], cursor: "c1", hasMore: false)], log: log)
+    let task1 = Task { await loader.run(clock: clock1, fetch: { (r) throws(Stop) in try script1.fetch(r) }, show: { _ in }, pollDelay: { .seconds(60) }, onFailure: { _, _ in nil }) }
+    await clock1.waitForSleep(); loader.setLiveConnected(true); task1.cancel(); await task1.value
+    // Mirrors ConversationFeed.follow() defer: disconnecting SSE after cancel must not leave a stale wakePending.
+    loader.setLiveConnected(false)
+    let clock2 = ManualClock(), script2 = Script([page(["e2"], cursor: "c2", hasMore: false), page(["e3"], cursor: "c3", hasMore: false)], log: log)
+    let task2 = Task { await loader.run(clock: clock2, fetch: { (r) throws(Stop) in try script2.fetch(r) }, show: { _ in }, pollDelay: { .seconds(60) }, onFailure: { _, _ in nil }) }
+    await clock2.waitForSleep(); task2.cancel(); await task2.value
+    #expect(log.all == ["read latest", "read newer c1"])
+}

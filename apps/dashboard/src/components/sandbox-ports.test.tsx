@@ -1,7 +1,6 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { useContext } from "react";
+import { type ComponentType, lazy, Suspense, useContext } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { SandboxDetailsPanel } from "./sandbox-details-panel";
 import { SandboxPorts } from "./sandbox-ports";
 import { SandboxThreadStateProvider, ThreadStateContext } from "./sandbox-thread-state";
 
@@ -12,15 +11,74 @@ type MintResult =
   | { ok: false; error: string };
 let mintImpl: (sandboxId: string, input: unknown) => Promise<MintResult> = async () => ({ ok: false, error: "unset" });
 
+const xtermLog = { constructed: 0, fitCalls: 0, focusCalls: 0, disposeCalls: 0 };
+const noopDispose = () => ({ dispose() {} });
+
+/* oxlint-disable landmines-testing/no-test-doubles -- Stub next/dynamic client lazy loader and xterm browser addons in DOM-free renderer tests. */
+mock.module("next/dynamic", () => ({
+  default: <P extends Record<string, unknown>>(
+    loader: () => Promise<ComponentType<P> | { default: ComponentType<P> }>,
+    opts?: { loading?: () => unknown },
+  ) => {
+    const Lazy = lazy(() =>
+      loader().then((mod) => ({ default: ("default" in mod ? mod.default : mod) as ComponentType<P> })),
+    );
+    return (props: P) => (
+      <Suspense fallback={opts?.loading ? (opts.loading() as never) : null}>
+        <Lazy {...props} />
+      </Suspense>
+    );
+  },
+}));
+mock.module("@xterm/xterm/css/xterm.css", () => ({}));
+mock.module("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
+mock.module("@xterm/addon-fit", () => ({
+  FitAddon: class {
+    fit = () => {
+      xtermLog.fitCalls += 1;
+    };
+  },
+}));
+mock.module("@xterm/xterm", () => ({
+  Terminal: class {
+    cols = 80;
+    rows = 24;
+    options: Record<string, unknown> = {};
+    buffer = { active: { length: 0, getLine: () => undefined } };
+    constructor() {
+      xtermLog.constructed += 1;
+    }
+    loadAddon() {}
+    open() {}
+    focus = () => {
+      xtermLog.focusCalls += 1;
+    };
+    attachCustomKeyEventHandler() {}
+    onData = noopDispose;
+    onBinary = noopDispose;
+    onResize = noopDispose;
+    write = (_d: unknown, ack?: () => void) => ack?.();
+    clear() {}
+    getSelection = () => "";
+    dispose = () => {
+      xtermLog.disposeCalls += 1;
+    };
+  },
+}));
 mock.module("@/app/actions/sandboxes", () => ({
   mintRelayTicket: (sandboxId: string, input: unknown) => mintImpl(sandboxId, input),
 }));
+/* oxlint-enable landmines-testing/no-test-doubles */
+
+const { SandboxDetailsPanel } = await import("./sandbox-details-panel");
 
 const orig = {
   window: globalThis.window,
   document: globalThis.document,
   requestAnimationFrame: globalThis.requestAnimationFrame,
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  getComputedStyle: globalThis.getComputedStyle,
+  ResizeObserver: globalThis.ResizeObserver,
 };
 
 afterEach(() => {
@@ -31,16 +89,41 @@ afterEach(() => {
 
 function installPreviewDom(openImpl: (url?: string, target?: string) => Window | null) {
   const submitted: { action: string; target: string; rel: string | undefined; ticket: string | undefined }[] = [];
-  /* oxlint-disable landmines-testing/no-test-doubles -- Stub window.open and hidden form submission in DOM-free tests. */
-  globalThis.requestAnimationFrame = () => 1;
+  const windowEvents = new EventTarget();
+  const storage = new Map<string, string>();
+  const composerFocusCalls: unknown[] = [];
+  /* oxlint-disable landmines-testing/no-test-doubles -- Stub browser globals in DOM-free tests. */
+  globalThis.requestAnimationFrame = (cb) => {
+    cb(0);
+    return 1;
+  };
   globalThis.cancelAnimationFrame = () => {};
+  globalThis.getComputedStyle = (() => ({ getPropertyValue: () => "" })) as unknown as typeof getComputedStyle;
+  globalThis.ResizeObserver = class {
+    observe() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
   globalThis.window = {
+    innerHeight: 900,
     open: openImpl,
     matchMedia: () => ({ matches: true, addEventListener: () => {}, removeEventListener: () => {} }),
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: windowEvents.addEventListener.bind(windowEvents),
+    removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
+    dispatchEvent: windowEvents.dispatchEvent.bind(windowEvents),
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+      removeItem: (key: string) => {
+        storage.delete(key);
+      },
+    },
   } as unknown as Window & typeof globalThis;
   globalThis.document = {
+    documentElement: { classList: { contains: () => false } },
+    querySelector: (selector: string) =>
+      selector === "[data-chat-composer]" ? { focus: (opts?: unknown) => composerFocusCalls.push(opts) } : null,
     createElement: (tag: string) =>
       tag === "form"
         ? {
@@ -59,7 +142,7 @@ function installPreviewDom(openImpl: (url?: string, target?: string) => Window |
     body: { appendChild() {} },
   } as unknown as Document;
   /* oxlint-enable landmines-testing/no-test-doubles */
-  return { submitted };
+  return { submitted, windowEvents, storage, composerFocusCalls };
 }
 
 const okTicket = (ticket: string) =>
@@ -183,4 +266,114 @@ test("Terminal button and Ports panel appear reactively only after live status c
   expect([terminalButtons().length, portsSections().length]).toEqual([1, 1]);
   await act(async () => pushStatus("stopped", true));
   expect([terminalButtons().length, portsSections().length]).toEqual([0, 0]);
+});
+
+test("SandboxPorts explains path-prefixed previews and updates localhost port hint", async () => {
+  installPreviewDom(() => null);
+  let tree!: ReactTestRenderer;
+  await act(async () => {
+    tree = create(<SandboxPorts sandboxId="sb-note" />);
+  });
+  expect(JSON.stringify(tree.toJSON())).toMatch(/path-prefixed.*localhost.*3000/);
+  const port5173 = tree.root.findAllByType("button").find((btn) => btn.children.join("") === ":5173");
+  await act(async () => port5173!.props.onClick());
+  expect(JSON.stringify(tree.toJSON())).toContain("5173");
+});
+
+test("SandboxDetailsPanel keeps terminal PTY alive on Ctrl+` hide, restores fit/focus and height, and disconnects only on Close or stop", async () => {
+  Object.assign(xtermLog, { constructed: 0, fitCalls: 0, focusCalls: 0, disposeCalls: 0 });
+  const { windowEvents, storage, composerFocusCalls } = installPreviewDom(() => null);
+  let mintCalls = 0;
+  mintImpl = async () => ({ ok: false, error: `stub-${++mintCalls}` });
+  let pushStatus!: (status: "ready" | "stopped") => void;
+  function StatusDriver() {
+    const ctx = useContext(ThreadStateContext);
+    pushStatus = (status) =>
+      ctx?.setLive({ status, idlePaused: false, statusMessage: null, hasLiveStatus: true, turnRunning: false });
+    return null;
+  }
+
+  let tree!: ReactTestRenderer;
+  const nodeMock = (el: { type: unknown; props?: unknown }) =>
+    el.type === "div" && String((el.props as Record<string, unknown> | undefined)?.className ?? "").includes("xterm")
+      ? { clientWidth: 640, clientHeight: 272 }
+      : null;
+  await act(async () => {
+    tree = create(
+      <SandboxThreadStateProvider>
+        <SandboxDetailsPanel
+          bar={<span />}
+          overview={<span />}
+          usage={<span />}
+          terminalSandboxId="sb-pty"
+          initialStatus="ready"
+        >
+          <StatusDriver />
+        </SandboxDetailsPanel>
+      </SandboxThreadStateProvider>,
+      { createNodeMock: nodeMock },
+    );
+  });
+
+  const btn = (label: string) => tree.root.find((n) => n.type === "button" && n.props["aria-label"] === label);
+  const terminals = () => tree.root.findAll((n) => n.type === "section" && n.props["data-slot"] === "sandbox-terminal");
+  const isHidden = () => String(terminals()[0]!.props.className).split(/\s+/).includes("hidden");
+  const ctrlBackquote = () =>
+    act(async () => {
+      windowEvents.dispatchEvent(
+        Object.assign(new Event("keydown", { cancelable: true }), {
+          ctrlKey: true,
+          metaKey: false,
+          altKey: false,
+          shiftKey: false,
+          code: "Backquote",
+        }),
+      );
+      await Promise.resolve();
+    });
+
+  await import("@/components/sandbox-terminal");
+  await act(async () => btn("Toggle terminal").props.onClick());
+  for (let i = 0; i < 5 && terminals().length === 0; i += 1) await act(async () => void (await Promise.resolve()));
+  expect([
+    terminals().length,
+    isHidden(),
+    xtermLog.constructed,
+    xtermLog.fitCalls,
+    xtermLog.focusCalls,
+    mintCalls,
+  ]).toEqual([1, false, 1, 1, 1, 1]);
+
+  await act(async () => btn("Resize terminal").props.onKeyDown({ key: "ArrowUp", preventDefault() {} }));
+  expect(storage.get("armada:terminal-height")).toBe("296");
+
+  await ctrlBackquote();
+  expect([terminals().length, isHidden(), xtermLog.disposeCalls, composerFocusCalls]).toEqual([
+    1,
+    true,
+    0,
+    [{ preventScroll: true }],
+  ]);
+
+  await ctrlBackquote();
+  expect([
+    terminals().length,
+    isHidden(),
+    xtermLog.constructed,
+    xtermLog.fitCalls,
+    xtermLog.focusCalls,
+    mintCalls,
+  ]).toEqual([1, false, 1, 2, 2, 1]);
+
+  await act(async () => btn("Close terminal").props.onClick());
+  expect([terminals().length, xtermLog.disposeCalls]).toEqual([0, 1]);
+
+  await ctrlBackquote();
+  const hostWrapper = terminals()[0]!
+    .findAllByType("div")
+    .find((d) => d.props.style?.height !== undefined);
+  expect([terminals().length, xtermLog.constructed, hostWrapper?.props.style?.height]).toEqual([1, 2, 296]);
+
+  await act(async () => pushStatus("stopped"));
+  expect([terminals().length, xtermLog.disposeCalls]).toEqual([0, 2]);
 });

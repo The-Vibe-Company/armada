@@ -151,11 +151,20 @@ final class SandboxConversationModel {
             try await feed.refresh(fetch)
             readIssue = nil
             reconcilePending()
-            // A follow that the server stopped resumes once a read succeeds again.
+            // A follow that stopped or backed off resumes immediately once a read succeeds again.
             if case .stopped = feed.connection { followGeneration += 1 }
+            else if case .reconnecting = feed.connection { followGeneration += 1 }
         } catch {
             handleReadFailure(error)
         }
+    }
+
+    /// Called when the app returns to `.active` while this conversation is shown: clears stale
+    /// reconnect state and refreshes both turn state and transcript without waiting for poll timers.
+    func resumeFromBackground() async {
+        guard phase == .loaded || phase == .loading else { return }
+        feed.resetForForeground()
+        await refresh()
     }
 
     /// Shows what is known of the conversation, catches up, then follows it until the screen
