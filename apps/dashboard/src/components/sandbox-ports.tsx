@@ -179,6 +179,11 @@ export function SandboxPorts({ sandboxId, initialStatus }: { sandboxId: string; 
           <span>Open port {pendingPreview.port} preview</span>
         </Button>
       )}
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        Browser preview is path-prefixed; for root-relative apps (Vite, Next.js) on{" "}
+        <code className="font-mono">localhost:{parsed.ok ? parsed.port : 3000}</code>, use{" "}
+        <code className="font-mono">armada port-forward</code> below.
+      </p>
       <div className="flex items-center gap-1.5 rounded-md border bg-[var(--sunken)] px-2 py-1">
         <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={command}>
           {command}

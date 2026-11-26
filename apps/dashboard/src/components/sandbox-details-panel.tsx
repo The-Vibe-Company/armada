@@ -87,6 +87,7 @@ export function SandboxDetailsPanel({
   );
   const [phoneTarget, setPhoneTarget] = useState<HTMLDivElement | null>(null);
   const [open, setOpen] = useState<boolean>();
+  const [terminalMountedFor, setTerminalMountedFor] = useState<string | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [events, setEvents] = useState<HTMLDivElement | null>(null);
   const panel = useRef<HTMLElement>(null);
@@ -94,21 +95,50 @@ export function SandboxDetailsPanel({
   const liveStatus = useThreadSandboxStatus(initialStatus ?? "ready");
   const activeTerminalId =
     terminalSandboxId && (!initialStatus || isRelayActiveStatus(liveStatus)) ? terminalSandboxId : undefined;
+  const terminalMounted = Boolean(activeTerminalId && terminalMountedFor === activeTerminalId);
+  const terminalVisible = terminalMounted && terminalOpen;
 
-  useEffect(() => {
-    if (!activeTerminalId) {
+  const toggleTerminal = () => {
+    if (!activeTerminalId) return;
+    if (terminalVisible) {
       setTerminalOpen(false);
       return;
     }
+    setTerminalMountedFor(activeTerminalId);
+    setTerminalOpen(true);
+  };
+
+  const closeTerminal = () => {
+    setTerminalMountedFor(null);
+    setTerminalOpen(false);
+  };
+
+  useEffect(() => {
+    setTerminalMountedFor(null);
+    setTerminalOpen(false);
+    if (!activeTerminalId) return;
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey && ev.code === "Backquote") {
         ev.preventDefault();
+        setTerminalMountedFor(activeTerminalId);
         setTerminalOpen((prev) => !prev);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeTerminalId]);
+
+  const wasTerminalVisible = useRef(false);
+  useEffect(() => {
+    if (wasTerminalVisible.current && !terminalVisible && activeTerminalId) {
+      const composer =
+        typeof document !== "undefined" && typeof document.querySelector === "function"
+          ? document.querySelector<HTMLElement>("[data-chat-composer]")
+          : null;
+      composer?.focus({ preventScroll: true });
+    }
+    wasTerminalVisible.current = terminalVisible;
+  }, [activeTerminalId, terminalVisible]);
 
   function toggle() {
     const next = !(open ?? desktop);
@@ -176,11 +206,11 @@ export function SandboxDetailsPanel({
             type="button"
             variant="ghost"
             size="sm"
-            aria-expanded={terminalOpen}
+            aria-expanded={terminalVisible}
             aria-label="Toggle terminal"
-            title="Toggle terminal (Ctrl+`)"
-            onClick={() => setTerminalOpen((prev) => !prev)}
-            className={cn("max-sm:px-2", terminalOpen && "bg-accent text-accent-foreground")}
+            title={terminalMounted && !terminalVisible ? "Show terminal (Ctrl+`)" : "Toggle terminal (Ctrl+`)"}
+            onClick={toggleTerminal}
+            className={cn("max-sm:px-2", terminalVisible && "bg-accent text-accent-foreground")}
           >
             <TerminalIcon className="size-4" aria-hidden />
             <span className="hidden sm:inline">Terminal</span>
@@ -210,8 +240,13 @@ export function SandboxDetailsPanel({
           <PhoneTarget.Provider value={setPhoneTarget}>
             <EventsTarget.Provider value={events}>{children}</EventsTarget.Provider>
           </PhoneTarget.Provider>
-          {activeTerminalId && terminalOpen && (
-            <SandboxTerminal sandboxId={activeTerminalId} onClose={() => setTerminalOpen(false)} />
+          {terminalMounted && activeTerminalId && (
+            <SandboxTerminal
+              key={activeTerminalId}
+              sandboxId={activeTerminalId}
+              visible={terminalVisible}
+              onClose={closeTerminal}
+            />
           )}
         </div>
         {phone && phoneTarget && open ? createPortal(inspector, phoneTarget) : inspector}

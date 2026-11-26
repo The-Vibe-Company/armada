@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { COMMANDS, commandsForOrganization, matchCommands, modifierKey } from "./command-menu.ts";
+import { COMMANDS, commandsForOrganization, liveSandboxCommands, matchCommands, modifierKey } from "./command-menu.ts";
 import { NAV_GROUPS } from "./navigation";
 
 const labels = (query: string) => matchCommands(query).map((command) => command.label);
@@ -58,4 +58,24 @@ test("every visible destination is searchable by its navigation label, with hist
 test("webhook search offers inbound triggers only to organization admins", () => {
   expect(matchCommands("webhook", commandsForOrganization(true)).map((command) => command.href)).toEqual(["/triggers"]);
   expect(matchCommands("webhook", commandsForOrganization(false))).toEqual([]);
+});
+
+test("live sandboxes appear in the Live sandboxes group and match by label, id prefix, and status", () => {
+  const live = [
+    { id: "11111111-1111-4111-8111-111111111111", label: "fix-auth-flow", status: "running" as const, working: true },
+    { id: "22222222-2222-4222-8222-222222222222", label: "claude-billing", status: "ready" as const, working: false },
+  ];
+  expect(liveSandboxCommands([])).toEqual([]);
+  const all = commandsForOrganization(false, live);
+  expect(
+    all.filter((command) => command.group === "Live sandboxes").map((command) => [command.label, command.href]),
+  ).toEqual([
+    ["fix-auth-flow", "/sandboxes/11111111-1111-4111-8111-111111111111"],
+    ["claude-billing", "/sandboxes/22222222-2222-4222-8222-222222222222"],
+  ]);
+  expect(matchCommands("fix-auth", all)[0]?.href).toBe("/sandboxes/11111111-1111-4111-8111-111111111111");
+  expect(matchCommands("22222222", all)[0]?.href).toBe("/sandboxes/22222222-2222-4222-8222-222222222222");
+  expect(matchCommands("working", all).map((command) => command.id)).toEqual([
+    "sandbox:11111111-1111-4111-8111-111111111111",
+  ]);
 });

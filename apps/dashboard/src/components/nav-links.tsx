@@ -95,7 +95,9 @@ function useLiveSandboxes(
           const nextFingerprint = liveSandboxesFingerprint(next);
           if (nextFingerprint !== lastFingerprint) {
             lastFingerprint = nextFingerprint;
-            window.dispatchEvent(new CustomEvent(LIVE_FLEET_CHANGE_EVENT, { detail: { organizationId: scope } }));
+            window.dispatchEvent(
+              new CustomEvent(LIVE_FLEET_CHANGE_EVENT, { detail: { organizationId: scope, live: next } }),
+            );
           }
         }
       } catch {

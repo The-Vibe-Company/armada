@@ -1,22 +1,49 @@
 "use client";
 
-import { ArrowRightIcon, CornerDownLeftIcon, ZapIcon } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { Dialog as DialogPrimitive } from "radix-ui";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import dynamic from "next/dynamic";
+import { useEffect, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Kbd } from "@/components/ui/kbd";
-import { commandsForOrganization, type Command as MenuCommand, matchCommands } from "@/lib/command-menu";
+import { LIVE_FLEET_CHANGE_EVENT, type LiveSandboxes } from "@/lib/live-sandbox-view";
+
+const CommandMenuPalette = dynamic(
+  () => import("@/components/command-menu-palette").then((m) => m.CommandMenuPalette),
+  {
+    ssr: false,
+    loading: () => <div className="flex h-12 items-center px-4 text-sm text-muted-foreground">Loading…</div>,
+  },
+);
 
 /**
- * ⌘K (Ctrl+K elsewhere) from anywhere in the signed-in app: type a few letters of a page or an action, arrows to
- * choose, Enter to go. Mounted once per page; the sidebar has no search box (#1474), the shortcut opens it.
+ * ⌘K (Ctrl+K elsewhere) from anywhere in the signed-in app: type a few letters of a page, live sandbox, or action,
+ * arrows to choose, Enter to go. Mounted once per page; the palette body (and cmdk) loads only when opened.
  */
-export function CommandMenu({ organizationAdmin }: { organizationAdmin: boolean }) {
+export function CommandMenu({
+  organizationAdmin,
+  organizationId = null,
+  initialLive = null,
+}: {
+  organizationAdmin: boolean;
+  organizationId?: string | null;
+  initialLive?: LiveSandboxes | null;
+}) {
   const [open, setOpen] = useState(false);
   const openingFocus = useRef<HTMLElement | null>(null);
+  const [fleetUpdate, setFleetUpdate] = useState<{
+    initial: LiveSandboxes | null;
+    organizationId: string;
+    live: LiveSandboxes;
+  }>();
+
+  useEffect(() => {
+    if (!organizationId) return;
+    function onFleetChange(event: Event) {
+      const detail = (event as CustomEvent<{ organizationId?: string; live?: LiveSandboxes }>).detail;
+      if (detail?.organizationId !== organizationId || !detail.live) return;
+      setFleetUpdate({ initial: initialLive, organizationId, live: detail.live });
+    }
+    window.addEventListener(LIVE_FLEET_CHANGE_EVENT, onFleetChange);
+    return () => window.removeEventListener(LIVE_FLEET_CHANGE_EVENT, onFleetChange);
+  }, [initialLive, organizationId]);
 
   useEffect(() => {
     function onKey(event: globalThis.KeyboardEvent) {
@@ -38,6 +65,11 @@ export function CommandMenu({ organizationAdmin }: { organizationAdmin: boolean 
     };
   }, [open]);
 
+  const live =
+    fleetUpdate && fleetUpdate.initial === initialLive && fleetUpdate.organizationId === organizationId
+      ? fleetUpdate.live
+      : initialLive;
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent
@@ -50,80 +82,15 @@ export function CommandMenu({ organizationAdmin }: { organizationAdmin: boolean 
           openingFocus.current?.focus();
         }}
       >
-        {open && <Palette organizationAdmin={organizationAdmin} onDone={() => setOpen(false)} />}
+        <DialogTitle className="sr-only">Search pages, sandboxes, and actions</DialogTitle>
+        {open && (
+          <CommandMenuPalette
+            organizationAdmin={organizationAdmin}
+            liveSandboxes={live?.rows ?? []}
+            onDone={() => setOpen(false)}
+          />
+        )}
       </DialogContent>
     </Dialog>
-  );
-}
-
-function Palette({ onDone, organizationAdmin }: { onDone: () => void; organizationAdmin: boolean }) {
-  const router = useRouter();
-  const [query, setQuery] = useState("");
-  const results = useMemo(
-    () => matchCommands(query, commandsForOrganization(organizationAdmin)),
-    [query, organizationAdmin],
-  );
-
-  function go(command: MenuCommand) {
-    onDone();
-    router.push(command.href);
-  }
-
-  function item(command: MenuCommand) {
-    const Icon = command.group === "Actions" ? ZapIcon : ArrowRightIcon;
-    return (
-      <CommandItem
-        key={command.id}
-        value={command.id}
-        onSelect={() => go(command)}
-        className="group cursor-pointer gap-2.5 rounded-md px-2.5 py-2"
-      >
-        <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="flex-1 truncate">{command.label}</span>
-        <CornerDownLeftIcon
-          className="hidden size-3.5! shrink-0 text-muted-foreground group-data-[selected=true]:block"
-          aria-hidden="true"
-        />
-      </CommandItem>
-    );
-  }
-
-  return (
-    <>
-      <DialogTitle className="sr-only">Search pages and actions</DialogTitle>
-      <div className="relative">
-        <Command shouldFilter={false} loop label="Search pages and actions">
-          <CommandInput
-            autoFocus
-            aria-label="Search pages and actions"
-            placeholder="Go to a page or run an action…"
-            value={query}
-            onValueChange={setQuery}
-            className="h-12 pr-14"
-          />
-          <CommandList label="Results" className="max-h-80 p-1.5">
-            <CommandEmpty className="px-3 py-6 text-center text-sm text-muted-foreground">
-              Nothing matches “{query.trim()}”.
-            </CommandEmpty>
-            {query.trim()
-              ? results.map(item)
-              : (["Actions", "Go to"] as const).map((group) => (
-                  <CommandGroup
-                    key={group}
-                    heading={group}
-                    className="p-0 [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-2 [&_[cmdk-group-heading]]:pb-1"
-                  >
-                    {results.filter((command) => command.group === group).map(item)}
-                  </CommandGroup>
-                ))}
-          </CommandList>
-        </Command>
-        <DialogPrimitive.Close asChild>
-          <Button variant="ghost" size="sm" className="absolute top-2 right-2" aria-label="Close">
-            <Kbd aria-hidden="true">Esc</Kbd>
-          </Button>
-        </DialogPrimitive.Close>
-      </div>
-    </>
   );
 }
