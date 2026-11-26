@@ -1,5 +1,25 @@
 # Changelog
 
+## [14.8.0](https://github.com/The-Vibe-Company/armada/compare/v14.7.0...v14.8.0) (2026-11-26)
+
+
+### Features
+
+* **cli:** add parent .armada/sandbox lookup, armada org use, compact ls, smart prompt, SSE events -f, and scoped completions ([#4410](https://github.com/The-Vibe-Company/armada/issues/4410)) ([7af2744](https://github.com/The-Vibe-Company/armada/commit/7af27446fdebbefe2b67371ba1f05010b849b784))
+
+
+### Bug Fixes
+
+* **dashboard:** keep terminal PTY alive on hide, persist chat drafts, add live sandboxes to Cmd+K, and optimize bundle ([#4411](https://github.com/The-Vibe-Company/armada/issues/4411)) ([74ef850](https://github.com/The-Vibe-Company/armada/commit/74ef8503a7046bf5a5434da3808e98f50136808f))
+* **dashboard:** update landing/login quickstart to current providers and remove blocking SSR waterfalls ([#4408](https://github.com/The-Vibe-Company/armada/issues/4408)) ([e2117e8](https://github.com/The-Vibe-Company/armada/commit/e2117e8ac6e32115d678999917a04054f2a29401))
+* **ios:** observe scenePhase in SandboxConversationView for instant SSE reconnect and add sandbox search ([#4406](https://github.com/The-Vibe-Company/armada/issues/4406)) ([0115940](https://github.com/The-Vibe-Company/armada/commit/011594041ee2b77c2a081793f0ea56a483fac05d))
+* **mcp-server:** fix install-host.sh preflight/multi-server bugs and expedite pr_scan for Langfuse pr_linked ([#4412](https://github.com/The-Vibe-Company/armada/issues/4412)) ([9026c83](https://github.com/The-Vibe-Company/armada/commit/9026c830cfa0f1cd44bc28ec0245c4e53358bed7))
+
+
+### Performance Improvements
+
+* **mcp-server:** eliminate redundant DB round-trips in runtime-github, runtime-followup, modal-launch, and docker-launch ([#4409](https://github.com/The-Vibe-Company/armada/issues/4409)) ([5591e29](https://github.com/The-Vibe-Company/armada/commit/5591e2993eac2969f2798b216b3e8d1c8f8d7ac5))
+
 ## [14.7.0](https://github.com/The-Vibe-Company/armada/compare/v14.6.0...v14.7.0) (2026-11-26)
 
 
