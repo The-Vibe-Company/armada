@@ -5,6 +5,8 @@ import { SKILL_PACKAGE } from "./skill-package.ts";
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 
+const SUPPRESSED_COMMANDS = new Set(["skill", "--version", "-v", "completion", "shell"]);
+
 export function printSkillHint(
   argv: readonly string[],
   exitCode: number,
@@ -13,13 +15,20 @@ export function printSkillHint(
   cwd?: string,
   home?: string,
 ): void {
+  let commandIndex = 0;
+  while (commandIndex < argv.length) {
+    const arg = argv[commandIndex] ?? "";
+    if (arg === "--profile") commandIndex += 2;
+    else if (arg.startsWith("--profile=")) commandIndex += 1;
+    else break;
+  }
   if (
     exitCode !== 0 ||
     !terminal.stdout ||
     !terminal.stderr ||
     env.ARMADA_NO_SKILL_HINT === "1" ||
     argv.includes("--json") ||
-    argv[0] === "skill"
+    SUPPRESSED_COMMANDS.has(argv[commandIndex] ?? "")
   )
     return;
   try {

@@ -61,6 +61,9 @@ test("usage and authentication failures give relevant recovery", async () => {
   expect(usage.code).toBe(2);
   expect(usage.err).toContain("armada ls --help");
   expect(usage.err).not.toContain("inspect armada ls");
+  const nested = await invoke(["account", "import", "claude", "--unknown"]);
+  expect(nested.code).toBe(2);
+  expect(nested.err).toContain("armada account import claude --help");
   for (const args of [
     ["account", "add", "bogus"],
     ["new", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],

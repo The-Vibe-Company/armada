@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sharedArtifactDirectory, sharedArtifactWarmer } from "../src/artifact-cache.ts";
+import { sharedArtifactDirectory, sharedArtifactWarmer, warmCachedRuntimeArtifacts } from "../src/artifact-cache.ts";
 
 const sha = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
 const codex = new TextEncoder().encode("codex archive fixture");
@@ -91,5 +91,31 @@ test("an old server, a foreign set or wrong bytes publish nothing and never reje
     } finally {
       await rm(f.root, { recursive: true, force: true });
     }
+  }
+});
+
+test("startup warming checks newest cached runtime first, ignores links and stops once warmed", async () => {
+  const f = await fixture({ runtime: { sha256: runtime, bytes: 1 }, artifacts: [pin(codex)] });
+  try {
+    const runtimeCacheDir = join(f.root, "runtime-cache");
+    await warmCachedRuntimeArtifacts(runtimeCacheDir, f.warm);
+    expect(f.urls).toEqual([]);
+    await mkdir(runtimeCacheDir, { mode: 0o700 });
+    const older = "c".repeat(64);
+    const linked = "d".repeat(64);
+    await writeFile(join(runtimeCacheDir, older), "old runtime");
+    await writeFile(join(runtimeCacheDir, runtime), "active runtime");
+    await writeFile(join(runtimeCacheDir, `.${runtime}.tmp`), "partial");
+    await symlink(join(runtimeCacheDir, runtime), join(runtimeCacheDir, linked));
+    await utimes(join(runtimeCacheDir, older), 1000, 1000);
+    await utimes(join(runtimeCacheDir, runtime), 2000, 2000);
+    await warmCachedRuntimeArtifacts(runtimeCacheDir, f.warm);
+    expect(f.urls).toEqual([
+      `https://armada.example/api/runtime/artifact-sets/${runtime}`,
+      `https://armada.example/api/runtime/artifacts/${sha(codex)}`,
+    ]);
+    expect(await readdir(f.sharedDir)).toEqual([sha(codex)]);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
   }
 });

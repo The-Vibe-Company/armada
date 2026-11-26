@@ -31,7 +31,7 @@ import {
 } from "./args.ts";
 import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
 import { commandWords, HELP } from "./command-catalog.ts";
-import { findCommand, focusedHelp } from "./commands/index.ts";
+import { findCommand, focusedHelp, helpForPath } from "./commands/index.ts";
 import type { CurrentSandboxFile } from "./current-sandbox.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
@@ -42,6 +42,7 @@ import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
 import { waitForSnapshot } from "./snapshot-wait.ts";
+import { formatTable } from "./table.ts";
 
 export interface Io {
   out(text: string): void;
@@ -103,6 +104,27 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
     const localArgs = selectProfile(argv, {}).args;
+    if (localArgs.length === 0) {
+      io.out(HELP);
+      return 0;
+    }
+    if (localArgs[0] === "help") {
+      if (localArgs.length === 1) {
+        io.out(HELP);
+        return 0;
+      }
+      const target = localArgs.slice(1);
+      if (target[0] === "skill" && (target.length === 1 || (target.length === 2 && target[1] === "install")))
+        return finish(await skillCommand(["--help"], observedIo));
+      if (target[0] === "host" && target[1] === "install" && target.length === 2)
+        return finish(await localHostCommand(["--help"], observedIo, deps.localHost ?? productionLocalHostIo()));
+      const resolved = helpForPath(target);
+      if (!resolved) throw new AuthError(`unknown command '${target.join(" ")}'. Run 'armada --help'.`, "usage");
+      if (findCommand(target[0] ?? "")?.validateProfileForHelp)
+        selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
+      io.out(resolved);
+      return 0;
+    }
     if (localArgs[0] === "host" && localArgs[1] === "install")
       return finish(
         await localHostCommand(
@@ -115,7 +137,13 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             }),
         ),
       );
-    if (localArgs.length === 1 && localArgs[0] === "skill") return finish(await skillCommand(["--help"], observedIo));
+    if (
+      localArgs[0] === "skill" &&
+      (localArgs.length === 1 ||
+        (localArgs.length === 2 && ["--help", "-h"].includes(localArgs[1] ?? "")) ||
+        (localArgs.length === 3 && localArgs[1] === "install" && ["--help", "-h"].includes(localArgs[2] ?? "")))
+    )
+      return finish(await skillCommand(["--help"], observedIo));
     const bareCommand = localArgs.length === 1 ? findCommand(localArgs[0] ?? "") : undefined;
     if (bareCommand?.helpWhenBare) {
       io.out(bareCommand.help);
@@ -123,7 +151,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     const help = focusedHelp(localArgs);
     if (help) {
-      const registered = localArgs.length === 2 ? findCommand(localArgs[0] ?? "") : undefined;
+      const registered = findCommand(localArgs[0] ?? "");
       if (registered?.validateProfileForHelp) selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
       io.out(help);
       return 0;
@@ -161,10 +189,6 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     auth = authOf(observedIo, deps);
     try {
-      if (argv.length === 0) {
-        const client = await createSdkCommandClient(auth);
-        await client.control("account/status", {});
-      }
       return finish(await dispatch(argv, observedIo, deps));
     } catch (error) {
       if (
@@ -183,11 +207,6 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         wroteOut = false;
         wroteErr = false;
         return finish(await dispatch(argv, observedIo, { ...deps, auth }));
-      }
-      if (argv.length === 0 && !machineOutput) {
-        io.err("You are not signed in. Run armada login.\n");
-        io.out(HELP);
-        return 3;
       }
       throw new AuthError("You are not signed in. Run armada login.", "unauthorized");
     }
@@ -607,14 +626,14 @@ async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Pro
     io.out("No snapshots.\n");
     return 0;
   }
-  io.out(`${rows.map(line).join("\n")}\n`);
+  io.out(formatTable(["NAME", "PROVIDER", "VISIBILITY", "SNAPSHOT", "REPOS"], rows.map(rowCells)));
   return 0;
 }
 
-function line(row: GoldenRecord): string {
+function rowCells(row: GoldenRecord): string[] {
   const snapshot = row.providerSnapshotId ? "snapshot" : "no snapshot";
   const repos = row.config.repos.length === 1 ? "1 repo" : `${row.config.repos.length} repos`;
-  return `${row.name}  ${row.provider}  ${row.visibility}  ${snapshot}  ${repos}`;
+  return [row.name, row.provider, row.visibility, snapshot, repos];
 }
 
 function jsonGolden(row: GoldenRecord) {

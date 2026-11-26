@@ -4,7 +4,9 @@ import type { Command } from "./command.ts";
 export default {
   name: "template",
   summary: "Inspect and launch versioned templates",
-  usage: { automation: `  armada template --help                   Inspect and launch published versions` },
+  usage: {
+    templates: "  armada template --help                   Inspect and launch published template versions",
+  },
   help: `Usage: armada template <command> [arguments]
 Inspect reusable launch definitions and launch their immutable template versions.
 
@@ -38,6 +40,7 @@ Options:
   --repo REPO                            Override the initial repository.
   --model-account UUID                   Select an unpinned model account.
   --model-account-version N              Required with --model-account; positive integer.
+  --keep-after-merge                     Disable automatic stopping after merged work.
   --org NAME|UUID                        Organization selector.
   --json                                 Accepted; launch always emits JSON on stdout.
 A template version's pinned model account cannot be overridden. No inline environment values
@@ -70,6 +73,7 @@ This reads a template; it does not publish, launch or resolve a frozen launch ma
 Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
 `,
   },
+  automaticJson: true,
   helpWhenBare: true,
   requireKnownSubcommand: true,
   async run(argv, { auth }) {

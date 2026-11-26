@@ -121,3 +121,58 @@ test("port-forward defaults local port to remote port and rejects invalid ports 
   signals.get("SIGTERM")?.();
   expect(await done).toBe(0);
 });
+
+test("port-forward supports --json, disambiguates numeric sandbox prefix, and gives actionable EADDRINUSE hint", async () => {
+  const numericId = "12345678-1111-4111-8111-111111111111";
+  const prefixAuth = makeRelayAuth(async (url) =>
+    String(url).endsWith("/sandbox/list")
+      ? Response.json({ sandboxes: [{ id: numericId }], hasMore: false, nextPage: null })
+      : Response.json(TICKET),
+  );
+  const ws = createFakeWs(),
+    signals = new Map<string, () => void>(),
+    { promise: ready, resolve: markReady } = Promise.withResolvers<void>();
+  const done = run(["port-forward", "12345", "3000", "--json"], prefixAuth.io, {
+    auth: prefixAuth.auth,
+    stdoutIsTTY: true,
+    relay: {
+      createWebSocket() {
+        queueMicrotask(() => ws.open());
+        return ws.ws;
+      },
+      createTcpServer: (onConn) => createFakeServer(onConn, markReady).server,
+      onSignal(sig, fn) {
+        signals.set(sig, fn);
+        return () => signals.delete(sig);
+      },
+    },
+  });
+  await ready;
+  expect(JSON.parse(prefixAuth.getOut())).toEqual({
+    host: "127.0.0.1",
+    localPort: 3000,
+    sandboxId: numericId,
+    remotePort: 3000,
+  });
+  signals.get("SIGINT")?.();
+  expect(await done).toBe(0);
+
+  const busyErr = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+  const busyAuth = makeRelayAuth(async () => Response.json(TICKET), { ARMADA_SANDBOX: ID });
+  const wsBusy = createFakeWs();
+  const exit = await run(["port-forward", "3000", "8080"], busyAuth.io, {
+    auth: busyAuth.auth,
+    stdoutIsTTY: true,
+    relay: {
+      createWebSocket() {
+        queueMicrotask(() => wsBusy.open());
+        return wsBusy.ws;
+      },
+      createTcpServer: (onConn) => createFakeServer(onConn, () => {}, busyErr).server,
+      onSignal: () => () => {},
+    },
+  });
+  expect(exit).toBe(1);
+  expect(busyAuth.getErr()).toContain("choose a free local port");
+  expect(busyAuth.getErr()).not.toContain("armada info --setup");
+});

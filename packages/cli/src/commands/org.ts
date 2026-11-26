@@ -5,10 +5,10 @@ export default {
   name: "org",
   summary: "List organizations and configure providers",
   usage: {
-    org: `  armada org list
+    hosts: `  armada org list                          List your organizations, roles and IDs
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
-                                           Connect an org provider using hidden input, stdin or a file`,
+                                           Connect an org provider via stdin or private file`,
   },
   help: `Usage: armada org <command> [arguments]
 List organizations and configure providers.
@@ -52,6 +52,7 @@ Use --org to override a saved organization selection.
 Example: armada org connect modal --org my-team --file /private/modal.json
 `,
   },
+  automaticJson: true,
   helpWhenBare: true,
   requireKnownSubcommand: true,
   useSelectedOrg: (argv) => ["setup", "connect"].includes(argv[0] ?? ""),

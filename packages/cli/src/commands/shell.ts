@@ -32,6 +32,7 @@ function productionTerminal() {
       on(process.stdin, "data", (c: Buffer | string) =>
         fn(typeof c === "string" ? Buffer.from(c) : new Uint8Array(c.buffer, c.byteOffset, c.byteLength)),
       ),
+    onStdinEnd: (fn) => on(process.stdin, "end", fn),
     onResize(fn) {
       let last = "";
       const emit = () => {
@@ -75,7 +76,6 @@ const shellRun: Command["run"] = async (argv, { io, deps, auth }) => {
       term.setRawMode(true);
       raw = true;
     }
-    term.resume?.();
     let settled = false;
     const size = () => clampTerminalSize(term.columns ?? 80, term.rows ?? 24);
     return await new Promise<number>((resolve) => {
@@ -102,6 +102,19 @@ const shellRun: Command["run"] = async (argv, { io, deps, auth }) => {
       cleanups.push(
         term.onStdoutDrain(() => pipe.onDrain()),
         term.onStdinData((c) => pipe.push(c)),
+        ...(term.onStdinEnd
+          ? [
+              term.onStdinEnd(() => {
+                if (settled) return;
+                if (!term.isTTY) {
+                  pipe.push(new Uint8Array([4]));
+                } else {
+                  session.send({ type: RELAY_OPCODE.CLOSE, streamId: STREAM, code: 0, reason: "eof" });
+                  done(0);
+                }
+              }),
+            ]
+          : []),
         term.onResize(
           (c, r) =>
             pipe.opened &&
@@ -111,6 +124,7 @@ const shellRun: Command["run"] = async (argv, { io, deps, auth }) => {
         onSignal("SIGTERM", onSig(143)),
         ...(term.isTTY ? [] : [onSignal("SIGINT", onSig(130))]),
       );
+      term.resume?.();
       session.start({
         onMessage(msg) {
           if (settled || !("streamId" in msg) || msg.streamId !== STREAM) return;
@@ -151,7 +165,7 @@ const usage = "armada shell [sandbox-id] [--cwd PATH] [--org UUID]";
 export default {
   name: "shell",
   summary: "Open an interactive shell in a sandbox",
-  usage: `  ${usage}\n                                           Open an interactive PTY shell`,
+  usage: { interactive: `  ${usage}\n                                           Open an interactive PTY shell` },
   help: `Usage: ${usage}\nOpen an interactive PTY shell inside a running sandbox over the Armada relay.\nOmit sandbox-id to use ARMADA_SANDBOX or .armada/sandbox.\nEnables raw TTY mode and forwards terminal resizes when attached to a terminal.\nExits with the remote shell exit code.\nExample: armada shell SANDBOX_UUID --cwd /home/user\n`,
   useSelectedOrg: true,
   validateProfileForHelp: true,

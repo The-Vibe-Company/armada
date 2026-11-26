@@ -62,6 +62,23 @@ test.each([
   expect(output.join("")).toContain("encrypted");
 });
 
+test("account import --json emits the server JSON receipt", async () => {
+  let out = "";
+  const auth = productionAuthIo(
+    { out: (t) => (out += t), err: () => {} },
+    { ARMADA_URL: "https://armada.example", ARMADA_TOKEN: "synthetic-armada-token" },
+  );
+  auth.fetch = async () => Response.json({ account: { id: "acc-1", kind: "claude-oauth", name: "Personal" } });
+  expect(
+    await accountCommand(["import", "claude", "--name", "Personal", "--json"], {
+      auth,
+      readFile: async () => "",
+      readStdin: async () => "synthetic-model-only-token",
+    }),
+  ).toBe(0);
+  expect(JSON.parse(out)).toEqual({ account: { id: "acc-1", kind: "claude-oauth", name: "Personal" } });
+});
+
 test("native import requires a version when replacing an existing account before reading its secret", async () => {
   let reads = 0;
   const auth = productionAuthIo({ out: () => {}, err: () => {} }, {});
