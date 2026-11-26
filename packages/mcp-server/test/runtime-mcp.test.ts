@@ -864,3 +864,71 @@ describe("model-only runtime completion", () => {
     }
   });
 });
+
+test("prepareMcp skips health RPC with matching observedHealth, enqueues configureMcp once, and avoids redundant SQL queries", async () => {
+  const x = await fixture("modal"),
+    { f } = x;
+  try {
+    const ops: string[] = [];
+    const statements: string[] = [];
+    const wrapSql = (sql: typeof f.sql) => {
+      const wrapped: typeof f.sql = {
+        query(statement, params) {
+          statements.push(statement);
+          return sql.query(statement, params);
+        },
+        ...(sql.transaction ? { transaction: (work) => sql.transaction!((tx) => work(wrapSql(tx))) } : {}),
+      };
+      return wrapped;
+    };
+    const tracked = createRuntimeMcp({
+      sql: wrapSql(f.sql),
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: {
+        ...f.bridge,
+        call(owner, command, options) {
+          ops.push(command.op);
+          return f.bridge.call(owner, command, options);
+        },
+        callPrepared(owner, operation, prepare, provider, sandboxId) {
+          ops.push(operation);
+          return f.bridge.callPrepared(owner, operation, prepare, provider, sandboxId);
+        },
+      },
+    });
+    const receipt = await tracked.prepare(f.caller, f.row.id, undefined, undefined, undefined, {
+      epoch: "1",
+      ready: true,
+      generation: "1",
+      mcpVersion: 1,
+      stdioMcpEnv: true,
+    });
+    expect(receipt?.revision).toBeTruthy();
+    expect(ops).toEqual(["configureMcp"]);
+    expect(statements.some((s) => s.includes("s.provider='docker' and s.owner_id"))).toBe(false);
+    expect(statements.filter((s) => s.includes("insert into public.runtime_commands"))).toHaveLength(0);
+    expect(statements.filter((s) => s.includes("select mcp_generation,expires_at from public.sandboxes"))).toHaveLength(
+      3,
+    );
+    await f.db.query("update mcp_bootstraps set configured=false where sandbox_id=$1", [f.row.id]);
+    ops.length = 0;
+    await expect(
+      tracked.prepare(f.caller, f.row.id, undefined, undefined, undefined, {
+        epoch: "1",
+        ready: true,
+        generation: "1",
+      }),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    expect(ops).toEqual([]);
+    await tracked.prepare(f.caller, f.row.id, undefined, undefined, undefined, {
+      epoch: "0",
+      ready: true,
+      generation: "0",
+      mcpVersion: 1,
+    });
+    expect(ops).toEqual(["health", "configureMcp"]);
+  } finally {
+    await f.close();
+  }
+});

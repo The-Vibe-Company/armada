@@ -14,11 +14,19 @@ import {
 } from "@armada/core/server";
 import { z } from "zod";
 import type { Caller } from "./caller.ts";
-import { createSqlData } from "./data.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
-import { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments, type RuntimeOwnerScope, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { UUID } from "./control-input.ts";
+import { runtimeBridgeTarget, usesHostLaunch } from "./provider-runtime-admission.ts";
+import type { createRuntimeCommands } from "./runtime-commands.ts";
+import { createRuntimeEnrolments, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { selfFinishToken } from "./sandbox-finish.ts";
+
+export interface ObservedRuntimeHealth {
+  epoch: string;
+  ready?: unknown;
+  generation?: unknown;
+  mcpVersion?: unknown;
+  stdioMcpEnv?: unknown;
+}
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const deny = (): never => {
@@ -167,18 +175,39 @@ export function createRuntimeMcp(options: {
     return { mcpReady: true, connections: selected, ...(input.toolInventory ? { mcpToolInventory: inventory } : {}) };
   }
   async function owner(caller: Caller, id: string) {
-    const docker = (
-      await sql.query<{ id: string; orgId: string; ownerId: string; harness: Harness }>(
-        `select s.id,s.org_id as "orgId",s.owner_id as "ownerId",s.harness from public.sandboxes s
-       join public.members m on m.org_id=s.org_id and m.user_id=$2
-       where s.id=$1 and s.provider='docker' and s.owner_id=$2 and s.org_id=any($3::uuid[])`,
+    if (!UUID.test(id)) return deny();
+    const row = (
+      await sql.query<{
+        id: string;
+        orgId: string;
+        ownerId: string;
+        provider: "boat" | "modal" | "docker";
+        harness: Harness;
+        boatRuntime: boolean;
+        modalTransport: string | null;
+      }>(
+        `select s.id,s.org_id as "orgId",s.owner_id as "ownerId",s.provider,s.harness,
+          s.boat_runtime as "boatRuntime",s.runtime_transport as "modalTransport"
+        from public.sandboxes s
+        join public.members m on m.org_id=s.org_id and m.user_id=$2
+        where s.id=$1 and s.owner_id=$2 and s.org_id=any($3::uuid[])
+          and s.deleted_at is null
+          and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
         [id, caller.userId, caller.orgs.map((org) => org.orgId)],
       )
     ).rows[0];
-    if (docker) return { ...docker, provider: "docker" as const };
-    const s = await createSqlData(sql)(caller).sandboxes.get(id);
-    if (!s || s.ownerId !== caller.userId || !runtimeBridgeTarget(s)) return deny();
-    return s;
+    if (
+      !row ||
+      (!usesHostLaunch(row.provider) &&
+        !runtimeBridgeTarget({
+          provider: row.provider,
+          harness: row.harness,
+          boatRuntime: row.boatRuntime,
+          ...(row.modalTransport ? { modalTransport: row.modalTransport } : {}),
+        }))
+    )
+      return deny();
+    return row;
   }
   async function scope(db: Sql, id: string, epoch: string) {
     const row = (
@@ -197,8 +226,9 @@ export function createRuntimeMcp(options: {
     s: Awaited<ReturnType<typeof owner>>,
     epoch: string,
     selected: string[],
+    current?: Awaited<ReturnType<typeof scope>>,
   ) {
-    const current = await scope(db, s.id, epoch);
+    const scoped = current ?? (await scope(db, s.id, epoch));
     // Read a bound definition and its effective grant generation from the same snapshot.
     const definitions = (
       await db.query<{
@@ -237,7 +267,7 @@ export function createRuntimeMcp(options: {
         s.ownerId,
         s.orgId,
         epoch,
-        current.mcp_generation,
+        scoped.mcp_generation,
         c.id,
         generation,
         c.url,
@@ -251,15 +281,15 @@ export function createRuntimeMcp(options: {
       sandboxId: s.id,
       ownerId: s.ownerId,
       epoch,
-      generation: current.mcp_generation,
+      generation: scoped.mcp_generation,
     });
     const grants = definitions.map(({ id, generation }) => [id, generation]);
     const revision = createHmac("sha256", Buffer.from(key, "base64"))
-      .update(JSON.stringify([epoch, current.mcp_generation, grants, servers]))
+      .update(JSON.stringify([epoch, scoped.mcp_generation, grants, servers]))
       .digest("hex");
     const configuration = { revision, servers };
     validateConfiguration(configuration);
-    return { configuration, gatewayLeases, expiresAt: new Date(current.expires_at) };
+    return { configuration, gatewayLeases, expiresAt: new Date(scoped.expires_at) };
   }
   const selected = async (db: Sql, id: string) =>
     (
@@ -311,12 +341,13 @@ export function createRuntimeMcp(options: {
     signal?: AbortSignal,
     assertClaim?: (tx: Sql) => Promise<void>,
     healthRequestId?: string,
+    observedHealth?: ObservedRuntimeHealth,
   ) {
     signal?.throwIfAborted();
     const s = await owner(caller, id);
     const initial = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
       await assertClaim?.(tx);
-      await scope(tx, s.id, live.epoch);
+      const currentScope = await scope(tx, s.id, live.epoch);
       const selection = await selected(tx, s.id);
       const previous = (
         await tx.query<{ physical_generation: string; revision: string; configured: boolean }>(
@@ -324,7 +355,7 @@ export function createRuntimeMcp(options: {
           [s.id],
         )
       ).rows[0];
-      const p = await plan(tx, caller, s, live.epoch, selection);
+      const p = await plan(tx, caller, s, live.epoch, selection, currentScope);
       let cached =
         previous?.configured === true &&
         previous.physical_generation === `runtime:${live.epoch}` &&
@@ -335,32 +366,43 @@ export function createRuntimeMcp(options: {
     });
     if (!initial || initial.cached) return initial?.cached;
     // Feature evidence is bound to this epoch before any private configuration.
-    const healthCommand = {
-      version: 1 as const,
-      sandboxId: s.id,
-      requestId: healthRequestId ?? randomUUID(),
-      op: "health" as const,
-    };
-    const health = await call(
-      s,
-      healthCommand,
-      initial.epoch,
-      signal,
-      "Runtime MCP v1 requires an updated runtime artifact.",
-      (health) => {
-        const evidence = health.body.result as
-          | { ready?: unknown; generation?: unknown; mcpVersion?: unknown }
-          | undefined;
-        return (
-          health.epoch === initial.epoch &&
-          evidence?.ready === true &&
-          evidence.generation === initial.epoch &&
-          evidence.mcpVersion === 1
-        );
-      },
-      assertClaim,
-    );
-    const features = health.body.result as { stdioMcpEnv?: unknown };
+    let features: { stdioMcpEnv?: unknown };
+    if (observedHealth && observedHealth.epoch === initial.epoch) {
+      if (
+        observedHealth.ready !== true ||
+        observedHealth.generation !== initial.epoch ||
+        observedHealth.mcpVersion !== 1
+      )
+        throw new VaultError("unavailable", "Runtime MCP v1 requires an updated runtime artifact.");
+      features = observedHealth;
+    } else {
+      const healthCommand = {
+        version: 1 as const,
+        sandboxId: s.id,
+        requestId: healthRequestId ?? randomUUID(),
+        op: "health" as const,
+      };
+      const health = await call(
+        s,
+        healthCommand,
+        initial.epoch,
+        signal,
+        "Runtime MCP v1 requires an updated runtime artifact.",
+        (health) => {
+          const evidence = health.body.result as
+            | { ready?: unknown; generation?: unknown; mcpVersion?: unknown }
+            | undefined;
+          return (
+            health.epoch === initial.epoch &&
+            evidence?.ready === true &&
+            evidence.generation === initial.epoch &&
+            evidence.mcpVersion === 1
+          );
+        },
+        assertClaim,
+      );
+      features = health.body.result as { stdioMcpEnv?: unknown };
+    }
     const prepareConfiguration = () => authority.withOwner(s.id, s.ownerId, configure);
     async function configure(tx: Sql, live: RuntimeOwnerScope) {
       if (live.epoch !== initial.epoch) return deny();
@@ -408,15 +450,27 @@ export function createRuntimeMcp(options: {
         op: "configureMcp" as const,
         configuration: p.configuration,
       };
-      // Serialize preparation AND enqueue, not network waits. Concurrent updated
-      // grants can never queue an older snapshot behind a newer configuration.
-      const local = scopedRuntimeSql(tx);
       signal?.throwIfAborted();
-      await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
       await assertClaim?.(tx);
       return { ...p, epoch: live.epoch, wire };
     }
     let prepared!: Awaited<ReturnType<typeof prepareConfiguration>>;
+    const assertCurrentBootstrap = async (tx: Sql) => {
+      await assertClaim?.(tx);
+      // Fence enqueue to the winning bootstrap revision so an older snapshot can never queue behind a newer one.
+      const current = (
+        await tx.query<{ physical_generation: string; revision: string }>(
+          "select physical_generation,revision from public.mcp_bootstraps where sandbox_id=$1",
+          [s.id],
+        )
+      ).rows[0];
+      if (
+        !current ||
+        current.physical_generation !== `runtime:${prepared.epoch}` ||
+        current.revision !== prepared.configuration.revision
+      )
+        return deny();
+    };
     const reply = await options.commands.callPrepared(
       s.ownerId,
       "configureMcp",
@@ -426,7 +480,7 @@ export function createRuntimeMcp(options: {
           request: prepared.wire,
           options: {
             expectedEpoch: prepared.epoch,
-            ...(assertClaim ? { assertClaim } : {}),
+            assertClaim: assertCurrentBootstrap,
             ...(signal ? { signal } : {}),
             accept: acknowledgesRevision,
           },

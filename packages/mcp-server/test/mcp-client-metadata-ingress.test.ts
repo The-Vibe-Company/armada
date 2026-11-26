@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { createServiceToken, createSqlAuthStore } from "@armada/auth";
+import { createSqlVaultStore } from "@armada/core/server";
+import { handleControlRequest } from "../src/control.ts";
 import { createMcpHttpIntegration } from "../src/mcp-http-integration.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
@@ -105,13 +107,19 @@ test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fi
       url: "https://linear.example/mcp",
       authType: "oauth",
     });
-    const connect = await route(
-      new Request(`https://${host}/api/v1/mcp/connect`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ org, id: connection.id }),
-      }),
-    );
+    const connectRequest = new Request(`https://${host}/api/v1/mcp/connect`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ org, id: connection.id }),
+    });
+    expect(await route(connectRequest)).toBeNull();
+    const connect = await handleControlRequest(connectRequest, {
+      authStore,
+      store: createSqlVaultStore(db),
+      encryptionKey: Buffer.alloc(32, 22).toString("base64"),
+      supabase: { supabaseUrl: "https://auth.example", anonKey: "public" },
+      mcp: { registry: integration.registry, broker: integration.controlBroker },
+    });
     expect(connect?.status).toBe(200);
     const result = (await connect!.json()) as { authorizationUrl: string };
     const authorize = new URL(result.authorizationUrl);

@@ -276,6 +276,7 @@ test("vault purge failure cannot skip expired resource evidence pruning or leak 
     (line) => messages.push(line),
     () => cutoff,
   );
+  await db.query("delete from public.jobs where kind='maintenance'");
   const jobs = createJobsStore(sql);
   await seedRetentionMaintenance(jobs);
   const claim = await jobs.claim("maintenance", crypto.randomUUID(), 30, 1);
@@ -288,6 +289,49 @@ test("vault purge failure cannot skip expired resource evidence pruning or leak 
   expect(rows.rows[0]?.count).toBe(0);
   expect(messages).toEqual(["armada: retention maintenance unavailable; retrying."]);
   expect(result).toMatchObject({ status: "retry", after: new Date(cutoff.getTime() + 600_000) });
+});
+
+test("retention maintenance prunes expired mcp_invalidations and cascading deliveries while keeping recent rows", async () => {
+  const db = database();
+  const f = await fixture();
+  const org = f.org;
+  const replica = crypto.randomUUID();
+  const expiredAt = new Date(now.getTime() - 8 * 86_400_000);
+  const recentAt = new Date(now.getTime() - 2 * 86_400_000);
+  const inserted = await db.query<{ id: string }>(
+    `insert into public.mcp_invalidations(org_id,reason,created_at)
+     values($1,'definition',$2),($1,'definition',$3) returning id::text`,
+    [org, expiredAt.toISOString(), recentAt.toISOString()],
+  );
+  const [expiredId, recentId] = inserted.rows.map((r) => r.id);
+  await db.query("insert into public.mcp_invalidation_deliveries(replica_id,event_id) values($1,$2),($1,$3)", [
+    replica,
+    expiredId,
+    recentId,
+  ]);
+  const job = retentionMaintenanceJob(
+    sql,
+    undefined,
+    () => {},
+    () => now,
+  );
+  await db.query("delete from public.jobs where kind='maintenance'");
+  const jobs = createJobsStore(sql);
+  await seedRetentionMaintenance(jobs);
+  const claim = await jobs.claim("maintenance", crypto.randomUUID(), 30, 1);
+  expect(claim).toBeDefined();
+  await job.run(claim!);
+  expect(
+    (await db.query<{ id: string }>("select id::text from public.mcp_invalidations where org_id=$1", [org])).rows,
+  ).toEqual([{ id: recentId! }]);
+  expect(
+    (
+      await db.query<{ event_id: string }>(
+        "select event_id::text from public.mcp_invalidation_deliveries where replica_id=$1",
+        [replica],
+      )
+    ).rows,
+  ).toEqual([{ event_id: recentId! }]);
 });
 
 test("unknown launch/capacity and arbitrary extra transport fields never become evidence", async () => {
