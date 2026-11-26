@@ -11,7 +11,7 @@
 ## Layout
 | Path | Holds |
 |---|---|
-| `packages/core` | shared contracts, catalogs, policies, credentials, `packages/core/src/crypto.ts`. `packages/core/src/index.ts` is browser-safe; server-only exports live in `packages/core/src/server.ts`. API operation metadata and shared request schemas belong in the browser-safe `packages/core/src/contract` subpath, exported as @armada/core/contract. REST sandbox launches and MCP launch use the shared launch request schema. Authorization and provider admission stay on the server. |
+| `packages/core` | shared contracts, catalogs, policies, credentials, `packages/core/src/crypto.ts`; browser-safe `packages/core/src/index.ts`, server-only `packages/core/src/server.ts`, contract subpath `packages/core/src/contract` (`@armada/core/contract`, shared REST/MCP launch schema; auth/admission stay server-side). |
 | `packages/mcp-server` | `armada-server`: HTTP, control routes, MCP tools, workers, provider adapters. Read `packages/mcp-server/AGENTS.md` before editing it. |
 | `packages/agent-runtime` | the runtime that runs inside a sandbox, and its harness drivers |
 | `packages/provider-boat`, `packages/provider-modal` | provider SDK adapters |
@@ -23,12 +23,12 @@
 | `supabase/migrations` | append-only schema and row-level security |
 
 ## Non-negotiables
-1. **No compatibility layers.** When you replace a route, tool, command, field or table, delete the old one and update every in-repo caller (CLI, SDK, dashboard, iOS, MCP, `.agents/skills/armada`, docs, smoke scripts). No aliases, `-vN` routes, deprecation windows, feature flags or decoders for old shapes. Three things keep an overlap: database objects, the runtime protocol and the Docker host daemon protocol. A breaking change may span modules; move callers first, delete last, within one ticket. Bump `PROTOCOL_VERSION` only for a breaking change as defined in `packages/agent-runtime/src/protocol.ts`. The server keeps N and N-1.
-2. **Lifecycle.** Sandbox status changes use `sandbox_transition()`; one lease and one deadline per sandbox; every provider call carries `(sandboxId, generation)`; no new cleanup loop or retry timer. These bind new and changed code; details in `packages/mcp-server/AGENTS.md`.
-3. **Separate client and server.** Never import Supabase, provider implementations or server startup into the CLI or SDK graph (enforced by `scripts/ci/import-boundaries.ts`).
-4. **Secrets.** Never print a secret or write one to a file, fixture, log or argument. Goldens hold no secrets. Credential values arrive on stdin or from a file. In the database a secret is `*_enc` ciphertext (`encryptSecret`/`decryptSecret` with `ARMADA_ENCRYPTION_KEY`) or a lowercase SHA-256 hash, and no user JWT can read either. The only argv exception is the single-use, five-minute Docker host install token.
-5. **Database access.** Row-level security is the access rule. Members see organization resources, owners alone see private resources, and only admins change organization goldens, membership or organization keys. New user-JWT access needs explicit grants; JWT writes name their returned columns (`select=`), never bare `*`. Server SQL bypasses RLS and must enforce visibility itself. Schema changes are new migrations; never edit an applied one (`docs/database-migrations.md`). Place new TypeScript table writes with the owner in `scripts/ci/tables.ts` and remove exceptions as writes move or are deleted.
-6. **Fix the cause.** Name the root cause with evidence (the wrong statement, state or contract) before changing code. Fix every sibling with the same defect in the same PR, or list them. Do not copy a workaround or make one check pass. Urgency does not waive this. If only production can prove the cause, add the diagnostic that will name it.
+1. **No compatibility layers.** When replacing a route, tool, command, field or table, delete the old one and update all in-repo callers (CLI, SDK, dashboard, iOS, MCP, `.agents/skills/armada`, docs, smoke scripts). No aliases, `-vN` routes, deprecation windows, feature flags or old-shape decoders. Overlap exists only for DB objects, the runtime protocol and the Docker host daemon protocol. Breaking changes move callers first, delete last, in one ticket. Bump `PROTOCOL_VERSION` only per `packages/agent-runtime/src/protocol.ts`; server keeps N and N-1.
+2. **Lifecycle.** Status changes use `sandbox_transition()`; one lease and one deadline per sandbox; provider calls carry `(sandboxId, generation)`; no new cleanup loop or retry timer. Details in `packages/mcp-server/AGENTS.md`.
+3. **Separate client and server.** Never import Supabase, providers or server startup into the CLI/SDK graph (`scripts/ci/import-boundaries.ts`).
+4. **Secrets.** Never print or write secrets to files, fixtures, logs or argv (only argv exception: single-use 5-min Docker host install token). Goldens hold no secrets; credentials arrive on stdin or file. In DB, secrets are `*_enc` ciphertext (`encryptSecret`/`decryptSecret` with `ARMADA_ENCRYPTION_KEY`) or lowercase SHA-256 hashes; no user JWT may read either.
+5. **Database access.** RLS is the access rule: members see org resources, owners alone see private ones, admins alone change org goldens/membership/keys. New user-JWT access needs explicit grants; JWT writes name `select=` columns, never `*`. Server SQL bypasses RLS and enforces visibility itself. Schema changes are new migrations; never edit an applied one (`docs/database-migrations.md`). Keep TS table writes with their owner in `scripts/ci/tables.ts` and shrink exceptions.
+6. **Fix the cause.** Name the root cause with evidence before editing; fix or list all siblings with the same defect in the same PR. No workarounds; urgency never waives this. If only prod can prove it, add the diagnostic.
 7. **Build only what the ticket asks.** If a rule blocks the ticket, stop and report.
 8. **Never state as verified what you did not run.**
 9. **Boat is never part of CI or staging acceptance.** Boat checks are on demand, by the coordinator only.
@@ -38,11 +38,11 @@
 13. **Providers are machines.** Outside `packages/provider-*`, `packages/docker-host` and the machine adapters, never branch on a provider id; read `MachineCapabilities`.
 
 ## Pull requests
-- **One module, at most 600 changed lines.** Generated files, pure deletions and `git mv` do not count. If the work is bigger, stop and tell the coordinator so the ticket is split.
-- **Lifecycle work needs a design note first**: sandbox state, leases, deadlines, retries, provider create/stop/resume/delete, cleanup, output capture, exports. The note goes in the issue before code (contents: `packages/mcp-server/AGENTS.md`).
-- **Breaking surface change.** Update `.agents/skills/armada` and docs in the same PR, and add a `Coordinator commands affected:` line to the body (or `none`).
-- **One branch, one agent.** Never push to a branch another session owns.
-- **At most one migration per PR**, with a unique 14-digit version newer than main’s. Recheck the order before merge.
+- **One module, at most 600 changed lines** (excluding generated files, pure deletions and `git mv`). If bigger, stop and ask the coordinator to split.
+- **Lifecycle work needs a design note in the issue first** (state, leases, deadlines, retries, provider create/stop/resume/delete, cleanup, output capture, exports; see `packages/mcp-server/AGENTS.md`).
+- **Breaking surface change:** update `.agents/skills/armada` and docs in the same PR, and include `Coordinator commands affected:` (or `none`).
+- **One branch, one agent.** Never push to another session's branch.
+- **At most one migration per PR**, unique 14-digit version newer than main's; recheck order before merge.
 - **Titles** follow Commitizen: `feat(cli): launch an agent from a template`.
 
 ## Review
@@ -53,8 +53,8 @@
 - One test per behaviour, at the cheapest boundary that proves it. No network, no wall-clock wait, no sleep (inject clocks).
 - No child process when a function call proves the same thing. Real Git, gh and provider behaviour belongs in the staging smoke.
 - No new process-spawning test files. Run `bun scripts/ci/process-tests.ts --check` and remove stale entries from `scripts/ci/process-tests.txt`. The allowlist only shrinks.
-- A test over one second is rewritten or deleted. Never raise a timeout to make a test pass.
-- A flaky test is deleted the day it is seen, not retried or quarantined. A cheaper deterministic test replaces it if the behaviour matters.
+- A test over 1s is rewritten or deleted; never raise a timeout to make a test pass.
+- Delete flaky tests the day they appear (never retry or quarantine); replace with a deterministic test if the behaviour matters.
 - Fixtures never contain literals that match real token patterns. Use short placeholders; build scanner-positive bytes at runtime.
 - A bug fix includes a regression test that fails without the fix.
 
@@ -71,6 +71,11 @@
 - `bun run db:types`: regenerate `packages/core/src/database.types.ts`. Never hand-edit or hand-merge it.
 - `bun run dev`: fixture dashboard on ports 3100/54399, sign in as `alice@example.com` / `123456`. UI work only, not lifecycle evidence.
 - `bun run armada <args>`: the CLI from source. `bun run build`: binaries in the generated dist directory.
+
+## OpenBoard
+- Board API: https://openboard.thevibecompany.co/api/tvc/main · Default channel: `armada` (labels: `area=<module>`, `priority=p0|p1|p2`).
+- Worker-owned tasks: in sandboxes, install `ob` via https://openboard.thevibecompany.co/install.sh (or `npx -y @the-vibe-company/openboard-cli`), connect under a worker profile via the `armada` connection (secret injected via stdin/env, never in tracked files), and verify with `ob whoami`.
+- Claim with `ob tasks claim <id>`, read scope with `ob read <id>`, renew via `ob tasks renew <id>`, post progress and PR URL via `ob reply <id> "<update>"`, and close with `ob tasks complete <id> "<result>"` under the same profile. Put `OpenBoard #<id>` in the PR body (never `Closes #<id>` for an OpenBoard ID).
 
 ## Where truth lives
 | Topic | Authority |
