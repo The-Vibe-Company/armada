@@ -617,6 +617,15 @@ test("follow-up skips post-update sandbox get, redundant commands.result on fres
     );
     await send(f.caller, f.input("after stdio change"));
     expect(mcpCalls).toBe(1);
+
+    await f.db.query("delete from public.mcp_connections where id=$1", [stdio.id]);
+    await f.db.query("delete from public.mcp_invalidations where org_id=$1", [f.people.org]);
+    await f.sql.transaction!(async (tx) => {
+      await tx.query("set local session_replication_role='replica'");
+      await tx.query("update public.sandboxes set created_at=now()-interval '7 days' where id=$1", [f.row.id]);
+    });
+    await send(f.caller, f.input("after retention window"));
+    expect(mcpCalls).toBe(2);
   } finally {
     await f.close();
   }

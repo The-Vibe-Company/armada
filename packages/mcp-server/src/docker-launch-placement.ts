@@ -68,6 +68,7 @@ import { createJobsStore, recordDockerLaunchEvidence, withJobLease } from "./job
 import { admitAccount, preparePoolCandidates } from "./launch-account-pool.ts";
 import type { launchCredentials } from "./launch-credentials.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import { usesHostLaunch } from "./provider-runtime-admission.ts";
 import {
   continueRequest,
   currentRequestId,
@@ -311,7 +312,7 @@ function storedRepositoryAccessMessage(reason: string | null) {
   return repositoryAccessMessage(message) ? message : undefined;
 }
 
-const notReady = (row: Row) => {
+const notReady = (row: Pick<Row, "status" | "status_reason">) => {
   const message = row.status === "failed" ? storedRepositoryAccessMessage(row.status_reason) : undefined;
   return message
     ? new LaunchError("no_credentials", message)
@@ -813,12 +814,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
               const onAbort = () => resolve();
               waiting.addEventListener("abort", onAbort, { once: true });
               try {
-                await Promise.race([
-                  promise,
-                  delay
-                    ? delay(ms, waiting)
-                    : new Promise<void>((r) => waiting.addEventListener("abort", () => r(), { once: true })),
-                ]);
+                await (delay ? Promise.race([promise, delay(ms, waiting)]) : promise);
               } finally {
                 waiting.removeEventListener("abort", onAbort);
               }
@@ -904,7 +900,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
               [actor.orgId, actor.userId, request.requestId],
             );
             if (!row || !row.owner_id || !row.status) throw failure("not_found");
-            if (row.owner_id !== actor.userId || row.org_id !== actor.orgId || row.provider !== "docker")
+            if (row.owner_id !== actor.userId || row.org_id !== actor.orgId || !usesHostLaunch(row.provider))
               throw failure("not_found");
             if (row.claim_epoch === null) throw failure("conflict");
             if (row.claim_epoch !== row.member_epoch) throw failure("not_found");
@@ -920,16 +916,16 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
               (row.credential_version !== manifest.credentialVersion || row.credential_id !== expectedCredentialId)
             )
               throw failure("conflict");
-            return { row, isLive };
+            return { status: row.status, status_reason: row.status_reason, isLive };
           });
           if (!current.isLive) {
             if (reason === "runtime_readiness") {
-              const { status, status_reason: statusReason } = current.row;
+              const { status, status_reason: statusReason } = current;
               readinessCause =
                 Object.entries(RUNTIME_STARTUP_FAILURES).find(([, message]) => message === statusReason)?.[0] ??
                 (status === "failed" ? "startup_failed" : "sandbox_inactive");
             }
-            throw notReady(current.row as Pick<Row, "status" | "status_reason"> as Row);
+            throw notReady(current);
           }
           return current;
         };
@@ -951,8 +947,10 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           worker.context.signal.throwIfAborted();
         }
         const readinessWatch = watch(`enrol:${request.requestId}`, `socket:${request.requestId}`);
-        await startMachine(actor, request, state.row, worker, assertClaim);
+        const startState = await startMachine(actor, request, state.row, worker, assertClaim);
         reason = "runtime_readiness";
+        const inlineEnrolDeadline =
+          startState === "enrolled" ? undefined : clock.now() + (startState === "bootstrapped" ? 5_000 : 500);
         let receipt: Receipt;
         for (;;) {
           await live();
@@ -966,6 +964,8 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
             receipt = { epoch: ready.epoch };
             break;
           }
+          if (inlineEnrolDeadline !== undefined && clock.now() >= inlineEnrolDeadline)
+            throw new DockerMachinePending("pending");
           await waitFor(readinessWatch);
         }
         reason = "runtime_environment";
@@ -1234,18 +1234,24 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
   ) {
     const { requestId: sandboxId, hostId, image, snapshotId } = request;
     const generation = Number(job.generation);
-    const target = await sql.query<{ docker_installation_id: string; enrolled: boolean }>(
+    const target = await sql.query<{
+      docker_installation_id: string;
+      enrolled: boolean;
+      bootstrap_queued: boolean;
+    }>(
       `
       select s.docker_installation_id,
         exists(select 1 from public.runtime_enrolments e where e.sandbox_id=s.id
-          and e.lifecycle_generation=s.lifecycle_generation and e.runtime_hash is not null) as enrolled
+          and e.lifecycle_generation=s.lifecycle_generation and e.runtime_hash is not null) as enrolled,
+        exists(select 1 from public.docker_host_jobs b where b.bound_sandbox_id=s.id
+          and b.bound_operation='bootstrap') as bootstrap_queued
       from public.sandboxes s join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
       where s.id=$1 and s.lifecycle_generation=$3 and s.stop_requested_at is null`,
       [sandboxId, job.id, generation],
     );
     const placement = target.rows[0];
     if (!placement || !(await context.canDispatch())) throw failure("unavailable");
-    if (placement.enrolled) return;
+    if (placement.enrolled) return "enrolled" as const;
     const source = snapshotId ? { kind: "snapshot" as const, ref: snapshotId } : { kind: "image" as const, ref: image };
     const scope = { actor, hostId, installationId: placement.docker_installation_id };
     const canDispatch: JobContext["canDispatch"] = async (tx) => {
@@ -1266,6 +1272,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
             computeTtlSeconds: row.effective_ttl_seconds,
           });
     await options.bootstrap!.bootstrapMachine(actor, targetMachine, { ...context, canDispatch });
+    return placement.bootstrap_queued ? ("replayed" as const) : ("bootstrapped" as const);
   }
 
   async function run(job: Job, context: JobContext) {

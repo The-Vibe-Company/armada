@@ -248,7 +248,7 @@ export function createRuntimeFollowup(
                (exists(
                  select 1 from public.mcp_bootstraps b
                  where b.sandbox_id=s.id and b.configured and b.physical_generation='runtime:' || $2::text
-               ) and not exists(
+               ) and s.created_at>now()-interval '6 days' and not exists(
                  select 1 from public.mcp_invalidations mi
                  where mi.org_id=s.org_id and mi.created_at>=s.created_at
                    and (mi.sandbox_id=s.id or (mi.sandbox_id is null and mi.reason='definition'))
@@ -264,14 +264,11 @@ export function createRuntimeFollowup(
                    c.disabled
                    or (c.scope<>'org' and c.owner_id<>s.owner_id)
                    or public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)<>'connected'
-                   or (c.transport='stdio' and (
-                     s.created_at<=now()-interval '6 days'
-                     or exists(
-                       select 1 from public.mcp_invalidations mi
-                       where mi.org_id=s.org_id and mi.created_at>=s.created_at
-                         and mi.connection_id=mb.connection_id
-                         and mi.reason in ('definition','grant')
-                     )
+                   or (c.transport='stdio' and exists(
+                     select 1 from public.mcp_invalidations mi
+                     where mi.org_id=s.org_id and mi.created_at>=s.created_at
+                       and mi.connection_id=mb.connection_id
+                       and mi.reason in ('definition','grant')
                    ))
                    or (c.transport<>'stdio' and not exists(
                      select 1 from public.mcp_leases l

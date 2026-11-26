@@ -3976,3 +3976,31 @@ test("Docker launch transitions straight from bootstrap to readiness wake and av
   expect(manifestEncryptedReads).toBe(3);
   expect(f.jobs.map((job) => (job as { operation: string }).operation)).toEqual(["create", "bootstrap"]);
 });
+
+test("Docker launch yields the shared launch worker slot after bounded inline wait when enrolment does not arrive", async () => {
+  const f = await fixture();
+  const svc = f.service(sql, true, 60_000, officialImage, true);
+  await svc.admit(f.caller, f.body);
+  const jobs = createJobsStore(sql, key);
+  const workerId = randomUUID();
+  const runOnce = async () => {
+    const job = (await jobs.claim("launch", workerId, 30, 1))!;
+    const result = await svc.run(job, {
+      signal: new AbortController().signal,
+      canDispatch: async (tx) => (await jobs.inspect(job, workerId, tx)) === "dispatch",
+      handoffGeneration: async () => {
+        throw Error("Unexpected generation handoff.");
+      },
+    });
+    expect(await jobs.complete(job, workerId, result)).toBe(true);
+    return { job, result };
+  };
+  const createTick = await runOnce();
+  expect(createTick.result.status).toBe("retry");
+  await f.step();
+  await database().query("update public.jobs set run_after='-infinity' where id=$1", [createTick.job.id]);
+
+  f.setDrive(false);
+  const offlineTick = await runOnce();
+  expect(offlineTick.result).toMatchObject({ status: "retry", unattempted: true });
+});
