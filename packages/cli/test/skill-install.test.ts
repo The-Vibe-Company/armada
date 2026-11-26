@@ -201,6 +201,7 @@ test("skill family and install help support both spellings without authenticatio
       );
       expect({ code, err }).toEqual({ code: 0, err: "" });
       expect(out).toContain("Usage: armada skill install");
+      expect(out).toMatch(/Default source: The-Vibe-Company\/armada at reviewed commit [a-f0-9]{40}\./);
       expect(out).toContain("Example: armada skill install");
     }
   }
