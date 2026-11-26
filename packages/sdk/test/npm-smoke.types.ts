@@ -2,11 +2,15 @@ import {
   Armada,
   type FailureCode,
   type GoldenLaunchInput,
+  type LaunchEnvelope,
   type LaunchResult,
   type ModalLaunchReceipt,
   type PinnedModalLaunchReceipt,
   type SandboxEvent,
   type SendInput,
+  type StopInput,
+  type StopResult,
+  type WaitResult,
 } from "@the-vibe-company/armada-sdk";
 
 const code: FailureCode = "outcome_unknown";
@@ -93,3 +97,8 @@ export type TransitionEventStatus = Assert<Equal<TransitionStreamEvent["statusRe
 export type RuntimeEventInlinePayload = Assert<
   Equal<NonNullable<RuntimeStreamEvent["event"]>["kind"], "prompt" | "message" | "steer" | "other">
 >;
+
+export type LaunchEnvelopeExport = Assert<Equal<Awaited<ReturnType<typeof boat>>, LaunchEnvelope>>;
+export type StopInputExport = Assert<Equal<Parameters<Armada["stop"]>[0], StopInput>>;
+export type StopResultExport = Assert<Equal<Awaited<ReturnType<Armada["stop"]>>, StopResult>>;
+export type WaitResultExport = Assert<Equal<Awaited<ReturnType<Armada["wait"]>>, WaitResult>>;

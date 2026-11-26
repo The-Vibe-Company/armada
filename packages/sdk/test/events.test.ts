@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { Armada, reduceSandboxEvent } from "../src/index.ts";
+import { Armada, ArmadaError, reduceSandboxEvent } from "../src/index.ts";
 
 const sandbox = "f6bc7a23-f891-4cd6-a034-acee682a9781";
 const encoder = new TextEncoder();
@@ -190,6 +190,40 @@ test("return cancels a pending reconnect without waiting for Retry-After", async
   } finally {
     timer.restore();
     jest.useRealTimers();
+  }
+});
+
+test("events.stream wraps invalid input as TypeError and malformed or schema-invalid SSE payloads as ArmadaError", async () => {
+  const fetch = jest.fn(async () => new Response(frame("1"), { headers }));
+  const inputClient = new Armada({ token: "placeholder", fetch });
+  for (const badInput of [{ sandbox: "not-a-uuid" }, { sandbox, cursor: "not-a-cursor" }]) {
+    const error = await inputClient.events
+      .stream(badInput)
+      .next()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as Error).name).toBe("TypeError");
+    expect((error as Error).message).not.toContain("invalid_format");
+  }
+  expect(fetch).not.toHaveBeenCalled();
+
+  for (const badFrame of ["id: 1\ndata: {not json\n\n", `id: 1\ndata: ${JSON.stringify({ id: "1" })}\n\n`]) {
+    const badClient = new Armada({
+      token: "placeholder",
+      fetch: async () => new Response(badFrame, { headers }),
+    });
+    const error = await badClient.events
+      .stream({ sandbox })
+      .next()
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArmadaError);
+    expect(error).toMatchObject({
+      code: "unknown_response",
+      status: 200,
+      serverCode: undefined,
+      outcomeUnknown: false,
+    });
+    expect((error as ArmadaError).message).not.toContain("invalid_type");
   }
 });
 
