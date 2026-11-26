@@ -1016,7 +1016,9 @@ test("repo-backed turn export expedites pr_scan and idempotent pr_linked score u
       await upsertLangfusePrLinkedScores(db, key, id, {
         signal: callerSignal,
         logError: (line) => timeoutLogs.push(line),
-        send: (async () => Promise.reject<Response>(new DOMException("hung", "TimeoutError"))) as typeof fetch,
+        send: Object.assign(async () => Promise.reject(new DOMException("hung", "TimeoutError")), {
+          preconnect: fetch.preconnect,
+        }),
       }),
     ).toBe(0);
     expect([callerSignal.aborted, timeoutLogs[0]?.includes("reason=TimeoutError")]).toEqual([false, true]);
