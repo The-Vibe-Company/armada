@@ -39,12 +39,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     <SidebarProvider
       data-shell
       style={{ "--sidebar-width": "244px" } as CSSProperties}
-      className="min-h-dvh flex-col md:flex-row [&:has(main_[data-page-launch])_[data-shell-launch]]:hidden"
+      className="min-h-dvh flex-col md:flex-row max-md:[&:has(main_[data-page-launch])_[data-shell-launch]]:hidden"
     >
       <AppSidebar
         header={header}
         launch={
-          <div data-shell-launch className="px-3 pb-2 group-data-[state=collapsed]:px-2">
+          <div className="px-3 pb-2 group-data-[state=collapsed]:px-2">
             <SandboxLaunchAction shortcut />
           </div>
         }

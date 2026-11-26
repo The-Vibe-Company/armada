@@ -9,9 +9,9 @@ export default function LoadingSandboxes() {
         <Skeleton className="h-9 w-36" />
         <Skeleton className="h-9 w-40" />
       </div>
-      <div className="flex flex-wrap justify-between gap-3">
-        <Skeleton className="h-[84px] w-full sm:h-11 sm:max-w-[550px]" />
-        <Skeleton className="h-9 w-full sm:max-w-[400px]" />
+      <div className="flex flex-wrap justify-between gap-2">
+        <Skeleton className="h-9 w-full sm:max-w-[440px]" />
+        <Skeleton className="h-9 w-full sm:max-w-[380px]" />
       </div>
       <div className="divide-y overflow-hidden rounded-[10px] border bg-card">
         <div className="hidden h-9 bg-muted/40 md:block" />
