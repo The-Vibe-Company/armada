@@ -205,7 +205,7 @@ function createWriter(
   tcp: LocalTcpStream,
   win: StreamWindow,
   onError: (code: number, reason: RelayCloseReason) => void,
-  maxQueued = PREVIEW_WS_MAX_PAYLOAD,
+  maxQueued = 2 * PREVIEW_WS_MAX_PAYLOAD,
 ) {
   const q: Uint8Array[] = [];
   let off = 0;
@@ -656,17 +656,22 @@ export function createRelayPreview(options: RelayPreviewOptions) {
           if (done) break;
           if (!value?.byteLength) continue;
           if (bodyMode === "chunked") {
-            writer.write(enc.encode(`${value.byteLength.toString(16)}\r\n`));
-            writer.write(value);
-            writer.write(CRLF);
+            for (let off = 0; off < value.byteLength && !writer.isClosed; off += INITIAL_STREAM_WINDOW) {
+              const part = value.subarray(off, Math.min(value.byteLength, off + INITIAL_STREAM_WINDOW));
+              writer.write(enc.encode(`${part.byteLength.toString(16)}\r\n`));
+              writer.write(part);
+              writer.write(CRLF);
+              await writer.waitDrain();
+            }
           } else {
             const take = Math.min(value.byteLength, bodyMode - sent);
-            if (take > 0) {
-              writer.write(take === value.byteLength ? value : value.subarray(0, take));
-              sent += take;
+            for (let off = 0; off < take && !writer.isClosed; off += INITIAL_STREAM_WINDOW) {
+              const part = value.subarray(off, Math.min(take, off + INITIAL_STREAM_WINDOW));
+              writer.write(part);
+              sent += part.byteLength;
+              await writer.waitDrain();
             }
           }
-          await writer.waitDrain();
         }
         if (writer.isClosed) return;
         if (bodyMode === "chunked") writer.write(enc.encode("0\r\n\r\n"));
