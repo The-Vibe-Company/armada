@@ -144,9 +144,11 @@ struct SandboxConversationView: View {
     private let initiallyWorking: Bool
 
     @Environment(AppModel.self) private var app
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: SandboxConversationModel
     @State private var confirmingStop = false
     @State private var showingDetails = false
+    @State private var needsForegroundRefresh = false
 
     init(sandbox: SandboxSummary, app: AppModel, initiallyWorking: Bool = false) {
         self.sandbox = sandbox
@@ -160,9 +162,22 @@ struct SandboxConversationView: View {
         .navigationTitle(sandbox.displayLabel)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: sandbox.id) {
-            if model.sandboxID != sandbox.id { model = Self.makeModel(sandbox: sandbox, app: app, initiallyWorking: initiallyWorking) }
+            if model.sandboxID != sandbox.id {
+                model = Self.makeModel(sandbox: sandbox, app: app, initiallyWorking: initiallyWorking)
+                needsForegroundRefresh = false
+            }
             await model.open()
         }
+    }
+
+    private var isSceneActive: Bool { scenePhase == .active }
+
+    private var followTaskID: String {
+        "\(model.sandboxID):\(model.followGeneration):\(model.isDeleted):\(isSceneActive)"
+    }
+
+    private var watchStateTaskID: String {
+        "\(model.sandboxID):\(isSceneActive)"
     }
 
     private static func makeModel(sandbox: SandboxSummary, app: AppModel, initiallyWorking: Bool) -> SandboxConversationModel {
@@ -266,9 +281,23 @@ struct SandboxConversationView: View {
                 ? "The running turn ends. The machine stops. Resuming later requires a retained disk and an unexpired sandbox."
                 : "The machine stops. Resuming later requires a retained disk and an unexpired sandbox.")
         }
-        // Restarts when a refresh revives a stopped follow, and ends once the sandbox is deleted.
-        .task(id: "\(model.sandboxID):\(model.followGeneration):\(model.isDeleted)") { await model.follow() }
-        .task(id: model.sandboxID) { await model.watchState() }
+        // Suspends live SSE and state polling when leaving `.active` so suspended sockets do not
+        // hang or accumulate backoff; returning to `.active` reconnects with `lastEventID` and refreshes.
+        .onChange(of: isSceneActive) { _, active in
+            if !active { needsForegroundRefresh = true }
+        }
+        .task(id: followTaskID) {
+            guard isSceneActive else { return }
+            await model.follow()
+        }
+        .task(id: watchStateTaskID) {
+            guard isSceneActive else { return }
+            if needsForegroundRefresh {
+                needsForegroundRefresh = false
+                await model.resumeFromBackground()
+            }
+            await model.watchState()
+        }
         .onChange(of: model.feed.conversation.items) { _, _ in model.streamChanged() }
     }
 
