@@ -22,11 +22,9 @@ test("TLS-terminated anonymous CIMD preserves the advertised OAuth client and fi
     const network: string[] = [];
     integration = createMcpHttpIntegration({
       sql: db,
-      authStore,
       encryptionKey: Buffer.alloc(32, 22).toString("base64"),
       publicUrl: `https://${host}`,
       dashboardUrl: "https://dashboard.example",
-      supabase: { supabaseUrl: "https://auth.example", anonKey: "public" },
       fetch: (async (input, init) => {
         const url = String(input instanceof Request ? input.url : input);
         network.push(init?.method ?? "GET");

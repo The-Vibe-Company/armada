@@ -186,9 +186,7 @@ for (const change of cases)
         encryptionKey,
         publicUrl: "https://gateway.example",
         dashboardUrl: "https://dashboard.example",
-        authStore,
         fetch: upstream,
-        supabase,
       });
       const service = integration;
       const controlOptions = {

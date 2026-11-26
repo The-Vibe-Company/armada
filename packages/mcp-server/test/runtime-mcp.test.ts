@@ -221,8 +221,6 @@ describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (p
       sql: f.sql,
       encryptionKey: ENCRYPTION_KEY,
       publicUrl: "https://armada.test",
-      authStore: x.authStore,
-      supabase: { supabaseUrl: "https://supabase.test", anonKey: "fixture" },
       fetch: upstream,
       deferBackground: true,
     });

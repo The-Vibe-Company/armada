@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createMemoryAuthStore, createServiceToken, createSqlAuthStore, generateToken, sha256Hex } from "@armada/auth";
+import { createServiceToken, createSqlAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import { CONTROL_BODY_MAX_BYTES, type McpConnectionDto } from "@armada/core";
 import { createSqlMcpLeasePort, createSqlVaultStore, type Sql } from "@armada/core/server";
 import { endpoint } from "@armada/mcp-gateway";
@@ -36,8 +36,6 @@ test("HTTP connection control routes through mcp-control with standard envelopes
       encryptionKey,
       dashboardUrl: "https://dashboard.example",
       publicUrl: "https://armada.example",
-      authStore,
-      supabase,
       deferBackground: true,
     });
     const route = integration.route;
@@ -336,11 +334,13 @@ test("invalidation poller skips idle DB queries, seeds on first lease, and backs
       currentTime = Date.now(),
       toolCalls = 0;
     const logs: string[] = [];
-    const logged = Promise.withResolvers<void>();
+    let onLog: (() => void) | undefined;
+    let failInFlight: ReturnType<typeof Promise.withResolvers<never>> | undefined;
     const trackedSql: Sql = {
       async query<T>(statement: string, params?: unknown[]) {
         if (statement.includes("from public.mcp_invalidations e")) {
           invalidationReads++;
+          if (failInFlight) return failInFlight.promise;
           if (failInvalidations) throw new Error("transient_db_outage");
         }
         return db.query<T>(statement, params);
@@ -374,7 +374,7 @@ test("invalidation poller skips idle DB queries, seeds on first lease, and backs
       now: () => currentTime,
       logError: (line) => {
         logs.push(line);
-        logged.resolve();
+        onLog?.();
       },
       schedule: {
         setInterval: (fn) => {
@@ -420,9 +420,18 @@ test("invalidation poller skips idle DB queries, seeds on first lease, and backs
       expect(await client.callTool({ name: "ping_tool", arguments: {} })).toMatchObject({
         content: [{ type: "text", text: "ok 1" }],
       });
+      const waitLog = () => {
+        const next = Promise.withResolvers<void>();
+        onLog = () => {
+          onLog = undefined;
+          next.resolve();
+        };
+        return next.promise;
+      };
       failInvalidations = true;
+      const firstLog = waitLog();
       tickCallback!();
-      await logged.promise;
+      await firstLog;
       expect(invalidationReads).toBe(1);
       expect(logs).toEqual(["armada: MCP invalidation poller unavailable; backing off."]);
       currentTime += 100;
@@ -433,15 +442,178 @@ test("invalidation poller skips idle DB queries, seeds on first lease, and backs
       });
       currentTime += 250;
       failInvalidations = false;
+      failInFlight = Promise.withResolvers<never>();
+      const secondLog = waitLog();
+      tickCallback!();
+      tickCallback!();
+      tickCallback!();
+      tickCallback!();
+      const pendingFailure = failInFlight;
+      failInFlight = undefined;
+      pendingFailure.reject(new Error("slow_db_timeout"));
+      await secondLog;
+      expect(invalidationReads).toBe(2);
+      expect(logs.length).toBe(2);
+      currentTime += 499;
+      tickCallback!();
+      expect(invalidationReads).toBe(2);
+      currentTime += 1;
       await integration.registry.revoke(user, org, connection.id);
       tickCallback!();
       await integration.drainInvalidations();
+      expect(invalidationReads).toBe(4);
       await expect(client.callTool({ name: "ping_tool", arguments: {} })).rejects.toThrow();
       const readsAfterEviction = invalidationReads;
       tickCallback!();
       expect(invalidationReads).toBe(readsAfterEviction);
     } finally {
       await client.close().catch(() => {});
+    }
+  } finally {
+    await integration?.close();
+    await Promise.all(servers.map((server) => server.close()));
+    await db.close();
+  }
+});
+
+test("concurrent authenticate and lease eviction never resets invalidation cursor for surviving leases", async () => {
+  const db = await migratedDatabase();
+  const servers: McpServer[] = [];
+  const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
+  let integration: ReturnType<typeof createMcpHttpIntegration> | undefined;
+  try {
+    const user = crypto.randomUUID(),
+      org = crypto.randomUUID(),
+      goldenId = crypto.randomUUID(),
+      sandboxId = crypto.randomUUID();
+    await db.query("insert into auth.users(id) values($1)", [user]);
+    await db.query("insert into public.orgs(id,name) values($1,'Race test')", [org]);
+    await db.query("insert into public.members(org_id,user_id,role) values($1,$2,'admin')", [org, user]);
+    await db.query("insert into goldens(id,org_id,owner_id,name,visibility) values($1,$2,$3,'race','org')", [
+      goldenId,
+      org,
+      user,
+    ]);
+    await db.query(
+      "insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status) values($1,$2,$3,$4,'bx_race','claude','ready')",
+      [sandboxId, goldenId, org, user],
+    );
+    const tokenA = `armada_gw_${crypto.randomUUID()}`,
+      tokenB = `armada_gw_${crypto.randomUUID()}`,
+      tokenC = `armada_gw_${crypto.randomUUID()}`;
+    const hashA = await sha256Hex(tokenA),
+      hashB = await sha256Hex(tokenB),
+      hashC = await sha256Hex(tokenC);
+    let seedCalls = 0,
+      bValidateCount = 0,
+      bLeaseId = "";
+    const bReadyToSeed = Promise.withResolvers<void>();
+    const bPaused = Promise.withResolvers<void>();
+    const resumeB = Promise.withResolvers<void>();
+    const racedSql: Sql = {
+      async query<T>(statement: string, params?: unknown[]) {
+        if (
+          statement.includes("select $1::uuid,id from public.mcp_invalidations") &&
+          !statement.includes("where id=any")
+        ) {
+          seedCalls++;
+          await bReadyToSeed.promise;
+        }
+        if (statement.includes("from public.mcp_leases") && params?.[0] === hashB) {
+          bValidateCount++;
+          if (bValidateCount === 2) {
+            bPaused.resolve();
+            await resumeB.promise;
+          }
+        }
+        const result = await db.query<T>(statement, params);
+        if (statement.includes("select expires_at from public.mcp_leases") && params?.[0] === bLeaseId) {
+          bReadyToSeed.resolve();
+        }
+        return result;
+      },
+    };
+    const upstream: FetchLike = async (input, init) => {
+      const request = new Request(String(input), init);
+      let transport = transports.get(request.headers.get("mcp-session-id") ?? "");
+      if (!transport) {
+        transport = new WebStandardStreamableHTTPServerTransport({
+          sessionIdGenerator: () => crypto.randomUUID(),
+          enableJsonResponse: true,
+          keepAliveMs: 0,
+        });
+        const remote = new McpServer({ name: "Race remote", version: "1" });
+        remote.registerTool("ping_tool", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));
+        await remote.connect(transport);
+        servers.push(remote);
+      }
+      const response = await transport.handleRequest(request);
+      if (transport.sessionId) transports.set(transport.sessionId, transport);
+      return response;
+    };
+    integration = createMcpHttpIntegration({
+      sql: racedSql,
+      encryptionKey: Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64"),
+      publicUrl: "https://armada.example",
+      dashboardUrl: "https://dashboard.example",
+      deferBackground: true,
+      fetch: upstream,
+    });
+    const makeConnection = async (name: string, hash: string) => {
+      const conn = await integration!.registry.save(user, org, {
+        name,
+        scope: "personal",
+        transport: "http",
+        url: `https://${name.toLowerCase()}.example/mcp`,
+        authType: "none",
+      });
+      await db.query("update public.mcp_grants set status='connected' where connection_id=$1", [conn.id]);
+      await integration!.connections.bind(sandboxId, [conn.id]);
+      await createSqlMcpLeasePort(db).issue({
+        sandboxId,
+        connectionId: conn.id,
+        tokenHash: hash,
+        operations: ["tools"],
+        expiresAt: new Date(Date.now() + 3_600_000),
+      });
+      return conn;
+    };
+    const connA = await makeConnection("ConnA", hashA);
+    const connB = await makeConnection("ConnB", hashB);
+    bLeaseId = (await db.query<{ id: string }>("select id from public.mcp_leases where hash=$1", [hashB])).rows[0]!.id;
+    const connC = await makeConnection("ConnC", hashC);
+    const connectClient = (connectionId: string, token: string) => {
+      const client = new Client({ name: `Client ${connectionId}`, version: "1" });
+      const connected = client.connect(
+        new StreamableHTTPClientTransport(new URL(`https://armada.example/mcp/gateway/${connectionId}`), {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+          fetch: async (input, init) =>
+            (await integration!.route(new Request(String(input), init))) ?? new Response(null, { status: 404 }),
+        }),
+      );
+      return { client, connected };
+    };
+    const a = connectClient(connA.id, tokenA);
+    const b = connectClient(connB.id, tokenB);
+    let c: ReturnType<typeof connectClient> | undefined;
+    try {
+      await Promise.all([a.connected, bPaused.promise]);
+      await integration.registry.revoke(user, org, connA.id);
+      await integration.drainInvalidations();
+      resumeB.resolve();
+      await b.connected;
+      await integration.registry.revoke(user, org, connB.id);
+      c = connectClient(connC.id, tokenC);
+      await c.connected;
+      expect(seedCalls).toBe(1);
+      await integration.drainInvalidations();
+      await expect(b.client.callTool({ name: "ping_tool", arguments: {} })).rejects.toThrow();
+      expect(await c.client.callTool({ name: "ping_tool", arguments: {} })).toMatchObject({
+        content: [{ type: "text", text: "ok" }],
+      });
+    } finally {
+      resumeB.resolve();
+      await Promise.allSettled([a.client.close(), b.client.close(), c?.client.close()]);
     }
   } finally {
     await integration?.close();
@@ -472,11 +644,9 @@ test("actual MCP integration construction preserves explicitly configured develo
     });
     const options = {
       sql,
-      authStore: createMemoryAuthStore(),
       encryptionKey: config.encryptionKey,
       publicUrl: config.publicUrl,
       dashboardUrl: config.dashboardUrl,
-      supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     };
     expect(() => createMcpHttpIntegration(options)).toThrow("ARMADA_DASHBOARD_URL");
     integration = createMcpHttpIntegration({ ...options, development: config.development });

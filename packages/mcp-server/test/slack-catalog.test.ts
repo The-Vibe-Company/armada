@@ -139,8 +139,6 @@ test("registered Slack catalog uses confidential OAuth without DCR and isolates 
       catalogAuthentication,
       dashboardUrl: "https://dashboard.example",
       publicUrl: "https://armada.example",
-      authStore,
-      supabase,
       fetch: network,
     });
     const options = {

@@ -1,4 +1,3 @@
-import type { AuthStore } from "@armada/auth";
 import {
   createSqlMcpGrantPort,
   createSqlMcpInvalidationPort,
@@ -20,7 +19,7 @@ import {
   publicFetch,
 } from "@armada/mcp-gateway";
 import { OAuthClientInformationFullSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { bearerToken, type SupabaseProject } from "./caller.ts";
+import { bearerToken } from "./caller.ts";
 import { dashboardOrigin } from "./config.ts";
 import { SLACK_OAUTH_BINDING } from "./mcp-catalog-client.ts";
 import { createMcpOAuthStore, createMcpSecretBox } from "./mcp-integration.ts";
@@ -60,8 +59,6 @@ export function createMcpHttpIntegration(options: {
   development?: boolean;
   /** Trusted outbound transport, e.g. deployment egress proxy; endpoint policy remains enforced. */
   fetch?: typeof publicFetch;
-  authStore?: AuthStore;
-  supabase?: SupabaseProject;
   catalogAuthentication?: (serviceId: import("@armada/core").McpCatalogId) => Promise<string | undefined>;
   logError?: (line: string) => void;
   now?: () => number;
@@ -383,12 +380,22 @@ export function createMcpHttpIntegration(options: {
   const hashes = new WeakMap<GatewayLease, string>();
   const activeLeases = new Map<string, { lease: GatewayLease; hash: string; orgId: string }>();
   let cursorSeeded = false;
+  let seedEpoch = 0;
+  let pendingAuthentications = 0;
   let seedingCursor: Promise<void> | undefined;
   let consecutiveFailures = 0;
   let nextPollAt = 0;
+  function resetIdlePollerState() {
+    if (activeLeases.size === 0 && pendingAuthentications === 0) {
+      cursorSeeded = false;
+      consecutiveFailures = 0;
+      nextPollAt = 0;
+    }
+  }
   function seedInvalidationCursor() {
-    if (cursorSeeded) return Promise.resolve();
+    if (cursorSeeded || activeLeases.size > 0) return Promise.resolve();
     if (seedingCursor) return seedingCursor;
+    seedEpoch++;
     seedingCursor = sql
       .query(
         `insert into public.mcp_invalidation_deliveries(replica_id,event_id)
@@ -405,11 +412,7 @@ export function createMcpHttpIntegration(options: {
   }
   function removeActiveLease(id: string) {
     activeLeases.delete(id);
-    if (activeLeases.size === 0) {
-      cursorSeeded = false;
-      consecutiveFailures = 0;
-      nextPollAt = 0;
-    }
+    resetIdlePollerState();
   }
   async function validate(lease: GatewayLease, op = "tools") {
     const hash = hashes.get(lease);
@@ -455,15 +458,23 @@ export function createMcpHttpIntegration(options: {
           previous.lease.expiresAt = lease.expiresAt;
           return previous.lease;
         }
-        if (!cursorSeeded) {
-          await seedInvalidationCursor();
-          if (!(await leases.validate(hash, "tools")))
-            throw new GatewayError("denied", "Gateway token revoked or expired.");
+        pendingAuthentications++;
+        try {
+          while (!cursorSeeded && activeLeases.size === 0) {
+            await seedInvalidationCursor();
+            const epoch = seedEpoch;
+            if (!(await leases.validate(hash, "tools")))
+              throw new GatewayError("denied", "Gateway token revoked or expired.");
+            if (epoch === seedEpoch) break;
+          }
+          hashes.set(lease, hash);
+          activeLeases.set(lease.id, { lease, hash, orgId: claims.org_id });
+          nextPollAt = 0;
+          return lease;
+        } finally {
+          pendingAuthentications--;
+          resetIdlePollerState();
         }
-        hashes.set(lease, hash);
-        activeLeases.set(lease.id, { lease, hash, orgId: claims.org_id });
-        nextPollAt = 0;
-        return lease;
       },
       assertActive: validate,
       async allow(lease, direction, message) {
@@ -606,7 +617,7 @@ export function createMcpHttpIntegration(options: {
         nextPollAt = 0;
         return;
       }
-      if (now() < nextPollAt) return;
+      if (draining || now() < nextPollAt) return;
       void drainInvalidations().then(
         () => {
           consecutiveFailures = 0;
@@ -666,6 +677,7 @@ export function createMcpHttpIntegration(options: {
       await Promise.allSettled([draining, seedingCursor]);
       await gateway.close();
       activeLeases.clear();
+      pendingAuthentications = 0;
       cursorSeeded = false;
       consecutiveFailures = 0;
       nextPollAt = 0;

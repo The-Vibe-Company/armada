@@ -4,6 +4,7 @@ import {
   type McpConnectionDto,
   type McpConnectionInput,
   type McpRegistry,
+  parsePinnedMcpStdio,
   VaultError,
   type VaultStore,
 } from "@armada/core/server";
@@ -121,7 +122,16 @@ export async function dispatchMcp(
   if (action === "connect" && connection.status === "disabled")
     throw new VaultError("conflict", "Enable this MCP connection before connecting.");
   if (connection.transport === "stdio") {
-    if (action === "connect") return { connection: await registry.configureStdio(userId, orgId, id) };
+    if (action === "connect") {
+      try {
+        parsePinnedMcpStdio(connection.command ?? "", connection.args ?? []);
+      } catch (error) {
+        throw new VaultError("invalid", error instanceof Error ? error.message : "Invalid pinned stdio MCP launcher.");
+      }
+      return {
+        connection: connection.status === "connected" ? connection : await registry.configureStdio(userId, orgId, id),
+      };
+    }
     if (action === "status") return { connection };
   }
   if (action === "status" && connection.status === "disabled") return { connection };
