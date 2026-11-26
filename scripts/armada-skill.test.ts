@@ -40,7 +40,7 @@ function invocations(markdown: string): string[] {
     }
     if (fenced) {
       if (/^\s*#/.test(line)) continue;
-      const match = line.match(/(?:^|\|\s*)(armada\s.+)$/);
+      const match = line.match(/(?:^\s*|\|\s*)(armada\s.+)$/);
       if (match?.[1]) result.push(match[1].trim());
     } else {
       for (const match of line.matchAll(/`(armada\s[^`]+)`/g)) result.push(match[1] ?? "");
