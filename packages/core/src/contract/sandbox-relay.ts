@@ -43,7 +43,6 @@ export type RelayTicketResponse = z.infer<typeof relayTicketResponse>;
 export const sandboxRelayOperations = {
   mintTicket: {
     name: "mintSandboxRelayTicket",
-    directServer: true,
     route: { method: "POST", path: "/api/v1/sandboxes/{id}/relay-ticket" },
     input: { body: relayTicketRequest, path: { id: z.uuid() }, maxBodyBytes: 32_768, oversizedBodyStatus: 400 },
     output: relayTicketResponse,
