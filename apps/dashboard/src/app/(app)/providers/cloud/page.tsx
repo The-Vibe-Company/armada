@@ -34,6 +34,7 @@ import { selectedOrganization } from "@/lib/data/selected-org";
 import type { Membership } from "@/lib/data/viewer";
 import { type DockerHost, HOSTS_PATH, hostState, hostVersionWarning, sandboxCount } from "@/lib/docker-hosts";
 import { type DockerLaunchOption, dockerHarnesses, dockerLaunchBlocker, dockerUnavailable } from "@/lib/docker-launch";
+import { hasDockerHost } from "@/lib/docker-snapshots";
 import { CLOUD_PROVIDERS_LABEL, DOCKER_HOSTS_LABEL } from "@/lib/labels";
 import type { LaunchAccounts } from "@/lib/model-accounts";
 import { CLOUD_PROVIDERS_PATH, isConfigured, SETUP_PROVIDERS } from "@/lib/provider-setup";
@@ -43,7 +44,16 @@ import { createClient } from "@/lib/supabase/server";
 export const metadata: Metadata = { title: "Machines" };
 export const dynamic = "force-dynamic";
 
-/** Cloud accounts and own servers share one Machines surface; personal keys stay in Your connections. */
+const TITLE = "Machines";
+const DESCRIPTION =
+  "Cloud accounts and self-hosted Docker hosts where your organization’s sandboxes and snapshots run.";
+
+const PROVIDER_DESCRIPTIONS = {
+  boat: "Managed microVMs with fast snapshot restores and persistent disks.",
+  modal: "Serverless cloud containers that scale on demand for snapshots and sandboxes.",
+} as const;
+
+/** Cloud accounts and Docker hosts share one Machines surface; personal keys stay in Your connections. */
 export default async function CloudProvidersPage({ searchParams }: Props) {
   const supabase = await createClient();
   const selected = await selectedOrganization();
@@ -59,6 +69,11 @@ export default async function CloudProvidersPage({ searchParams }: Props) {
     selected ? readLaunchTimes(supabase, selected.org.id) : null,
   ]);
   const query = await searchParams;
+  const hasDocker = hosts.state === "ready" && hasDockerHost(hosts.list.hosts);
+  const onboarding =
+    selected && setup?.state === "pending" && !hasDocker ? (
+      <FirstRunGuide orgName={selected.org.name} isAdmin={selected.role === "admin"} />
+    ) : null;
   const cloud = (
     <>
       <SandboxProviders
@@ -71,19 +86,66 @@ export default async function CloudProvidersPage({ searchParams }: Props) {
     </>
   );
   if (selected && hosts.state === "ready") {
-    return OwnServers({ selected, hosts, query, cloud });
+    return OwnServers({ selected, hosts, query, cloud, onboarding });
   }
   return (
     <>
-      <PageHeader title="Machines" />
+      <PageHeader title={TITLE} description={DESCRIPTION} />
+      {onboarding}
       {cloud}
       {hosts.state === "error" && (
         <Alert variant="destructive">
-          <AlertTitle>Servers could not be loaded</AlertTitle>
+          <AlertTitle>Docker hosts could not be loaded</AlertTitle>
           <AlertDescription>Reload Machines to try again.</AlertDescription>
         </Alert>
       )}
     </>
+  );
+}
+
+function FirstRunGuide({ orgName, isAdmin }: { orgName: string; isAdmin: boolean }) {
+  return (
+    <section
+      aria-labelledby="first-run-guide-title"
+      data-first-run-guide
+      className="space-y-3 rounded-xl border bg-card p-4 shadow-xs"
+    >
+      <div className="space-y-1">
+        <h2 id="first-run-guide-title" className="text-sm font-semibold">
+          Finish setup to launch sandboxes
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          No compute backend is connected for {orgName} yet, so Armada brought you here first.
+          {!isAdmin && " Ask an organization admin to connect a cloud provider or register a Docker host."}
+        </p>
+      </div>
+      <ol className="grid gap-3 text-xs text-muted-foreground sm:grid-cols-3">
+        <li className="rounded-lg border bg-background p-3">
+          <p className="font-medium text-foreground">1. Connect one compute backend</p>
+          <p className="mt-1">Connect Boat or Modal below, or register a self-hosted Docker host.</p>
+        </li>
+        <li className="rounded-lg border bg-background p-3">
+          <p className="font-medium text-foreground">2. Add a model account</p>
+          <p className="mt-1">
+            Add a Claude, OpenAI, or OpenCode subscription or API key in{" "}
+            <Link href="/harness" className="text-foreground underline underline-offset-4">
+              Models
+            </Link>
+            .
+          </p>
+        </li>
+        <li className="rounded-lg border bg-background p-3">
+          <p className="font-medium text-foreground">3. Connect GitHub &amp; launch</p>
+          <p className="mt-1">
+            Link your GitHub account in{" "}
+            <Link href="/settings" className="text-foreground underline underline-offset-4">
+              Your connections
+            </Link>
+            , then build a snapshot or launch a sandbox.
+          </p>
+        </li>
+      </ol>
+    </section>
   );
 }
 
@@ -129,6 +191,7 @@ function SandboxProviders({
             key={selected.org.id}
             initial={initial}
             label={CLOUD_PROVIDERS_LABEL}
+            description="Managed cloud sandboxes billed to your organization’s provider account."
             rows={SETUP_PROVIDERS.map((provider) => {
               const state: ProviderRowState =
                 setup.state === "unavailable"
@@ -148,6 +211,7 @@ function SandboxProviders({
                   </span>
                 ),
                 meta: "Organization key",
+                fact: PROVIDER_DESCRIPTIONS[provider],
                 state: <ConnectionBadge state={state} />,
                 subtitle: selected.org.name,
                 detail: (
@@ -178,17 +242,18 @@ function SandboxProviders({
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
-const TITLE = "Machines";
 async function OwnServers({
   selected,
   hosts,
   query,
   cloud,
+  onboarding,
 }: {
   selected: Membership;
   hosts: Extract<Awaited<ReturnType<typeof readSelectedDockerHosts>>, { state: "ready" }>;
   query: Record<string, string | string[] | undefined>;
   cloud: ReactNode;
+  onboarding: ReactNode;
 }) {
   const isAdmin = selected.role === "admin";
   const orgId = selected.org.id;
@@ -231,31 +296,35 @@ async function OwnServers({
 
   return (
     <>
-      <PageHeader title={TITLE}>{isAdmin ? <AddHostDialog orgId={orgId} /> : undefined}</PageHeader>
+      <PageHeader title={TITLE} description={DESCRIPTION}>
+        {isAdmin ? <AddHostDialog orgId={orgId} /> : undefined}
+      </PageHeader>
+      {onboarding}
       {cloud}
       <MachinesSection
         key={orgId}
         label={DOCKER_HOSTS_LABEL}
+        description="Self-hosted Linux machines running Docker that connect outbound to Armada."
         rows={rows}
         initial={requested}
         empty={
           <Empty
             title={
               hosts.list.skipped > 0
-                ? "Machines are not fully loaded"
+                ? "Docker hosts are not fully loaded"
                 : showSetup
                   ? "No unfinished setup"
-                  : "No machines connected yet"
+                  : "No Docker hosts connected yet"
             }
             icon={<ServerIcon />}
           >
             {hosts.list.skipped > 0
-              ? "Some machines could not be read. Reload the list before adding a machine or checking setup."
+              ? "Some Docker hosts could not be read. Reload the list before registering a Docker host or checking setup."
               : showSetup
-                ? "Your machines have completed setup or their entries have been unlinked. Choose Machines to see them."
+                ? "Your Docker hosts have completed setup or their entries have been unlinked. Choose Docker hosts to see them."
                 : isAdmin
                   ? "Choose Register a Docker host to connect a Linux machine running Docker. After you run its install command, it appears here."
-                  : "Ask an organization admin to add a server. It appears here after its install command runs."}
+                  : "Ask an organization admin to register a Docker host. It appears here after its install command runs."}
           </Empty>
         }
       />
@@ -267,10 +336,10 @@ async function OwnServers({
         )}
 
         {(unfinished.length > 0 || showSetup) && (
-          <nav aria-label="Host setup" className="flex flex-wrap gap-2">
+          <nav aria-label="Docker host setup" className="flex flex-wrap gap-2">
             <Button asChild variant={showSetup ? "outline" : "secondary"} size="sm">
               <Link href={HOSTS_PATH} aria-current={!showSetup ? "page" : undefined}>
-                Machines
+                Docker hosts
               </Link>
             </Button>
             <Button asChild variant={showSetup ? "secondary" : "outline"} size="sm">
@@ -283,18 +352,18 @@ async function OwnServers({
         {showSetup && (
           <p className="text-sm text-muted-foreground">
             {isAdmin
-              ? "These machines have not connected yet. If you no longer have the install command, unlink the entry and add the Docker host again to get a new one. Unlinking an entry does not uninstall anything on your machine."
-              : "These machines have not connected yet. Ask an organization admin to finish setup or remove unused entries."}
+              ? "These Docker hosts have not connected yet. If you no longer have the install command, unlink the entry and register the Docker host again to get a new one. Unlinking an entry does not uninstall anything on your machine."
+              : "These Docker hosts have not connected yet. Ask an organization admin to finish setup or remove unused entries."}
           </p>
         )}
         {hosts.list.skipped > 0 && (
           <Alert>
             <CircleAlertIcon />
-            <AlertTitle>Some machines could not be shown</AlertTitle>
+            <AlertTitle>Some Docker hosts could not be shown</AlertTitle>
             <AlertDescription>
               <p>
-                Your machine list is incomplete. Reload to try again. If this continues, ask an organization admin for
-                help.
+                Your Docker host list is incomplete. Reload to try again. If this continues, ask an organization admin
+                for help.
               </p>
               <Button asChild variant="outline" size="sm" className="mt-2">
                 <a href={HOSTS_PATH}>Reload Machines</a>
@@ -328,7 +397,7 @@ function row(
 ): ResourceRow & { bucket: Bucket; actionLabel: string } {
   targetVersion = host.pinnedVersion ?? targetVersion;
   const resources = dockerHostResourceDisplay(host);
-  const name = host.name ?? "Unnamed machine";
+  const name = host.name ?? "Unnamed Docker host";
   const blocker = dockerLaunchBlocker(launch.option, launch.placement, host);
   const state = hostState(host, now);
   const seen = host.lastSeenAt ? relativeAge(host.lastSeenAt, now) : null;
@@ -467,7 +536,7 @@ function row(
           </CollapsibleContent>
         </Collapsible>
         {isAdmin && host.state !== "revoked" && (
-          <PanelSection title="Unlink this server">
+          <PanelSection title="Unlink this Docker host">
             <RevokeHost orgId={orgId} hostId={host.id} name={name} sandboxes={host.sandboxes} />
           </PanelSection>
         )}

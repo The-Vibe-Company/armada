@@ -24,13 +24,14 @@ import { type Bucket, ITEM_PARAM, sortResources } from "@/lib/resource-list";
 import { type ToolState, toolFact, toolState } from "@/lib/tools";
 import { cn } from "@/lib/utils";
 
-export const metadata: Metadata = { title: "Tools" };
+export const metadata: Metadata = { title: "Tools (MCP servers)" };
 export const dynamic = "force-dynamic";
 
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
-const TITLE = "Tools";
-const DESCRIPTION = "Services your agents can call while they work.";
+const TITLE = "Tools (MCP servers)";
+const DESCRIPTION =
+  "External MCP servers your agents can call inside sandboxes — pre-selected at launch or attached to templates.";
 
 export default async function ToolsPage({ searchParams }: Props) {
   const selectedRead = selectedOrganization();
@@ -155,7 +156,7 @@ export default async function ToolsPage({ searchParams }: Props) {
                 Services
               </h2>
               <p className="text-sm text-muted-foreground">
-                Sign in once with the account Armada should use. For anything else, use Add a tool.
+                Sign in once with the account Armada should use. For anything else, use Add an MCP server.
               </p>
             </div>
             {catalog.state === "ready" ? (
@@ -163,7 +164,7 @@ export default async function ToolsPage({ searchParams }: Props) {
                 <ServiceCatalog services={services} connections={list.connections} {...org} />
               ) : (
                 <p className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
-                  No ready-to-connect services are offered here. Use Add a tool to connect another tool.
+                  No ready-to-connect services are offered here. Use Add an MCP server to connect a custom MCP server.
                 </p>
               )
             ) : (
@@ -171,15 +172,15 @@ export default async function ToolsPage({ searchParams }: Props) {
                 className="rounded-xl border border-dashed px-4 py-6 text-center text-sm text-muted-foreground"
                 data-catalog-unavailable
               >
-                Services could not be loaded here. You can still use Add a tool to connect a custom tool.
+                Services could not be loaded here. You can still use Add an MCP server to connect a custom MCP server.
               </p>
             )}
           </section>
         </>
       }
       empty={
-        <Empty title="No tools yet" icon={<PlugIcon />}>
-          Connect a service below or use Add a tool to connect another tool for your agents.
+        <Empty title="No MCP servers yet" icon={<PlugIcon />}>
+          Connect a service below or use Add an MCP server to add an external MCP server for your agents.
         </Empty>
       }
     />

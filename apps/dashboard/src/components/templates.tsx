@@ -311,7 +311,7 @@ function TemplateForm({
             ))}
           </SentenceChoice>
           {placement
-            ? ", using this exact snapshot or the official image on that server."
+            ? ", using this exact snapshot or the official image on that Docker host."
             : ", and picks up each rebuild of it automatically."}
         </div>
         <div>
@@ -536,9 +536,17 @@ function TemplateForm({
           icon={<LockKeyholeIcon />}
           mono
           empty={
-            lookups.secrets == null
-              ? "Secrets could not be read. Refresh to choose them."
-              : "No secrets yet. Add one in Secrets."
+            lookups.secrets == null ? (
+              "Secrets could not be read. Refresh to choose them."
+            ) : (
+              <>
+                No {scope === "org" ? "organization " : ""}secrets yet.{" "}
+                <Link className="underline underline-offset-4" href="/variables">
+                  Add one in Variables
+                </Link>
+                .
+              </>
+            )
           }
           options={[
             ...(lookups.secrets ?? [])

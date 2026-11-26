@@ -16,7 +16,8 @@ import { audience, canManage, itemKey, type VaultItem, vaultState } from "@/lib/
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Variables";
-const DESCRIPTION = "Values handed to the agent in the sandbox, as environment variables.";
+const DESCRIPTION =
+  "Readable variables and encrypted secrets injected into sandboxes as environment variables via templates.";
 
 export default async function VariablesContent({ searchParams }: Props) {
   const [selected, list, query] = await Promise.all([selectedOrganization(), listSelectedVault(), searchParams]);
@@ -98,8 +99,8 @@ export default async function VariablesContent({ searchParams }: Props) {
       variant="table"
       title={TITLE}
       description={DESCRIPTION}
-      columns={["Name", "Value", "Kind", "Shared with", "Updated", "Actions"]}
-      label="Settings and secrets"
+      columns={["Name", "Value", "Kind", "Status", "Shared with", "Updated", "Actions"]}
+      label="Variables and secrets"
       rows={rows}
       blockers={[]}
       initial={requested}
@@ -107,15 +108,15 @@ export default async function VariablesContent({ searchParams }: Props) {
       footer={
         <p className="text-xs text-pretty text-muted-foreground">
           Personal entries are visible only to you in Armada. Org entries are shared with every member of {orgName};{" "}
-          {isAdmin ? "you manage them." : "only an admin changes them."} Settings are readable configuration, not
+          {isAdmin ? "you manage them." : "only an admin changes them."} Variables are readable configuration, not
           secrets. Stored secret values cannot be read back from this page. Attach entries to a template. Revoke stops
           handing a value out; Delete removes the entry. Delivered values can be inspected by people or agents with
           access to the sandbox; changing or revoking an entry does not erase copies already delivered.
         </p>
       }
       empty={
-        <Empty title="No settings or secrets yet" icon={<VariableIcon />}>
-          Add a setting or a secret, then attach it to a template.
+        <Empty title="No variables or secrets yet" icon={<VariableIcon />}>
+          Add a variable or a secret, then attach it to a template.
         </Empty>
       }
     />
@@ -130,13 +131,22 @@ function row(
   now: number,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = vaultState(item);
-  const hiddenValue = "Not shown";
-  const meta = item.kind === "secret" ? "Secret · never shown again" : "Setting · anyone who can use it can read it";
+  const valueCell =
+    item.status === "revoked" ? (
+      <span className="text-muted-foreground">Erased</span>
+    ) : item.kind === "secret" ? (
+      <span className="text-muted-foreground">Encrypted</span>
+    ) : (
+      <span className="text-muted-foreground">Click to view</span>
+    );
+  const meta =
+    item.kind === "secret" ? "Secret · write-only, encrypted" : "Variable · anyone who can use it can read it";
   return {
     key: itemKey(item),
     columns: [
-      { key: "value", content: hiddenValue },
-      { key: "kind", content: item.status === "revoked" ? "Revoked" : item.kind === "secret" ? "Secret" : "Variable" },
+      { key: "value", content: valueCell },
+      { key: "kind", content: item.kind === "secret" ? "Secret" : "Variable" },
+      { key: "status", content: <StateCell tone={state.tone} label={state.label} data-vault-status={item.status} /> },
       { key: "scope", content: audience(item, orgName) },
       {
         key: "updated",
@@ -151,7 +161,7 @@ function row(
     name: item.name,
     tie: item.kind,
     bucket: state.bucket,
-    search: [item.name, item.kind, item.kind === "variable" ? "setting" : "secret", item.scope, item.status].join(" "),
+    search: [item.name, item.kind, item.scope, item.status].join(" "),
 
     tags: (
       <RowTag>
@@ -161,7 +171,7 @@ function row(
     ),
     meta,
     subtitle: meta,
-    state: <StateCell tone={state.tone} label={state.label} data-vault-status={item.status} />,
+    state: null,
     detail: (
       <div className="space-y-4">
         <VaultPanel item={item} orgName={orgName} canManage={manage} now={now} />

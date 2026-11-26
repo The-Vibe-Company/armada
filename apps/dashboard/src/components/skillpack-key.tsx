@@ -46,7 +46,7 @@ const SCOPES: readonly SkillpackScope[] = ["user", "org"];
  * The key is an uncontrolled password field: sent once, emptied by React after the submission, and the dialog closes
  * on success, so it is kept nowhere in the page.
  */
-export function SkillpackKeyView({ title, orgId, orgName, isAdmin, keys }: Props) {
+export function SkillpackKeyView({ title, description, orgId, orgName, isAdmin, keys }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
@@ -78,7 +78,7 @@ export function SkillpackKeyView({ title, orgId, orgName, isAdmin, keys }: Props
 
   return (
     <>
-      <PageHeader title={title} inlineActions>
+      <PageHeader title={title} description={description} inlineActions>
         <CreateDialog
           label="Add a key"
           title="Add a Skillpack key"

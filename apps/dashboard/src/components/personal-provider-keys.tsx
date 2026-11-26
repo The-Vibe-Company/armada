@@ -1,5 +1,6 @@
 import { encryptionKey } from "@armada/core";
 import { KeyRoundIcon } from "lucide-react";
+import Link from "next/link";
 import { removeCredential, saveCredential } from "@/app/actions/credentials";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { ConfirmedAction } from "@/components/confirmed-action";
@@ -24,10 +25,16 @@ export function PersonalProviderKeys({ owner, rows }: { owner: string; rows: Cre
     <Card data-settings="personal-keys" id="personal-keys" aria-labelledby="personal-provider-keys">
       <CardHeader>
         <CardTitle id="personal-provider-keys" role="heading" aria-level={2} className="flex items-center gap-2">
-          <KeyRoundIcon className="size-4" />A personal Boat or Modal key
+          <KeyRoundIcon className="size-4" />
+          Personal Boat or Modal keys
         </CardTitle>
         <CardDescription>
-          Optional. These host your private snapshots. The organization’s cloud accounts are on Machines.
+          Optional — most users don’t need these. Add a personal key only if you want to bill private snapshots to your
+          own cloud account; organization cloud accounts live on{" "}
+          <Link href="/providers/cloud" className="underline underline-offset-4">
+            Machines
+          </Link>
+          .
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

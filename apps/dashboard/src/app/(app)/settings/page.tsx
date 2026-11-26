@@ -43,12 +43,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="mx-auto flex w-full max-w-[920px] flex-col gap-7">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <PageHeader title="Your connections" />
+      <PageHeader
+        title="Your connections"
+        description="Your personal GitHub identity, optional personal cloud keys, and Armada API keys."
+      >
         <Button asChild variant="outline">
-          <Link href="/settings/api-keys">API keys</Link>
+          <Link href="/settings/api-keys">Armada API keys</Link>
         </Button>
-      </div>
+      </PageHeader>
       {result && (
         <Alert variant={result.ok ? "default" : "destructive"}>
           <AlertDescription>{result.text}</AlertDescription>

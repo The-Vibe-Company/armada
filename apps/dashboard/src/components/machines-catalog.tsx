@@ -9,11 +9,13 @@ import { Button } from "@/components/ui/button";
 /** Machines share the catalog drawer and tokens, without catalog filters. */
 export function MachinesSection({
   label,
+  description,
   rows,
   initial = null,
   empty,
 }: {
   label: string;
+  description?: ReactNode;
   rows: (ResourceRow & { actionLabel?: string })[];
   initial?: string | null;
   empty?: ReactNode;
@@ -60,7 +62,10 @@ export function MachinesSection({
   }
   return (
     <section ref={root} aria-label={label} className="space-y-3">
-      <h2 className="text-sm font-semibold">{label}</h2>
+      <div className="space-y-0.5">
+        <h2 className="text-sm font-semibold">{label}</h2>
+        {description && <p className="text-xs text-muted-foreground">{description}</p>}
+      </div>
       {rows.length === 0 ? (
         empty
       ) : (
