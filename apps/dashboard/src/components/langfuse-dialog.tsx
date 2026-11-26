@@ -260,7 +260,9 @@ function LangfuseForm({
               </div>
             )}
             {edit && (
-              <p className="text-xs text-muted-foreground">Keys come in pairs: if you change one, replace the other.</p>
+              <p className="text-xs text-muted-foreground">
+                Keys come in pairs, and changing the host requires replacing the secret key.
+              </p>
             )}
           </div>
           <fieldset className="space-y-2">

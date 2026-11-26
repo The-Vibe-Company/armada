@@ -1,40 +1,108 @@
 "use client";
 
+import type { SandboxStatus } from "@armada/core";
 import { ExternalLinkIcon, Loader2Icon } from "lucide-react";
 import { type FormEvent, useState, useTransition } from "react";
 import { mintRelayTicket } from "@/app/actions/sandboxes";
 import { CopyButton } from "@/components/copy-button";
+import { useThreadSandboxStatus } from "@/components/sandbox-thread-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { COMMON_PREVIEW_PORTS, parseRelayPort, portForwardCommand, submitPreviewBootstrap } from "@/lib/relay-client";
+import {
+  COMMON_PREVIEW_PORTS,
+  isRelayActiveStatus,
+  parsePreviewBootstrapUrl,
+  parseRelayPort,
+  portForwardCommand,
+  submitPreviewBootstrap,
+} from "@/lib/relay-client";
 import { cn } from "@/lib/utils";
 
-export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
+let previewWindowSeq = 0;
+
+type PendingPreview = { port: number; bootstrapUrl: string; ticket: string };
+
+export function SandboxPorts({ sandboxId, initialStatus }: { sandboxId: string; initialStatus?: SandboxStatus }) {
+  const status = useThreadSandboxStatus(initialStatus ?? "ready");
   const [portInput, setPortInput] = useState("3000");
   const [feedback, setFeedback] = useState<{ kind: "error" | "status"; text: string } | null>(null);
+  const [pendingPreview, setPendingPreview] = useState<PendingPreview | null>(null);
   const [pending, startTransition] = useTransition();
+  if (initialStatus && !isRelayActiveStatus(status)) return null;
   const parsed = parseRelayPort(portInput);
   const command = portForwardCommand(sandboxId, parsed.ok ? parsed.port : 3000);
 
   function openPreview(ev: FormEvent) {
     ev.preventDefault();
     const checked = parseRelayPort(portInput);
-    if (!checked.ok) return setFeedback({ kind: "error", text: checked.error });
+    if (!checked.ok) {
+      setPendingPreview(null);
+      return setFeedback({ kind: "error", text: checked.error });
+    }
     setFeedback(null);
+    setPendingPreview(null);
+    const targetName = `armada-preview-${sandboxId}-${checked.port}-${++previewWindowSeq}`;
+    let popup: Window | null = null;
+    try {
+      popup = window.open("", targetName);
+      if (popup) popup.opener = null;
+    } catch {
+      popup = null;
+    }
+    const closePopup = () => {
+      try {
+        if (popup && !popup.closed) popup.close();
+      } catch {
+        popup = null;
+      }
+    };
     startTransition(async () => {
       let minted: Awaited<ReturnType<typeof mintRelayTicket>>;
       try {
         minted = await mintRelayTicket(sandboxId, { mode: "preview", port: checked.port });
       } catch {
+        closePopup();
         return setFeedback({ kind: "error", text: "Could not reach the Armada server. Try again." });
       }
-      if (!minted.ok) return setFeedback({ kind: "error", text: minted.error });
-      if (!minted.ticket.bootstrapUrl)
+      if (!minted.ok) {
+        closePopup();
+        return setFeedback({ kind: "error", text: minted.error });
+      }
+      if (!minted.ticket.bootstrapUrl) {
+        closePopup();
         return setFeedback({ kind: "error", text: "The Armada server did not return a preview bootstrap URL." });
-      if (!submitPreviewBootstrap(minted.ticket.bootstrapUrl, minted.ticket.ticket))
+      }
+      if (!parsePreviewBootstrapUrl(minted.ticket.bootstrapUrl, minted.ticket.ticket)) {
+        closePopup();
         return setFeedback({ kind: "error", text: "The preview address from the server was refused as unsafe." });
-      setFeedback({ kind: "status", text: `Opening port ${checked.port} in a new tab…` });
+      }
+      if (popup && !popup.closed) {
+        if (!submitPreviewBootstrap(minted.ticket.bootstrapUrl, minted.ticket.ticket, { target: targetName })) {
+          closePopup();
+          return setFeedback({ kind: "error", text: "The preview address from the server was refused as unsafe." });
+        }
+        return setFeedback({ kind: "status", text: `Opening port ${checked.port} in a new tab…` });
+      }
+      setPendingPreview({
+        port: checked.port,
+        bootstrapUrl: minted.ticket.bootstrapUrl,
+        ticket: minted.ticket.ticket,
+      });
+      setFeedback({
+        kind: "error",
+        text: `Your browser blocked the preview tab for port ${checked.port}. Click below to open it.`,
+      });
     });
+  }
+
+  function openBlockedPreview() {
+    if (!pendingPreview) return;
+    const { port, bootstrapUrl, ticket } = pendingPreview;
+    setPendingPreview(null);
+    if (!submitPreviewBootstrap(bootstrapUrl, ticket)) {
+      return setFeedback({ kind: "error", text: "The preview address from the server was refused as unsafe." });
+    }
+    setFeedback({ kind: "status", text: `Opening port ${port} in a new tab…` });
   }
 
   return (
@@ -49,6 +117,7 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
             onClick={() => {
               setPortInput(String(port));
               setFeedback(null);
+              setPendingPreview(null);
             }}
             className={cn(
               "rounded-md border px-2 py-1 font-mono text-[11px] tabular-nums transition-[color,background-color,border-color,scale] duration-120 ease-(--ease-out) motion-safe:active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50",
@@ -71,6 +140,7 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
           onChange={(ev) => {
             setPortInput(ev.target.value);
             if (feedback) setFeedback(null);
+            if (pendingPreview) setPendingPreview(null);
           }}
           disabled={pending}
           className="h-8 min-w-0 font-mono text-xs tabular-nums"
@@ -87,6 +157,12 @@ export function SandboxPorts({ sandboxId }: { sandboxId: string }) {
         >
           {feedback.text}
         </p>
+      )}
+      {pendingPreview && (
+        <Button type="button" variant="outline" size="sm" onClick={openBlockedPreview}>
+          <ExternalLinkIcon className="size-3.5" />
+          <span>Open port {pendingPreview.port} preview</span>
+        </Button>
       )}
       <div className="flex items-center gap-1.5 rounded-md border bg-[var(--sunken)] px-2 py-1">
         <code className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={command}>

@@ -1,7 +1,9 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { createClient } from "@supabase/supabase-js";
 import SandboxPage from "@/app/(app)/sandboxes/[id]/page";
+import { disconnectGitHub } from "@/app/actions/github";
 import { execSandbox, interruptSandbox, sendToSandbox, steerSandbox, stopSandbox } from "@/app/actions/sandboxes";
+import { GET as getSandboxEvents } from "@/app/api/sandboxes/[id]/events/route";
 import { SEND_KEY_FIELD } from "@/lib/composer";
 import { type ModelAccount, parseAccount } from "@/lib/model-accounts";
 import type { Database } from "@/lib/supabase/types";
@@ -9,6 +11,7 @@ import { listSelectedAccounts, readConnectionTestChoices } from "./model-account
 import { readSandboxConversation } from "./sandbox-conversation";
 
 const viewer = { id: "owner", email: "owner@example.test", token: "viewer" };
+let activeViewer: typeof viewer | null = viewer;
 const selected = { org: { id: "org", name: "Org" }, role: "admin" };
 const origin = "https://dashboard.test";
 const timestamp = "2026-11-01T00:00:00Z";
@@ -33,6 +36,7 @@ mock.module("next/cache", () => ({
   },
 }));
 mock.module("./viewer", () => ({
+  readViewer: async () => activeViewer,
   requireViewer: async () => viewer,
   listMemberships: async () => [selected],
   memberDirectory: async () => new Map(),
@@ -78,6 +82,7 @@ function sandboxRow(overrides: Record<string, unknown> = {}) {
 }
 
 afterEach(() => {
+  activeViewer = viewer;
   revalidatedPaths.length = 0;
   mock.restore();
 });
@@ -399,4 +404,29 @@ test("send, steer and interrupt use 1-RTT REST without revalidating while stop s
     { path: "/api/v1/sandbox/exec", body: { id: firstId, command: "echo ok", timeout_seconds: 30 } },
     { path: "/api/v1/sandbox/stop", body: { id: firstId } },
   ]);
+});
+
+test("readSandboxConversation returns 401 JSON when signed out and /events sets private no-store", async () => {
+  activeViewer = null;
+  const requests = recordFetch(() => {
+    throw new Error("Signed-out conversation reads must not query Supabase or the gateway");
+  });
+  const response = await getSandboxEvents(new Request(`${origin}/api/sandboxes/${firstId}/events`), {
+    params: Promise.resolve({ id: firstId }),
+  });
+  expect(response.status).toBe(401);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toEqual({ error: "Sign in again." });
+  expect(requests).not.toHaveBeenCalled();
+});
+
+test("disconnectGitHub calls POST /api/v1/github/disconnect instead of deleting from Supabase directly", async () => {
+  const apiCalls: { path: string; body: unknown }[] = [];
+  recordFetch((url, init) => {
+    apiCalls.push({ path: url.pathname, body: JSON.parse(String(init?.body)) });
+    return Response.json({ ok: true });
+  });
+  expect(await disconnectGitHub()).toEqual({ ok: true, message: "GitHub disconnected." });
+  expect(apiCalls).toEqual([{ path: "/api/v1/github/disconnect", body: {} }]);
+  expect(revalidatedPaths).toEqual(["/settings"]);
 });
