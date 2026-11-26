@@ -124,9 +124,11 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     if (encryptionKey) expected.push("resume", "stop", "turn_dispatch");
     const claimed = new Set<string>();
     const errors: string[] = [];
+    let now = 100_000;
+    let captureEnqueues = 0;
     const lane = createLane({
       githubApp,
-      control: {},
+      control: { now: () => new Date(now) },
       options: { logError: (message: string) => errors.push(message) },
       config: { encryptionKey },
       resumeJob,
@@ -145,10 +147,18 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       webhooks: { run: async () => ({ status: "done" }) },
       outputs: {
         captureJob: { concurrency: 4, run: async () => ({ status: "done" }) },
-        enqueueCaptures: async () => {},
+        enqueueCaptures: async () => {
+          captureEnqueues++;
+        },
       },
     } as unknown as Parameters<LaneFactory>[0]);
     await lane?.reconcileOne(new AbortController().signal);
+    now += 29_999;
+    await lane?.reconcileOne(new AbortController().signal);
+    expect(captureEnqueues).toBe(1);
+    now += 1;
+    await lane?.reconcileOne(new AbortController().signal);
+    expect(captureEnqueues).toBe(2);
     expect(claimed).toEqual(
       new Set(["delete", ...(encryptionKey ? ["launch_initial_turn"] : []), ...expected, "snapshot_retirement"]),
     );

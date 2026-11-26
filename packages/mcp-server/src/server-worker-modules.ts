@@ -127,6 +127,7 @@ const jobsLane: LaneFactory = ({
     options.logError,
   );
   let seeded = false;
+  let nextCaptureEnqueueAt = 0;
   return {
     ...runner,
     async reconcileOne(signal) {
@@ -138,10 +139,14 @@ const jobsLane: LaneFactory = ({
           (options.logError ?? console.error)("armada: retention maintenance scheduling unavailable.");
         }
       }
-      try {
-        await outputs.enqueueCaptures(jobs, signal);
-      } catch {
-        (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
+      const now = control.now?.().getTime() ?? Date.now();
+      if (now >= nextCaptureEnqueueAt) {
+        nextCaptureEnqueueAt = now + 30_000;
+        try {
+          await outputs.enqueueCaptures(jobs, signal);
+        } catch {
+          (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
+        }
       }
       return runner.reconcileOne(signal);
     },

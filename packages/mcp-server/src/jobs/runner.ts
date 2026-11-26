@@ -66,12 +66,18 @@ export function createJobsRunner(
   const registrations = Object.entries(kinds).map(([kind, handler]) => {
     if (!Number.isSafeInteger(handler.concurrency) || handler.concurrency <= 0)
       throw new Error("Invalid jobs concurrency.");
-    return { kind, handler, active: 0 };
+    return { kind, handler, active: 0, leased: 0 };
   });
   const pending = new Set<Promise<void>>();
   let nextKind = 0;
 
-  async function run(job: Job, handler: JobKind, cancelClaimExpiry: () => void, lease: AbortController) {
+  async function run(
+    job: Job,
+    handler: JobKind,
+    cancelClaimExpiry: () => void,
+    lease: AbortController,
+    releaseLease: () => void,
+  ) {
     const budget = job.dispatchBudgetMs;
     if (budget !== undefined && budget <= 0) lease.abort();
     const cancelBudget = budget !== undefined && budget > 0 ? schedule(budget, () => lease.abort()) : undefined;
@@ -144,6 +150,7 @@ export function createJobsRunner(
           return generation;
         },
       });
+      releaseLease();
       await settle(result);
     } finally {
       lease.abort();
@@ -162,7 +169,11 @@ export function createJobsRunner(
         const registration = registrations[nextKind]!;
         nextKind = (nextKind + 1) % registrations.length;
         const { kind, handler } = registration;
-        if (handler.timeoutMs !== undefined && registration.active >= handler.concurrency) continue;
+        if (
+          registration.leased >= handler.concurrency ||
+          (handler.timeoutMs !== undefined && registration.active >= handler.concurrency)
+        )
+          continue;
         if (handler.prepare && !(await handler.prepare())) continue;
         if (signal.aborted || shutdown.signal.aborted) return false;
         const lease = new AbortController();
@@ -173,9 +184,16 @@ export function createJobsRunner(
           if (!job || signal.aborted || shutdown.signal.aborted) continue;
           claimed = true;
           registration.active++;
-          const work = run(job, handler, cancelExpiry, lease)
+          registration.leased++;
+          let releaseLease = () => {
+            registration.leased--;
+            releaseLease = () => {};
+          };
+          lease.signal.addEventListener("abort", () => releaseLease(), { once: true });
+          const work = run(job, handler, cancelExpiry, lease, () => releaseLease())
             .catch(() => log("armada: job execution unavailable; durable lease remains fenced."))
             .finally(() => {
+              releaseLease();
               registration.active--;
               pending.delete(work);
             });

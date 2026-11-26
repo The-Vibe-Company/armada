@@ -129,7 +129,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
   configureRequestTimeout = (request, seconds) => server.timeout(ingressRequest(request), seconds);
   const workers = assembly.planWorkers().start();
   const eventNotify = startEventNotifyListener(
-    createPgNotifyClient(config.databaseUrl),
+    () => createPgNotifyClient(config.databaseUrl),
     runtimeWakes,
     options.logError,
   );
