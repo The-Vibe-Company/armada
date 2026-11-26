@@ -13,6 +13,8 @@ export type RelayIo = { socket(url: URL, headers: Record<string, string>): Relay
 export type RelayClientOptions = {
   cwd: string;
   execEnv?: ExecEnvironment | undefined;
+  ghConfigDir?: string | undefined;
+  githubToolsRoot?: string | undefined;
   io?: RelayIo | undefined;
   ptyHost?: PtyHost | undefined;
   tcpHost?: TcpHost | undefined;
@@ -47,7 +49,14 @@ export class RuntimeRelayClient {
     this.headers = { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch };
     this.io = options.io ?? nativeRelayIo;
     const send = (m: r.RelayMessage) => this.sendFrame(m);
-    this.pty = new RelayPtyManager(options.cwd, options.execEnv, send, options.ptyHost ?? nativePtyHost, this.io.after);
+    this.pty = new RelayPtyManager(
+      options.cwd,
+      options.execEnv,
+      send,
+      options.ptyHost ?? nativePtyHost,
+      this.io.after,
+      { ghConfigDir: options.ghConfigDir, githubToolsRoot: options.githubToolsRoot },
+    );
     this.tcp = new RelayTcpManager(send, options.tcpHost ?? nativeTcpHost);
   }
   get revoked() {

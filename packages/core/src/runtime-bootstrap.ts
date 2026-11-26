@@ -12,7 +12,7 @@ let report=async()=>{};
  const {readFileSync,constants}=require('node:fs');
  const ticket=JSON.parse(readFileSync(0,'utf8'));
  report=async(stage)=>{try{await fetch(origin+'/api/runtime/progress',{method:'POST',redirect:'error',credentials:'omit',signal:AbortSignal.timeout(3000),headers:{authorization:'Bearer '+ticket.enrolmentToken,'content-type':'application/json'},body:JSON.stringify({stage})});}catch{}};
- await report('bootstrap_started');
+ void report('bootstrap_started');
  const home='/home/user', root=${JSON.stringify(cacheDir)};
  const owner=await fs.lstat(home);
  try{await fs.mkdir(root,{mode:0o700});}catch(e){if(e.code!=='EEXIST')throw e;}
@@ -58,7 +58,7 @@ let report=async()=>{};
   if(response.status!==200||!response.body)throw Error();
   await install(response.body);
  }
- await report('artifact_verified');
+ void report('artifact_verified');
  await fs.chmod(target,0o700);await fs.chown(root,owner.uid,owner.gid);await fs.chown(target,owner.uid,owner.gid);
  const child=cp.spawn(target,['dialout'],{detached:true,uid:owner.uid,gid:owner.gid,cwd:home,env:{HOME:home,PATH:'/usr/bin:/bin'},stdio:['pipe','ignore','ignore']});
  await new Promise((resolve,reject)=>{child.once('error',reject);child.once('spawn',resolve);});

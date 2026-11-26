@@ -15,13 +15,15 @@ export function parseAuth(argv: readonly string[]) {
       position.push(...argv.slice(index + 1));
       break;
     }
-    if (!arg.startsWith("--")) {
+    if (!arg.startsWith("-") || arg === "-") {
       position.push(arg);
       continue;
     }
+    if (!arg.startsWith("--")) throw new AuthError(`Unknown flag ${arg}.`, "usage");
     const eq = arg.indexOf("=");
     const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-    if (name === "json" && eq === -1) {
+    if (name === "json") {
+      if (eq !== -1) throw new AuthError("--json takes no value.", "usage");
       flags.set("json", "true");
       continue;
     }

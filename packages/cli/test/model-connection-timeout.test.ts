@@ -31,13 +31,7 @@ test("CLI receives the runtime's 15-second outcome rather than timing out at the
     expect(out.join("")).toBe(
       JSON.stringify({ id: "sandbox", ok: false, status: null, error: "connection_failed", code: null }) + "\n",
     );
-    expect(JSON.parse(err.join(""))).toEqual({
-      error: {
-        code: "command_failed",
-        message: "Armada could not complete the command.",
-        hint: expect.any(String),
-      },
-    });
+    expect(err.join("")).toBe("");
   } finally {
     jest.useRealTimers();
   }

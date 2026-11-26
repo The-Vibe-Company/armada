@@ -212,6 +212,11 @@ describe("Docker machine executor", () => {
     "allocation cannot %s a different container that takes the verified name",
     async (action) => {
       const f = fixture();
+      if (action === "update") {
+        f.fail("container start");
+        await expect(f.executor.create(request)).rejects.toMatchObject({ code: "docker_failed" });
+        f.fail("");
+      }
       const run = f.cli.run;
       f.cli.run = async (argv, stdin, options) => {
         if (argv[0] === "container" && argv[1] === action) {
@@ -227,6 +232,47 @@ describe("Docker machine executor", () => {
       });
     },
   );
+
+  test("fresh create skips redundant container update and target inspects while recovery still updates limits", async () => {
+    let limits = { cpus: 1, memoryBytes: 1024 ** 3, pids: 4096 };
+    const fresh = fixture(() => limits);
+    const created = await fresh.executor.create(request);
+    expect(fresh.calls.filter(({ argv }) => argv[0] === "container" && argv[1] === "update")).toHaveLength(0);
+    expect(fresh.calls.filter(({ argv }) => argv[0] === "volume" && argv[1] === "inspect")).toHaveLength(1);
+    expect(fresh.calls.filter(({ argv }) => argv[0] === "container" && argv[1] === "inspect")).toHaveLength(1);
+    expect(fresh.calls.filter(({ argv }) => argv[0] === "container" && argv[1] === "ls")).toHaveLength(2);
+    expect(fresh.calls.filter(({ argv }) => argv[0] === "volume" && argv[1] === "ls")).toHaveLength(2);
+    expect(fresh.containers.get(created.containerName).resourcesUpdated).toBeUndefined();
+
+    const recovery = fixture(() => limits);
+    recovery.fail("container start");
+    await expect(recovery.executor.create(request)).rejects.toMatchObject({ code: "docker_failed" });
+    expect(recovery.calls.filter(({ argv }) => argv[0] === "container" && argv[1] === "update")).toHaveLength(0);
+    recovery.calls.length = 0;
+    recovery.fail("");
+    limits = { cpus: 0.5, memoryBytes: 512 * 1024 ** 2, pids: 4096 };
+    const recovered = await recovery.executor.create(request);
+    const updates = recovery.calls.filter(({ argv }) => argv[0] === "container" && argv[1] === "update");
+    expect(updates.map(({ argv }) => argv)).toEqual([
+      [
+        "container",
+        "update",
+        "--cpus",
+        "0.5",
+        "--memory",
+        String(512 * 1024 ** 2),
+        "--memory-swap",
+        String(512 * 1024 ** 2),
+        "--pids-limit",
+        "4096",
+        recovered.machineId,
+      ],
+    ]);
+    expect(recovery.containers.get(recovered.containerName)).toMatchObject({
+      resourcesUpdated: true,
+      State: { Running: true },
+    });
+  });
 
   test("restore retries an incomplete copy into a separate incarnation and adopts a created target", async () => {
     let free = 0;

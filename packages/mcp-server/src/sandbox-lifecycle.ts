@@ -25,7 +25,7 @@ import type { ServerSandboxPatch } from "./data.ts";
 import { DataError } from "./data-error.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
-import { createJobsStore, dockerStopPending, mergeStopOutcome } from "./jobs/store.ts";
+import { createJobsStore, dockerStopPending, mergeStopOutcome, wakeSandboxJobs } from "./jobs/store.ts";
 import {
   installModalLaunchHandoff,
   type ModalLaunchHandoff,
@@ -577,6 +577,9 @@ export async function publishRuntimeReadiness(
     code: "runtime_enrolled",
     effects: [],
   });
+  if (transition.kind === "applied") {
+    await wakeSandboxJobs(tx, sandboxId, ["launch", "resume", "stop"], generation);
+  }
   return transition.kind;
 }
 

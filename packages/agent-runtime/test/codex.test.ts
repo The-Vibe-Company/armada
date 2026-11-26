@@ -1,12 +1,12 @@
 import { expect, jest, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentEvent, type Provider, promptOutcome } from "@armada/core";
 import { codexTurnUsage, settleCodexTurnUsage } from "../src/codex-turn-usage.ts";
 import { RequestRefused } from "../src/errors.ts";
 import { CodexDriver, createRedactor, type DriverEvent, Journal, type Turn } from "../src/index.ts";
-import { removeNativeCodexAuth } from "../src/native-auth.ts";
+import { createNativeAuthRefresher, removeNativeCodexAuth } from "../src/native-auth.ts";
 
 const nativeTest = process.platform === "linux" ? test : test.skip;
 
@@ -952,3 +952,80 @@ nativeTest("Codex never replays a hydration failure after a tool started", async
     journal.close();
   }
 });
+
+nativeTest(
+  "Codex pipelines rateLimits/read without blocking turn/start and starts subscriptionAccess with initialize",
+  async () => {
+    const order: string[] = [];
+    const driver = new CodexDriver({
+      executable: `${import.meta.dir}/fixtures/app-server.ts`,
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        CODEX_HOME: import.meta.dir,
+        ARMADA_HANG_RATE_LIMITS: "1",
+        ARMADA_EXTERNAL_AUTH: "1",
+      },
+      onStarted: () => order.push("onStarted"),
+      subscriptionAccess: async (refresh) => {
+        order.push(`subscriptionAccess:${refresh}`);
+        return {
+          accessToken: refresh ? "synthetic-refreshed-access" : "synthetic-initial-access",
+          chatgptAccountId: "synthetic-account",
+          chatgptPlanType: null,
+        };
+      },
+    });
+    try {
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "codex", text: "continue through renewal" },
+        signal: AbortSignal.timeout(1000),
+        session: () => {},
+        emit: () => {},
+      });
+      expect(await turn.done).toBe("finished");
+      expect(order.slice(0, 2)).toEqual(["subscriptionAccess:false", "onStarted"]);
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+nativeTest(
+  "stat-cached native auth refresher skips unchanged auth.json, reloads rotations, and enforces safety",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-auth-cache-"));
+    const codexDir = join(root, "codex");
+    const authPath = join(codexDir, "auth.json");
+    await mkdir(codexDir, { mode: 0o700 });
+    const initial = JSON.stringify({ tokens: { access_token: "synthetic-token-1" } });
+    const rotated = JSON.stringify({ tokens: { access_token: "synthetic-token-2-rotated" } });
+    await writeFile(authPath, initial, { mode: 0o600 });
+    let registerCalls = 0;
+    const changes: (string | undefined)[] = [];
+    const refresh = createNativeAuthRefresher(
+      root,
+      () => registerCalls++,
+      (auth) => changes.push(auth),
+    );
+    try {
+      refresh();
+      refresh();
+      refresh();
+      expect([registerCalls, changes]).toEqual([1, [initial]]);
+      await writeFile(join(codexDir, "auth.json.next"), rotated, { mode: 0o600 });
+      await rename(join(codexDir, "auth.json.next"), authPath);
+      refresh();
+      refresh();
+      expect([registerCalls, changes]).toEqual([2, [initial, rotated]]);
+      await chmod(authPath, 0o644);
+      expect(() => refresh()).toThrow("native_auth_state_unavailable");
+      await rm(authPath);
+      await writeFile(join(root, "other"), initial, { mode: 0o600 });
+      await symlink(join(root, "other"), authPath);
+      expect(() => refresh()).toThrow("native_auth_state_unavailable");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

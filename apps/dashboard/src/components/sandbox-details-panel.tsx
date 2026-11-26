@@ -1,5 +1,6 @@
 "use client";
 
+import type { SandboxStatus } from "@armada/core";
 import { PanelRightIcon, TerminalIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import { Tabs } from "radix-ui";
@@ -15,7 +16,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import styles from "@/components/sandbox-details-panel.module.css";
+import { useThreadSandboxStatus } from "@/components/sandbox-thread-state";
 import { Button } from "@/components/ui/button";
+import { isRelayActiveStatus } from "@/lib/relay-client";
 import { cn } from "@/lib/utils";
 
 const SandboxTerminal = dynamic(() => import("@/components/sandbox-terminal").then((m) => m.SandboxTerminal), {
@@ -61,12 +64,14 @@ export function SandboxDetailsPanel({
   overview,
   usage,
   terminalSandboxId,
+  initialStatus,
   children,
 }: {
   bar: ReactNode;
   overview: ReactNode;
   usage: ReactNode;
   terminalSandboxId?: string | undefined;
+  initialStatus?: SandboxStatus | undefined;
   children: ReactNode;
 }) {
   // Responsive CSS reserves the rail on first paint; the media query only supplies the toggle state.
@@ -86,9 +91,15 @@ export function SandboxDetailsPanel({
   const [events, setEvents] = useState<HTMLDivElement | null>(null);
   const panel = useRef<HTMLElement>(null);
   const panelId = useId();
+  const liveStatus = useThreadSandboxStatus(initialStatus ?? "ready");
+  const activeTerminalId =
+    terminalSandboxId && (!initialStatus || isRelayActiveStatus(liveStatus)) ? terminalSandboxId : undefined;
 
   useEffect(() => {
-    if (!terminalSandboxId) return;
+    if (!activeTerminalId) {
+      setTerminalOpen(false);
+      return;
+    }
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey && ev.code === "Backquote") {
         ev.preventDefault();
@@ -97,7 +108,7 @@ export function SandboxDetailsPanel({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [terminalSandboxId]);
+  }, [activeTerminalId]);
 
   function toggle() {
     const next = !(open ?? desktop);
@@ -160,7 +171,7 @@ export function SandboxDetailsPanel({
     <>
       <header className="sticky top-0 z-20 flex h-12 min-w-0 items-center gap-1 border-b bg-background sm:gap-2">
         {bar}
-        {terminalSandboxId && (
+        {activeTerminalId && (
           <Button
             type="button"
             variant="ghost"
@@ -199,8 +210,8 @@ export function SandboxDetailsPanel({
           <PhoneTarget.Provider value={setPhoneTarget}>
             <EventsTarget.Provider value={events}>{children}</EventsTarget.Provider>
           </PhoneTarget.Provider>
-          {terminalSandboxId && terminalOpen && (
-            <SandboxTerminal sandboxId={terminalSandboxId} onClose={() => setTerminalOpen(false)} />
+          {activeTerminalId && terminalOpen && (
+            <SandboxTerminal sandboxId={activeTerminalId} onClose={() => setTerminalOpen(false)} />
           )}
         </div>
         {phone && phoneTarget && open ? createPortal(inspector, phoneTarget) : inspector}

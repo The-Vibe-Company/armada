@@ -501,12 +501,16 @@ async function antigravityLogin(args: ReturnType<typeof parseArgs>, { auth, read
   });
   if (!target.success) throw usage("Give --name, or --id with --expected-version.");
   const client = await createSdkCommandClient(auth, { preserveServerErrors: true });
-  const started = start.output.parse(
+  const startedParsed = start.output.safeParse(
     await client.control(controlRouteKey(start.route), target.data, AbortSignal.timeout(310_000)),
   );
+  if (!startedParsed.success)
+    throw new VaultError("unavailable", "The server returned an invalid Antigravity sign-in response.");
+  const started = startedParsed.data;
   const path = antigravityLoginPath(started.loginId);
   const url = authorizationUrl(started.authorizationUrl);
-  if (new URL(url).origin !== "https://accounts.google.com") throw usage("The server returned an unsafe Google link.");
+  if (new URL(url).origin !== "https://accounts.google.com")
+    throw new VaultError("unavailable", "The server returned an unsafe Google link.");
   auth.err(`Open this link to sign in with Google: ${url}\n`);
   try {
     if (auth.interactive) auth.open(url);
@@ -526,7 +530,10 @@ async function antigravityLogin(args: ReturnType<typeof parseArgs>, { auth, read
         await client.request(path, { method: "DELETE" }).catch(() => {});
       throw error;
     });
-  const account = complete.output.parse(result);
+  const accountParsed = complete.output.safeParse(result);
+  if (!accountParsed.success)
+    throw new VaultError("unavailable", "The server returned an invalid Antigravity account response.");
+  const account = accountParsed.data;
   auth.out(`${JSON.stringify(account, null, 2)}\n`);
   return 0;
 }

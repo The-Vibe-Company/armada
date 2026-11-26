@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readdir, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { installRuntimeArtifact, type RuntimeArtifact } from "./artifact-cache.ts";
+import { installRuntimeArtifact, type RuntimeArtifact, readSharedArtifact } from "./artifact-cache.ts";
 
 interface HarnessFile extends RuntimeArtifact {
   path: string;
@@ -107,17 +108,47 @@ async function verified(root: string, expected: readonly HarnessFile[]): Promise
   try {
     const info = await lstat(root);
     if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o700) return false;
-    const actual = await harnessInventory(root);
-    if (actual.length !== expected.length) return false;
     const wanted = new Map(expected.map((file) => [file.path, file]));
-    for (const file of actual) {
-      const spec = wanted.get(file.path);
-      if (!spec || file.bytes !== spec.bytes || file.sha256 !== spec.sha256 || file.executable !== spec.executable)
-        return false;
-      if ((await lstat(join(root, file.path))).nlink !== 1) return false;
-      if (((await lstat(join(root, file.path))).mode & 0o777) !== (spec.executable ? 0o700 : 0o600)) return false;
+    const seen = new Set<string>();
+    async function visit(directory: string) {
+      for (const name of await readdir(directory)) {
+        const entry = join(directory, name);
+        const entryInfo = await lstat(entry);
+        if (entryInfo.isSymbolicLink()) return false;
+        if (entryInfo.isDirectory()) {
+          if (!(await visit(entry))) return false;
+          continue;
+        }
+        if (!entryInfo.isFile()) return false;
+        const rel = path(relative(root, entry).split(sep).join("/"));
+        const spec = wanted.get(rel);
+        if (!spec || seen.has(rel)) return false;
+        seen.add(rel);
+        const handle = await open(entry, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const stat = await handle.stat();
+          if (
+            !stat.isFile() ||
+            stat.nlink !== 1 ||
+            (stat.mode & 0o777) !== (spec.executable ? 0o700 : 0o600) ||
+            stat.size !== spec.bytes
+          )
+            return false;
+          const hash = createHash("sha256");
+          let bytes = 0;
+          for await (const chunk of handle.createReadStream({ autoClose: false })) {
+            bytes += chunk.byteLength;
+            if (bytes > spec.bytes) return false;
+            hash.update(chunk);
+          }
+          if (bytes !== spec.bytes || hash.digest("hex") !== spec.sha256) return false;
+        } finally {
+          await handle.close();
+        }
+      }
+      return true;
     }
-    return true;
+    return (await visit(root)) && seen.size === wanted.size;
   } catch {
     return false;
   }
@@ -171,40 +202,49 @@ export async function installSelectedHarness(
     }
     root = join(input.cacheDir, `${prefix}${crypto.randomUUID()}`);
   }
-  const archive = await installRuntimeArtifact(
-    {
-      serverUrl: input.serverUrl,
-      cacheDir: join(input.cacheDir, "archives"),
-      artifact: harness.archive,
-      ...(input.sharedDir ? { sharedDir: input.sharedDir } : {}),
-    },
-    fetcher,
-  );
+  const archiveBytes =
+    (input.sharedDir ? await readSharedArtifact(input.sharedDir, harness.archive) : undefined) ??
+    (await Bun.file(
+      await installRuntimeArtifact(
+        {
+          serverUrl: input.serverUrl,
+          cacheDir: join(input.cacheDir, "archives"),
+          artifact: harness.archive,
+        },
+        fetcher,
+      ),
+    ).bytes());
   const temporary = await mkdtemp(join(input.cacheDir, `.${input.harness}-install-`));
   try {
     // files() only returns regular files. Never call extract(): write verified blobs
     // ourselves into a new private directory, so archive symlinks cannot escape it.
-    const contents = await new Bun.Archive(await Bun.file(archive).bytes()).files();
+    const contents = await new Bun.Archive(archiveBytes).files();
     const expected = new Map(harness.files.map((file) => [file.path, file]));
     const seen = new Set<string>();
     for (const [raw, blob] of contents) {
       const name = path(raw.replace(/^(\.\/)+/, "")),
         spec = expected.get(name);
-      if (!spec || seen.has(name) || blob.size !== spec.bytes || (await digest(blob)) !== spec.sha256)
-        throw Error("harness_archive_mismatch");
+      if (!spec || seen.has(name) || blob.size !== spec.bytes) throw Error("harness_archive_mismatch");
       seen.add(name);
       const target = join(temporary, name);
       await mkdir(dirname(target), { recursive: true, mode: 0o700 });
       const file = await open(target, "wx", 0o600);
       try {
-        for await (const chunk of blob.stream()) await file.writeFile(chunk);
+        const hash = createHash("sha256");
+        let written = 0;
+        for await (const chunk of blob.stream()) {
+          written += chunk.byteLength;
+          if (written > spec.bytes) throw Error("harness_archive_mismatch");
+          hash.update(chunk);
+          await file.writeFile(chunk);
+        }
+        if (written !== spec.bytes || hash.digest("hex") !== spec.sha256) throw Error("harness_archive_mismatch");
         await file.chmod(spec.executable ? 0o700 : 0o600);
       } finally {
         await file.close();
       }
     }
-    if (seen.size !== expected.size || !(await verified(temporary, harness.files)))
-      throw Error("harness_archive_mismatch");
+    if (seen.size !== expected.size) throw Error("harness_archive_mismatch");
     // This directory is per sandbox and installation runs only while native work
     // is quiescent. Never remove a verified warm cache, even if another installer won.
     if (await verified(root, harness.files)) return receipt();

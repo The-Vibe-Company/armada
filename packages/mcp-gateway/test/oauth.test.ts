@@ -17,6 +17,11 @@ function fixture(
     metadataIssuer?: string;
     redirect?: "metadata" | "token" | "registration" | "revocation";
     redirectTarget?: string;
+    postOnlyMcp?: boolean;
+    prmPath?: string;
+    challengeScope?: string;
+    expiresIn?: number | "omit";
+    accessToken?: string;
   } = {},
 ) {
   const endpoints = {
@@ -32,7 +37,7 @@ function fixture(
   let generation = 1;
   let time = 1000;
   const pending = new Map<string, PendingAuthorization>();
-  const requests: { url: string; body: URLSearchParams; headers: Headers }[] = [];
+  const requests: { method: string; url: string; body: URLSearchParams; rawBody: string; headers: Headers }[] = [];
   const store: OAuthStore = {
     generation: async () => String(generation),
     readGrant: async () => grant,
@@ -66,8 +71,9 @@ function fixture(
   const fetcher: FetchLike = async (url, init) => {
     const request = new Request(String(url), init);
     const path = new URL(request.url).pathname;
-    const body = new URLSearchParams(request.body ? await request.text() : "");
-    requests.push({ url: request.url, body, headers: request.headers });
+    const rawBody = request.body ? await request.text() : "";
+    const body = new URLSearchParams(rawBody);
+    requests.push({ method: request.method, url: request.url, body, rawBody, headers: request.headers });
     expect(init?.redirect).toBe("error");
     if (!["/token", "/revoke"].includes(path)) expect(request.headers.has("authorization")).toBe(false);
     const purpose = path.includes("well-known/oauth-authorization-server")
@@ -84,14 +90,23 @@ function fixture(
         status: 307,
         headers: { location: options.redirectTarget ?? "https://tokens.example/stolen" },
       });
-    if (path === "/mcp")
-      return new Response(null, { status: 401, headers: { "www-authenticate": 'Bearer scope="read"' } });
-    if (path.includes("oauth-protected-resource"))
+    const prmPath = options.prmPath;
+    const challengeScope = options.challengeScope ?? "read";
+    if (path === "/mcp") {
+      if (options.postOnlyMcp && request.method === "GET") return new Response(null, { status: 405 });
+      const wwwAuth = [
+        ...(prmPath ? [`resource_metadata="https://service.example${prmPath}"`] : []),
+        `scope="${challengeScope}"`,
+      ].join(", ");
+      return new Response(null, { status: 401, headers: { "www-authenticate": `Bearer ${wwwAuth}` } });
+    }
+    if (prmPath ? path === prmPath : path.includes("oauth-protected-resource"))
       return Response.json({
         resource: "https://service.example/mcp",
         authorization_servers: ["https://issuer.example"],
         scopes_supported: ["read"],
       });
+    if (prmPath && path.includes("oauth-protected-resource")) return new Response(null, { status: 404 });
     if (mode === "oidc" && path.includes("oauth-authorization-server")) return new Response(null, { status: 404 });
     if (path.includes("well-known"))
       return Response.json({
@@ -134,11 +149,11 @@ function fixture(
       await beforeToken?.();
       return Response.json({
         token_endpoint: "https://untrusted.example/token",
-        access_token: "access-fixture",
+        access_token: options.accessToken ?? "access-fixture",
         ...(refresh ? { refresh_token: "rotation-fixture" } : {}),
         token_type: "Bearer",
-        expires_in: 120,
-        scope: "read",
+        ...(options.expiresIn === "omit" ? {} : { expires_in: options.expiresIn ?? 120 }),
+        scope: challengeScope,
       });
     }
     if (path === "/revoke") {
@@ -162,11 +177,15 @@ function fixture(
       if (actor !== "owner" || revoked) throw Error("denied");
     },
   });
-  const connect = (clientIssuer = "https://issuer.example") =>
+  const connect = (
+    clientIssuer = "https://issuer.example",
+    hints: { scope?: string; resourceMetadataUrl?: string } = {},
+  ) =>
     broker.connect({
       actorId: "owner",
       connectionId: "connection",
       resource: "https://service.example/mcp",
+      ...hints,
       ...(mode === "preregistered"
         ? { client: { client_id: "pre-fixture", client_secret: "secret-fixture", issuer: clientIssuer } }
         : {}),
@@ -372,3 +391,61 @@ for (const confusion of ["metadata-issuer", "preregistered-issuer"] as const) {
     ).toBe(false);
   });
 }
+
+test("405 on GET discovery falls back to a POST initialize probe for resource_metadata and scope", async () => {
+  const f = fixture("cimd", true, {
+    postOnlyMcp: true,
+    prmPath: "/custom/protected-resource",
+    challengeScope: "tools:read",
+  });
+  const { authorizationUrl } = await f.connect();
+  const url = new URL(authorizationUrl);
+  expect(url.searchParams.get("scope")).toBe("tools:read");
+  const probes = f.requests.filter((request) => new URL(request.url).pathname === "/mcp");
+  expect(probes.map((probe) => probe.method)).toEqual(["GET", "POST"]);
+  expect(probes[1]?.headers.get("content-type")).toBe("application/json");
+  expect(JSON.parse(probes[1]?.rawBody ?? "{}")).toMatchObject({
+    jsonrpc: "2.0",
+    method: "initialize",
+    params: { capabilities: {}, clientInfo: { name: "Armada", version: "1" } },
+  });
+  expect(f.requests.some((request) => new URL(request.url).pathname === "/custom/protected-resource")).toBe(true);
+});
+
+test("caller-supplied resourceMetadataUrl and scope hints avoid redundant probes and enforce origin binding", async () => {
+  const f = fixture("cimd", true, {
+    postOnlyMcp: true,
+    prmPath: "/custom/protected-resource",
+    challengeScope: "tools:read",
+  });
+  await expect(
+    f.connect("https://issuer.example", {
+      resourceMetadataUrl: "https://evil.example/custom/protected-resource",
+      scope: "tools:read",
+    }),
+  ).rejects.toMatchObject({ code: "unsafe_endpoint" });
+  expect(f.requests).toHaveLength(0);
+  const { authorizationUrl } = await f.connect("https://issuer.example", {
+    resourceMetadataUrl: "https://service.example/custom/protected-resource",
+    scope: "tools:read",
+  });
+  expect(new URL(authorizationUrl).searchParams.get("scope")).toBe("tools:read");
+  expect(f.requests.filter((request) => new URL(request.url).pathname === "/mcp")).toHaveLength(0);
+  expect(f.requests.some((request) => new URL(request.url).pathname === "/custom/protected-resource")).toBe(true);
+});
+
+test("non-Slack OAuth token response omitting expires_in succeeds while invalid lifetimes or blank tokens fail", async () => {
+  const omitted = fixture("cimd", false, { expiresIn: "omit" });
+  const state = new URL((await omitted.connect()).authorizationUrl).searchParams.get("state") ?? "";
+  await omitted.broker.callback({ actorId: "owner", state, code: "fixture-code", issuer: "https://issuer.example" });
+  omitted.expire();
+  expect(await omitted.broker.access("owner", "connection", "https://service.example/mcp")).toBe("access-fixture");
+  expect(omitted.requests.filter((request) => request.body.get("grant_type") === "refresh_token")).toHaveLength(0);
+  for (const invalid of [{ expiresIn: 0 }, { expiresIn: -5 }, { accessToken: "   " }]) {
+    const f = fixture("cimd", false, invalid);
+    const badState = new URL((await f.connect()).authorizationUrl).searchParams.get("state") ?? "";
+    await expect(
+      f.broker.callback({ actorId: "owner", state: badState, code: "fixture-code", issuer: "https://issuer.example" }),
+    ).rejects.toMatchObject({ code: "unsupported" });
+  }
+});

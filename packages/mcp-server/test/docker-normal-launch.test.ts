@@ -58,7 +58,7 @@ import { createDockerSnapshots } from "../src/docker-snapshots.ts";
 import { createLaunchJob } from "../src/jobs/launch.ts";
 import { createResumeJob } from "../src/jobs/resume.ts";
 import { createJobsRunner } from "../src/jobs/runner.ts";
-import { createJobsStore } from "../src/jobs/store.ts";
+import { createJobsStore, JOBS_WAKE } from "../src/jobs/store.ts";
 import { readLaunchAccountDefault } from "../src/launch-account-pool.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -69,6 +69,7 @@ import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { createServerRoutineScheduler } from "../src/server-routines.ts";
+import { runtimeWakes } from "../src/wake-bus.ts";
 import { runDockerStop } from "./docker-stop.fixture.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
@@ -3827,3 +3828,80 @@ test.each(["poll", "complete"] as const)(
     ).toBe("ready");
   },
 );
+
+test("Docker launch runs GitHub preflight only before create is dispatched and wakes queued launch on host complete", async () => {
+  const f = await fixture();
+  await database().query(
+    `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+     values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
+    [f.actor.userId, await encryptSecret("offline-refresh", key), await encryptSecret("offline-github-token", key)],
+  );
+  const preflightSpy = spyOn(f.github, "preflightRepositories");
+  let wakes = 0;
+  const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, () => {
+    wakes++;
+  });
+  try {
+    const svc = f.service(sql, true, 10_000, officialImage, true);
+    const body = { ...f.body, repos: [{ url: "https://github.com/example/project.git" }] };
+    const admitted = await svc.admit(f.caller, body);
+    expect(admitted.sandbox.status).toBe("starting");
+
+    const jobs = createJobsStore(sql, key);
+    const workerId = randomUUID();
+    const runTick = async () => {
+      const job = await jobs.claim("launch", workerId, 30, 1);
+      expect(job).toBeDefined();
+      const result = await svc.run(job!, {
+        signal: new AbortController().signal,
+        canDispatch: async (tx) => (await jobs.inspect(job!, workerId, tx)) === "dispatch",
+        handoffGeneration: async () => {
+          throw Error("Unexpected generation handoff.");
+        },
+      });
+      expect(await jobs.complete(job!, workerId, result)).toBe(true);
+      return { job: job!, result };
+    };
+
+    const first = await runTick();
+    expect(first.result.status).toBe("retry");
+    expect(preflightSpy).toHaveBeenCalledTimes(1);
+
+    await database().query("update public.jobs set run_after='-infinity' where id=$1", [first.job.id]);
+    const second = await runTick();
+    expect(second.result.status).toBe("retry");
+    expect(preflightSpy).toHaveBeenCalledTimes(1);
+
+    const wakesBeforeComplete = wakes;
+    const createJob = await hosts.poll(
+      f.hostToken,
+      f.installationId,
+      "2.28.0",
+      false,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      false,
+      false,
+      false,
+      true,
+    );
+    expect(createJob?.operation).toBe("create");
+    await hosts.complete(f.hostToken, f.installationId, {
+      requestId: createJob!.requestId,
+      outcome: "completed",
+      machineId: "c".repeat(64),
+    });
+    expect(wakes).toBeGreaterThan(wakesBeforeComplete);
+
+    const third = await runTick();
+    expect(third.result.status).toBe("retry");
+    expect(preflightSpy).toHaveBeenCalledTimes(1);
+  } finally {
+    unsubscribe();
+    preflightSpy.mockRestore();
+  }
+});
