@@ -231,6 +231,7 @@ public final class ConversationLoader<Event: Identifiable & Equatable & Sendable
         onFailure: @MainActor (_ failure: Failure, _ consecutive: Int) -> C.Duration?
     ) async {
         await showCached(show)
+        wakePending = false
         var failures = 0
         while !Task.isCancelled, !forgotten {
             do throws(Failure) {

@@ -59,6 +59,9 @@ final class ConversationFeed {
     /// Orders projections that finish out of order: only the latest stream is shown.
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var sseTask: Task<Void, Never>?
+    @ObservationIgnored private var sseGeneration = 0
+    /// Last committed SSE frame id, preserved across background/foreground reconnects so `Last-Event-ID` resumes without re-reading the tail.
+    @ObservationIgnored private var lastEventID: String?
 
     init(key: String, memory: ConversationMemory?) {
         self.key = key
@@ -84,6 +87,12 @@ final class ConversationFeed {
     /// Wakes fallback polling immediately (for example after send, steer, or interrupt).
     func wake() { loader.wake() }
 
+    /// Clears transient reconnect state so returning to the foreground reconnects immediately
+    /// without keeping a stale reconnect banner from before backgrounding.
+    func resetForForeground() {
+        if case .reconnecting = connection { connection = .connecting }
+    }
+
     /// Shows what is known, reads the latest page, then follows via live SSE when available with
     /// automatic fallback to polling on error or disconnect.
     func follow(
@@ -92,7 +101,7 @@ final class ConversationFeed {
         onTransition: @MainActor @escaping (_ status: SandboxStatus?, _ statusReason: String?) -> Void = { _, _ in },
         onSignedOut: @MainActor @escaping () -> Void
     ) async {
-        defer { sseTask?.cancel(); sseTask = nil; setSSEConnected(false) }
+        defer { stopSSE() }
         await loader.run(
             clock: ContinuousClock(),
             fetch: Self.read(fetch),
@@ -101,7 +110,11 @@ final class ConversationFeed {
             onRead: {
                 self.connection = .live
                 guard self.sseTask == nil, let stream else { return }
-                self.sseTask = Task { @MainActor [weak self] in await self?.runSSE(stream: stream, fetch: fetch, onTransition: onTransition, onSignedOut: onSignedOut) }
+                self.sseGeneration &+= 1
+                let currentSSE = self.sseGeneration
+                self.sseTask = Task { @MainActor [weak self] in
+                    await self?.runSSE(generation: currentSSE, stream: stream, fetch: fetch, onTransition: onTransition, onSignedOut: onSignedOut)
+                }
             },
             onFailure: { (error: ServiceFailure, failures: Int) -> Duration? in
                 switch error.category {
@@ -141,8 +154,16 @@ final class ConversationFeed {
 
     /// Forgets what this session kept of the conversation, after its access was refused.
     func forget() {
-        sseTask?.cancel(); sseTask = nil; setSSEConnected(false)
+        stopSSE()
+        lastEventID = nil
         loader.forget()
+    }
+
+    private func stopSSE() {
+        sseGeneration &+= 1
+        sseTask?.cancel()
+        sseTask = nil
+        setSSEConnected(false)
     }
 
     private func setSSEConnected(_ connected: Bool) {
@@ -150,16 +171,17 @@ final class ConversationFeed {
     }
 
     private func runSSE(
+        generation: Int,
         stream: @escaping Stream, fetch: @escaping Fetch,
         onTransition: @MainActor @escaping (_ status: SandboxStatus?, _ statusReason: String?) -> Void,
         onSignedOut: @MainActor @escaping () -> Void
     ) async {
-        var lastEventID: String? = nil; var failures = 0
-        while !Task.isCancelled {
+        var failures = 0
+        while !Task.isCancelled, sseGeneration == generation {
             var opened = false
             do {
                 for try await item in stream(lastEventID) {
-                    guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled, sseGeneration == generation else { return }
                     let needsGap = lastEventID == nil && !opened; opened = true; failures = 0
                     switch item {
                     case .connected: setSSEConnected(true); connection = .live; if needsGap { try? await loader.catchUp(Self.read(fetch), show: show) }
@@ -168,15 +190,17 @@ final class ConversationFeed {
                     case .advance(let id): lastEventID = id
                     }
                 }
-            } catch is CancellationError { setSSEConnected(false); return } catch {
-                setSSEConnected(false); guard !Task.isCancelled else { return }
+            } catch is CancellationError { if sseGeneration == generation { setSSEConnected(false) }; return } catch {
+                if sseGeneration == generation { setSSEConnected(false) }
+                guard !Task.isCancelled, sseGeneration == generation else { return }
                 if let f = error as? ServiceFailure {
                     if f.category == .signedOut { onSignedOut(); return }
                     if [.noAccess, .unavailable, .rejected].contains(f.category) { return }
                 }
                 failures += 1; try? await Task.sleep(for: .seconds(min(30, 1 << min(failures, 5)))); continue
             }
-            setSSEConnected(false); guard !Task.isCancelled else { return }
+            if sseGeneration == generation { setSSEConnected(false) }
+            guard !Task.isCancelled, sseGeneration == generation else { return }
             if !opened { failures += 1 }; try? await Task.sleep(for: opened ? .seconds(1) : .seconds(min(30, 1 << min(failures, 5))))
         }
     }
