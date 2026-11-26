@@ -674,6 +674,45 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     return { id: existingRows[0].id, inserted: false };
   }
 
+  async function claimNext(kinds: readonly string[], limits: readonly number[], owner: string, seconds: number) {
+    let remainingKinds = kinds;
+    let remainingLimits = limits;
+    while (true) {
+      if (remainingKinds.length === 0 && remainingLimits.length === 0) return;
+      const claimStartedAt = performance.now();
+      const { rows } = await sql.query<JobRow & { dispatch_budget_ms: number | null }>(
+        `select id, kind, sandbox_id, generation::text, lease_epoch::text, attempts, max_attempts, outcome,
+                case when kind = 'boat_runtime_extend' and lease_until = deadline_at
+                     then (1000 * extract(epoch from deadline_at - statement_timestamp()))::double precision
+                end as dispatch_budget_ms,
+                encode(payload_enc, 'hex') as payload_enc
+         from public.claim_next_job($1::text[],$2::integer[],$3,$4)`,
+        [[...remainingKinds], [...remainingLimits], owner, seconds],
+      );
+      if (!rows[0]) return;
+      const { payload_enc, dispatch_budget_ms, ...job } = rows[0];
+      const payload =
+        payload_enc === null
+          ? null
+          : JSON.parse(await decryptSecret(Uint8Array.from(Buffer.from(payload_enc, "hex")), encryptionKey));
+      const claimed = {
+        ...job,
+        lease_owner: owner,
+        payload,
+        ...(dispatch_budget_ms == null
+          ? {}
+          : { dispatchBudgetMs: Math.floor(dispatch_budget_ms - (performance.now() - claimStartedAt)) }),
+      };
+      if (claimed.kind !== "turn_dispatch") return claimed;
+      const reconciled = await reconcileTurnClaim(claimed, owner, "claim");
+      if (reconciled) return reconciled;
+      const deferredIndex = remainingKinds.indexOf("turn_dispatch");
+      if (deferredIndex < 0 || deferredIndex + 1 >= remainingKinds.length) return;
+      remainingKinds = remainingKinds.slice(deferredIndex + 1);
+      remainingLimits = remainingLimits.slice(deferredIndex + 1);
+    }
+  }
+
   return {
     modalLaunchJournal(job: Job, createIfAuthorized?: AuthorizeJournalCreate) {
       if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
@@ -702,32 +741,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     async enqueue(...args: Parameters<typeof enqueueWithDisposition>) {
       return (await enqueueWithDisposition(...args)).id;
     },
-    async claim(kind, owner, seconds, concurrency) {
-      const claimStartedAt = performance.now();
-      const { rows } = await sql.query<JobRow & { dispatch_budget_ms: number | null }>(
-        `select id, kind, sandbox_id, generation::text, lease_epoch::text, attempts, max_attempts, outcome,
-                case when kind = 'boat_runtime_extend' and lease_until = deadline_at
-                     then (1000 * extract(epoch from deadline_at - statement_timestamp()))::double precision
-                end as dispatch_budget_ms,
-                encode(payload_enc, 'hex') as payload_enc
-         from public.claim_job($1,$2,$3,$4)`,
-        [kind, owner, seconds, concurrency],
-      );
-      if (!rows[0]) return;
-      const { payload_enc, dispatch_budget_ms, ...job } = rows[0];
-      const payload =
-        payload_enc === null
-          ? null
-          : JSON.parse(await decryptSecret(Uint8Array.from(Buffer.from(payload_enc, "hex")), encryptionKey));
-      const claimed = {
-        ...job,
-        lease_owner: owner,
-        payload,
-        ...(dispatch_budget_ms == null
-          ? {}
-          : { dispatchBudgetMs: Math.floor(dispatch_budget_ms - (performance.now() - claimStartedAt)) }),
-      };
-      return kind === "turn_dispatch" ? reconcileTurnClaim(claimed, owner, "claim") : claimed;
+    claimNext,
+    claim(kind: string, owner: string, seconds: number, concurrency: number) {
+      return claimNext([kind], [concurrency], owner, seconds);
     },
     async inspect(job, owner, tx?: Sql) {
       const { rows } = await (tx ?? sql).query<{ state: "dispatch" | "reconcile" | "stale" }>(
@@ -891,6 +907,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return complete(sql, job.generation);
     },
   } satisfies JobStore & {
+    claim: (kind: string, owner: string, seconds: number, concurrency: number) => Promise<Job | undefined>;
     enqueue: (...args: Parameters<typeof enqueueWithDisposition>) => Promise<string>;
     enqueueWithDisposition: typeof enqueueWithDisposition;
     modalLaunchJournal: (job: Job, createIfAuthorized?: AuthorizeJournalCreate) => ModalMachineJournal;

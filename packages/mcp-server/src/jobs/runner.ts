@@ -27,7 +27,12 @@ export type JobResult = (
 ) & { commit?: (tx: Sql) => Promise<void>; unattempted?: true };
 
 export interface JobStore {
-  claim(kind: string, owner: string, seconds: number, concurrency: number): Promise<Job | undefined>;
+  claimNext(
+    kinds: readonly string[],
+    limits: readonly number[],
+    owner: string,
+    seconds: number,
+  ): Promise<Job | undefined>;
   inspect(job: Job, owner: string, tx?: Sql): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
   retireStale(job: Job, owner: string, phase?: "no_dispatch"): Promise<void>;
   handoffGeneration(job: Job, owner: string, handoff: GenerationHandoff): Promise<string>;
@@ -165,10 +170,11 @@ export function createJobsRunner(
   return {
     independentJobs: true,
     async reconcileOne(signal) {
+      const eligible: Array<{ index: number; registration: (typeof registrations)[number] }> = [];
       for (let count = 0; count < registrations.length && !signal.aborted && !shutdown.signal.aborted; count++) {
-        const registration = registrations[nextKind]!;
-        nextKind = (nextKind + 1) % registrations.length;
-        const { kind, handler } = registration;
+        const index = (nextKind + count) % registrations.length;
+        const registration = registrations[index]!;
+        const { handler } = registration;
         if (
           registration.leased >= handler.concurrency ||
           (handler.timeoutMs !== undefined && registration.active >= handler.concurrency)
@@ -176,34 +182,44 @@ export function createJobsRunner(
           continue;
         if (handler.prepare && !(await handler.prepare())) continue;
         if (signal.aborted || shutdown.signal.aborted) return false;
-        const lease = new AbortController();
-        const cancelExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
-        let claimed = false;
-        try {
-          const job = await store.claim(kind, owner, LEASE_SECONDS, handler.concurrency);
-          if (!job || signal.aborted || shutdown.signal.aborted) continue;
-          claimed = true;
-          registration.active++;
-          registration.leased++;
-          let releaseLease = () => {
-            registration.leased--;
-            releaseLease = () => {};
-          };
-          lease.signal.addEventListener("abort", () => releaseLease(), { once: true });
-          const work = run(job, handler, cancelExpiry, lease, () => releaseLease())
-            .catch(() => log("armada: job execution unavailable; durable lease remains fenced."))
-            .finally(() => {
-              releaseLease();
-              registration.active--;
-              pending.delete(work);
-            });
-          pending.add(work);
-          return true;
-        } finally {
-          if (!claimed) cancelExpiry();
-        }
+        eligible.push({ index, registration });
       }
-      return false;
+      if (eligible.length === 0 || signal.aborted || shutdown.signal.aborted) return false;
+      const lease = new AbortController();
+      const cancelExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
+      let claimed = false;
+      try {
+        const job = await store.claimNext(
+          eligible.map(({ registration }) => registration.kind),
+          eligible.map(({ registration }) => registration.handler.concurrency),
+          owner,
+          LEASE_SECONDS,
+        );
+        if (!job || signal.aborted || shutdown.signal.aborted) return false;
+        const matched = eligible.find(({ registration }) => registration.kind === job.kind);
+        if (!matched) return false;
+        const { index, registration } = matched;
+        nextKind = (index + 1) % registrations.length;
+        claimed = true;
+        registration.active++;
+        registration.leased++;
+        let releaseLease = () => {
+          registration.leased--;
+          releaseLease = () => {};
+        };
+        lease.signal.addEventListener("abort", () => releaseLease(), { once: true });
+        const work = run(job, registration.handler, cancelExpiry, lease, () => releaseLease())
+          .catch(() => log("armada: job execution unavailable; durable lease remains fenced."))
+          .finally(() => {
+            releaseLease();
+            registration.active--;
+            pending.delete(work);
+          });
+        pending.add(work);
+        return true;
+      } finally {
+        if (!claimed) cancelExpiry();
+      }
     },
     stopAdmission: () => shutdown.abort(),
     async drain() {
