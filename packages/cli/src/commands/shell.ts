@@ -5,10 +5,14 @@ import { createRelayPipe, defaultOnSignal, openRelaySession, type RelayTerminal 
 import type { Command } from "./command.ts";
 
 const STREAM = 1;
-const on = (em: { on(e: any, f: any): unknown; off(e: any, f: any): unknown }, e: string, f: (...a: any[]) => void) => {
+function on<T extends (...args: never[]) => void>(
+  em: { on(e: string, f: T): unknown; off(e: string, f: T): unknown },
+  e: string,
+  f: T,
+) {
   em.on(e, f);
   return () => void em.off(e, f);
-};
+}
 
 function productionTerminal() {
   return {

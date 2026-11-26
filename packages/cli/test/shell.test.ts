@@ -57,9 +57,9 @@ test("shell mints pty ticket, toggles raw TTY, handles resize, flow control, pin
   ]);
   term.state.block = true;
   ws.receive({ type: RELAY_OPCODE.DATA, streamId: 1, data: new Uint8Array(32_768) });
-  ws.receive({ type: RELAY_OPCODE.DATA, streamId: 1, data: new Uint8Array(32_768) });
   expect(ws.sent.some((m) => m.type === RELAY_OPCODE.CREDIT)).toBe(false);
-  term.drain();
+  term.state.block = false;
+  ws.receive({ type: RELAY_OPCODE.DATA, streamId: 1, data: new Uint8Array(32_768) });
   expect(ws.sent.at(-1)).toEqual({ type: RELAY_OPCODE.CREDIT, streamId: 1, bytes: CREDIT_WATERMARK });
   term.stdin(new Uint8Array(INITIAL_STREAM_WINDOW + 10));
   expect([term.state.paused > 0, sentBytes(ws.sent)]).toEqual([true, INITIAL_STREAM_WINDOW]);

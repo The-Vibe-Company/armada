@@ -15,10 +15,12 @@ export const sentBytes = (sent: readonly RelayMessage[], id?: number) =>
   );
 
 function bus() {
-  const map = new Map<string, ((a?: any) => void)[]>();
+  const map = new Map<string, ((a: unknown) => void)[]>();
   return {
-    on: (ev: string, fn: (a?: any) => void) => void map.set(ev, [...(map.get(ev) ?? []), fn]),
-    emit: (ev: string, a?: unknown) => {
+    on(ev: string, fn: (...args: never[]) => void) {
+      map.set(ev, [...(map.get(ev) ?? []), fn as (a: unknown) => void]);
+    },
+    emit(ev: string, a?: unknown) {
       for (const fn of [...(map.get(ev) ?? [])]) fn(a);
     },
   };

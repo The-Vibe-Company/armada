@@ -13,7 +13,10 @@ export type RelayWebSocket = {
   binaryType: string;
   send(d: Uint8Array): void;
   close(code?: number, reason?: string): void;
-  addEventListener(type: "open" | "message" | "close" | "error", fn: (ev: any) => void): void;
+  addEventListener(type: "open", fn: () => void): void;
+  addEventListener(type: "message", fn: (ev: { data: unknown }) => void): void;
+  addEventListener(type: "close", fn: (ev: { code: number; reason?: string }) => void): void;
+  addEventListener(type: "error", fn: (ev: unknown) => void): void;
 };
 export type RelayTcpSocket = {
   write(c: Uint8Array): boolean;
@@ -21,7 +24,9 @@ export type RelayTcpSocket = {
   resume(): void;
   end(): void;
   destroy(): void;
-  on(ev: "data" | "drain" | "close" | "error", fn: (arg: any) => void): void;
+  on(ev: "data", fn: (chunk: Uint8Array) => void): void;
+  on(ev: "drain" | "close", fn: () => void): void;
+  on(ev: "error", fn: (err: Error) => void): void;
 };
 export type RelayTcpServer = {
   listen(port: number, host: string, cb: () => void): void;
@@ -120,8 +125,11 @@ export function createRelayPipe(
     onData(data: Uint8Array) {
       if (closed) return;
       if (!win.recordReceived(data.byteLength)) return fail();
-      if (io.write(data)) ack(data.byteLength);
-      else pendingAck += data.byteLength;
+      if (io.write(data)) {
+        const total = pendingAck + data.byteLength;
+        pendingAck = 0;
+        ack(total);
+      } else pendingAck += data.byteLength;
     },
     onDrain() {
       if (closed || !pendingAck) return;
