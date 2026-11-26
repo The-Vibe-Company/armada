@@ -104,7 +104,9 @@ async function createRawApiClient(io: ArmadaApiIo) {
         throw new ArmadaApiError(
           serverCode,
           response.status,
-          rawMessage || `Armada API request failed (HTTP ${response.status}).`,
+          rawMessage
+            ? `${rawMessage} (HTTP ${response.status})`
+            : `Armada API request failed (HTTP ${response.status}).`,
         );
       }
       if (bodyReadFailed) throw new AuthError("Armada API response could not be read.", "unavailable");

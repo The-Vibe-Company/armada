@@ -25,5 +25,5 @@ test("the API escape hatch reports GitHub repair refusal with parsed server erro
     },
   });
   expect(code).toBe(1);
-  expect(JSON.parse(error).error).toMatchObject({ code: "forbidden", message: "GitHub repair denied." });
+  expect(JSON.parse(error).error).toMatchObject({ code: "forbidden", message: "GitHub repair denied. (HTTP 403)" });
 });
