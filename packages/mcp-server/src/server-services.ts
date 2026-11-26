@@ -24,6 +24,7 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { createAntigravityLogin } from "./antigravity-login.ts";
 import { startAntigravityLoginProcess } from "./antigravity-login-process.ts";
 import { createBoatRuntimePolicy } from "./boat-runtime-launch.ts";
+import { authenticateCaller } from "./caller.ts";
 import { boatDeploymentId } from "./config.ts";
 import type { ConfiguredControlOptions } from "./control.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
@@ -63,6 +64,7 @@ import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { createRelayHub } from "./relay-hub.ts";
+import { createRelayPreview } from "./relay-preview.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
@@ -589,6 +591,13 @@ export async function createServerServices(env: Record<string, string | undefine
     publicUrl: config.publicUrl,
     dashboardUrl: config.dashboardUrl,
   });
+  const relayPreview = createRelayPreview({
+    relayHub,
+    encryptionKey: config.encryptionKey,
+    publicUrl: config.publicUrl,
+    authenticate: (request) =>
+      authenticateCaller(request.headers.get("authorization"), { store: authStore, supabase, now: new Date() }),
+  });
   control.relayHub = relayHub;
   const commitSha = sourceIdentity.commit ?? env.RAILWAY_GIT_COMMIT_SHA;
   const outputs = createSandboxOutputs(
@@ -670,6 +679,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeMcp,
     runtimeSockets,
     relayHub,
+    relayPreview,
     langfuse,
     delegatedAccess,
     modelAuth,

@@ -65,6 +65,7 @@ export const runtimeMounts: MountFactory = (services, configureRequestTimeout) =
     runtimeGitHub,
     delegatedAccess,
     dockerArtifactSet,
+    relayPreview,
   } = services;
   return [
     createRuntimeArtifactRoute(env.ARMADA_RUNTIME_ARTIFACT_DIR, configureRequestTimeout),
@@ -78,6 +79,7 @@ export const runtimeMounts: MountFactory = (services, configureRequestTimeout) =
     ...(runtimeGitHub ? [runtimeGitHub.route] : []),
     delegatedAccess.scopedToolsRoute,
     ...(modelAuth.broker ? [modelAuth.broker.route] : []),
+    (request) => relayPreview.route(request, configureRequestTimeout),
   ];
 };
 

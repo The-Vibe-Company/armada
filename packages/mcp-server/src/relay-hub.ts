@@ -17,7 +17,7 @@ import type { Caller } from "./caller.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
-const { OPEN_PTY, OPEN_TCP, OPEN_OK, DATA, RESIZE, CLOSE, PING, PONG } = RELAY_OPCODE;
+const { OPEN_PTY, OPEN_TCP, OPEN_OK, DATA, CREDIT, RESIZE, CLOSE, PING, PONG } = RELAY_OPCODE;
 const PREFIX = "armada_relay_";
 const MS = { ticket: 60_000, auth: 5_000, ping: 20_000, idle: 60_000, recheck: 30_000 } as const;
 const ACTIVE = new Set(["ready", "running"]);
@@ -50,8 +50,21 @@ export type RelayHubOptions = {
   dashboardUrl: string;
   clock?: RelayClock;
 };
+export type LocalTcpCallbacks = {
+  onOpen: () => void;
+  onData: (data: Uint8Array) => void;
+  onCredit: (bytes: number) => void;
+  onClose: (code: number, reason: RelayCloseReason) => void;
+};
+export type LocalTcpStream = {
+  sendData: (data: Uint8Array) => boolean;
+  sendCredit: (bytes: number) => boolean;
+  close: (code?: number, reason?: RelayCloseReason) => void;
+};
 type Ws = ServerWebSocket<RelaySocketData>;
-type Stream = { client: ClientConn; clientId: number; runtimeId: number; kind: "pty" | "tcp" };
+type ClientStream = { client: ClientConn; clientId: number; runtimeId: number; kind: "pty" | "tcp" };
+type LocalStream = { local: LocalTcpCallbacks; runtimeId: number; kind: "tcp"; closed: boolean };
+type Stream = ClientStream | LocalStream;
 type AccessRow = {
   id: string;
   status: string;
@@ -86,7 +99,7 @@ class ClientConn {
   closed = false;
   claims?: RelayTicketClaims;
   runtime?: RuntimeConn;
-  streams = new Map<number, Stream>();
+  streams = new Map<number, ClientStream>();
   cancel = () => {};
   constructor(readonly socket: Ws) {}
 }
@@ -124,6 +137,16 @@ const countKind = (rt: RuntimeConn, kind: "pty" | "tcp") => {
   let n = 0;
   for (const s of rt.streams.values()) if (s.kind === kind) n++;
   return n;
+};
+const allocRuntimeId = (rt: RuntimeConn, pty: boolean) => {
+  const limit = pty ? MAX_PTYS_PER_SANDBOX : MAX_TCP_PER_SANDBOX;
+  if (countKind(rt, pty ? "pty" : "tcp") >= limit || rt.streams.size >= MAX_STREAMS_PER_SANDBOX) return null;
+  for (let i = 0; i < MAX_STREAMS_PER_SANDBOX + 2; i++) {
+    const cand = rt.nextId;
+    rt.nextId = cand >= 0xffff_ffff ? 1 : cand + 1;
+    if (!rt.streams.has(cand)) return cand;
+  }
+  return null;
 };
 export function relayWsUrl(publicUrl: string) {
   const url = new URL("/api/v1/relay/ws", publicUrl);
@@ -222,10 +245,18 @@ export function createRelayHub(options: RelayHubOptions) {
       exp,
     };
     const sealed = await encryptSecret(JSON.stringify(claims), encryptionKey);
+    const preview =
+      input.mode === "preview" && input.port !== undefined
+        ? {
+            bootstrapUrl: new URL("/api/v1/relay/preview/enter", publicUrl).toString(),
+            previewUrl: new URL(`/api/v1/sandboxes/${access.sandboxId}/ports/${input.port}/`, publicUrl).toString(),
+          }
+        : {};
     return {
       ok: true as const,
       ticket: PREFIX + Buffer.from(sealed).toString("base64url"),
       wsUrl: relayWsUrl(publicUrl),
+      ...preview,
       expiresAt: new Date(exp).toISOString(),
     };
   }
@@ -278,6 +309,12 @@ export function createRelayHub(options: RelayHubOptions) {
     for (const c of [...rt.clients]) {
       for (const s of [...c.streams.values()]) sendClose(c.socket, s.clientId, cCode, reason);
       closeClient(c, cCode, null);
+    }
+    for (const s of [...rt.streams.values()]) {
+      if ("local" in s && !s.closed) {
+        s.closed = true;
+        s.local.onClose(cCode, reason);
+      }
     }
     rt.streams.clear();
     tryOr(() => rt.socket.close(code), undefined);
@@ -359,8 +396,21 @@ export function createRelayHub(options: RelayHubOptions) {
     if (msg.type === OPEN_PTY || msg.type === OPEN_TCP || msg.type === RESIZE) return closeRuntime(rt, 1002);
     if (msg.type === CLOSE && msg.streamId === 0) return closeRuntime(rt, 1001);
     const s = rt.streams.get(msg.streamId);
-    if (!s || s.client.closed) return;
+    if (!s) return;
     if (s.kind === "tcp" && msg.type === DATA) rt.lastTcpAt = time.now();
+    if ("local" in s) {
+      if (s.closed) return;
+      if (msg.type === OPEN_OK) s.local.onOpen();
+      else if (msg.type === DATA) s.local.onData(new Uint8Array(msg.data));
+      else if (msg.type === CREDIT) s.local.onCredit(msg.bytes);
+      else if (msg.type === CLOSE) {
+        s.closed = true;
+        rt.streams.delete(s.runtimeId);
+        s.local.onClose(msg.code, msg.reason);
+      }
+      return;
+    }
+    if (s.client.closed) return;
     if (msg.type === CLOSE) {
       s.client.streams.delete(s.clientId);
       rt.streams.delete(s.runtimeId);
@@ -415,17 +465,10 @@ export function createRelayHub(options: RelayHubOptions) {
         : claims.mode === "pty" || (claims.port !== undefined && msg.port !== claims.port);
       if (scopeBad) return !sendClose(c.socket, msg.streamId, 4403, "refused") ? closeClient(c, 1012) : undefined;
       if (c.streams.has(msg.streamId)) return closeClient(c, 1002);
-      const limit = pty ? MAX_PTYS_PER_SANDBOX : MAX_TCP_PER_SANDBOX;
-      const over = countKind(rt, pty ? "pty" : "tcp") >= limit || rt.streams.size >= MAX_STREAMS_PER_SANDBOX;
-      let runtimeId: number | null = null;
-      for (let i = 0; !over && runtimeId === null && i < MAX_STREAMS_PER_SANDBOX + 2; i++) {
-        const cand = rt.nextId;
-        rt.nextId = cand >= 0xffff_ffff ? 1 : cand + 1;
-        if (!rt.streams.has(cand)) runtimeId = cand;
-      }
+      const runtimeId = allocRuntimeId(rt, pty);
       if (runtimeId === null)
         return !sendClose(c.socket, msg.streamId, 4429, "limit") ? closeClient(c, 1012) : undefined;
-      const s: Stream = { client: c, clientId: msg.streamId, runtimeId, kind: pty ? "pty" : "tcp" };
+      const s: ClientStream = { client: c, clientId: msg.streamId, runtimeId, kind: pty ? "pty" : "tcp" };
       c.streams.set(msg.streamId, s);
       rt.streams.set(runtimeId, s);
       if (!pty) rt.lastTcpAt = time.now();
@@ -552,12 +595,66 @@ export function createRelayHub(options: RelayHubOptions) {
         return emptyRes(503);
       }
     });
+  function openTcp(sandboxId: string, port: number, local: LocalTcpCallbacks, expectedEpoch?: string) {
+    if (stopping) return { ok: false as const, reason: "unavailable" as const };
+    const rt = runtimes.get(sandboxId);
+    if (!rt || rt.closed || (expectedEpoch !== undefined && rt.epoch !== expectedEpoch))
+      return { ok: false as const, reason: "unavailable" as const };
+    const runtimeId = allocRuntimeId(rt, false);
+    if (runtimeId === null) return { ok: false as const, reason: "limit" as const };
+    const s: LocalStream = { local, runtimeId, kind: "tcp", closed: false };
+    rt.streams.set(runtimeId, s);
+    rt.lastTcpAt = time.now();
+    if (!send(rt.socket, encodeRelayMessage({ type: OPEN_TCP, streamId: runtimeId, port }))) {
+      s.closed = true;
+      rt.streams.delete(runtimeId);
+      closeRuntime(rt, 1012);
+      return { ok: false as const, reason: "unavailable" as const };
+    }
+    const stream: LocalTcpStream = {
+      sendData(data) {
+        if (s.closed || rt.closed || rt.streams.get(runtimeId) !== s) return false;
+        rt.lastTcpAt = time.now();
+        if (!send(rt.socket, encodeRelayMessage({ type: DATA, streamId: runtimeId, data }))) {
+          closeRuntime(rt, 1012);
+          return false;
+        }
+        return true;
+      },
+      sendCredit(bytes) {
+        if (s.closed || rt.closed || rt.streams.get(runtimeId) !== s) return false;
+        if (!send(rt.socket, encodeRelayMessage({ type: CREDIT, streamId: runtimeId, bytes }))) {
+          closeRuntime(rt, 1012);
+          return false;
+        }
+        return true;
+      },
+      close(code = 1000, reason = "eof") {
+        if (s.closed) return;
+        s.closed = true;
+        rt.streams.delete(runtimeId);
+        if (!rt.closed) sendClose(rt.socket, runtimeId, code, reason);
+      },
+    };
+    return { ok: true as const, stream };
+  }
   async function stop() {
     stopping = true;
     for (const c of [...clientByWs.values()]) closeClient(c, 1012, null);
     for (const rt of [...runtimeByWs.values()]) closeRuntime(rt, 1012);
     while (pending.size) await Promise.allSettled([...pending]);
   }
-  return { upgradeRuntime, upgradeClient, websocket, mintTicket, isConnected, hasActiveRelay, stop };
+  return {
+    upgradeRuntime,
+    upgradeClient,
+    websocket,
+    mintTicket,
+    redeemTicket,
+    checkAccess: queryAccess,
+    openTcp,
+    isConnected,
+    hasActiveRelay,
+    stop,
+  };
 }
 export type RelayHub = ReturnType<typeof createRelayHub>;
