@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { installRuntimeArtifact } from "../src/artifact-cache.ts";
 import { installSelectedHarness } from "../src/harness-cache.ts";
 
 const sha = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -224,16 +225,38 @@ test("a digest-named shared archive replaces HTTP only when its size and digest 
     await symlink(join(f.root, "target"), entry);
     await installSelectedHarness({ ...f.input, sharedDir: shared }, f.fetcher);
     expect(f.requests).toHaveLength(2);
-    // The exact archive is copied into the private cache and extracted with full inventory checks.
+    // The exact archive is verified and extracted directly from sharedDir without copying into archives/ or re-hashing temporary files.
     await rm(f.input.cacheDir, { recursive: true });
     await rm(entry);
     await writeFile(entry, f.archive);
     await chmod(entry, 0o444);
-    const warm = await installSelectedHarness({ ...f.input, sharedDir: shared }, offline);
+    const openSpy = spyOn(fs, "open");
+    let warm: Awaited<ReturnType<typeof installSelectedHarness>>;
+    let tempOpens: unknown[][];
+    try {
+      warm = await installSelectedHarness({ ...f.input, sharedDir: shared }, offline);
+      tempOpens = openSpy.mock.calls.filter(([target]) => String(target).includes(".codex-install-"));
+    } finally {
+      openSpy.mockRestore();
+    }
     expect(warm).toEqual(cold);
     expect(await readFile(warm.executable, "utf8")).toBe(files["bin/codex"]);
-    expect((await lstat(join(f.input.cacheDir, "archives", f.codex.archive.sha256))).mode & 0o777).toBe(0o700);
+    expect((await lstat(warm.executable)).mode & 0o777).toBe(0o700);
+    expect((await lstat(join(warm.root, "resources/info.json"))).mode & 0o777).toBe(0o600);
+    expect(await readdir(f.input.cacheDir)).toEqual([`codex-${f.codex.archive.sha256}`]);
+    expect(tempOpens).toHaveLength(f.codex.files.length);
+    expect(tempOpens.every(([, flags]) => flags === "wx")).toBe(true);
     expect(f.requests).toHaveLength(2);
+    const copied = await installRuntimeArtifact(
+      {
+        serverUrl: f.input.serverUrl,
+        cacheDir: join(f.input.cacheDir, "standalone"),
+        artifact: f.codex.archive,
+        sharedDir: shared,
+      },
+      offline,
+    );
+    expect((await lstat(copied)).mode & 0o777).toBe(0o700);
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }
