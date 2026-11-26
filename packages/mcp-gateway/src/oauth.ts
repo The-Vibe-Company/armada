@@ -15,6 +15,7 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { OAuthMetadataSchema, OpenIdProviderDiscoveryMetadataSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { endpoint, GatewayError, publicFetch, restrictedFetch } from "./network.ts";
 
@@ -181,11 +182,12 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
   }
   function completed(grant: Omit<OAuthGrant, "tokens" | "expiresAt">, tokens: OAuthTokens) {
     if (
+      !tokens.access_token.trim() ||
       tokens.token_type.toLowerCase() !== "bearer" ||
-      (tokens.expires_in === undefined ? grant.binding?.tokenFormat !== "slack-user" : tokens.expires_in <= 0) ||
+      (tokens.expires_in !== undefined && (!Number.isFinite(tokens.expires_in) || tokens.expires_in <= 0)) ||
       (tokens.issuer && tokens.issuer !== grant.issuer)
     )
-      fail("unsupported", "Expected an issuer-bound expiring bearer token.");
+      fail("unsupported", "Expected an issuer-bound bearer token with a valid lifetime.");
     const scopes = tokens.scope?.split(/\s+/).filter(Boolean) ?? grant.scopes;
     if (grant.scopes.some((scope) => !scopes.includes(scope)))
       fail("needs_reconnect", "Upstream did not grant the required scopes.");
@@ -193,7 +195,10 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       ...grant,
       tokens,
       scopes,
-      expiresAt: tokens.expires_in === undefined ? Number.MAX_SAFE_INTEGER : now() + tokens.expires_in * 1000,
+      expiresAt:
+        tokens.expires_in === undefined
+          ? Number.MAX_SAFE_INTEGER
+          : Math.min(Number.MAX_SAFE_INTEGER, now() + tokens.expires_in * 1000),
     };
   }
   const broker = {
@@ -211,10 +216,47 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
       const resource = endpoint(input.resource).href;
       const resourceOrigin = endpoint(resource).origin;
       const resourceFetch = restrictedFetch(fetcher, (url) => url.origin === resourceOrigin);
-      const probe = await resourceFetch(resource, { headers: { accept: "application/json, text/event-stream" } });
-      const challenge = probe.status === 401 ? extractWWWAuthenticateParams(probe) : {};
-      await probe.body?.cancel();
-      const metadataUrl = input.resourceMetadataUrl ?? challenge.resourceMetadataUrl?.href;
+      const hintedMetadataUrl = input.resourceMetadataUrl?.trim()
+        ? endpoint(input.resourceMetadataUrl.trim()).href
+        : undefined;
+      if (hintedMetadataUrl && new URL(hintedMetadataUrl).origin !== resourceOrigin)
+        throw new GatewayError("unsafe_endpoint", "Protected resource metadata must stay on the resource origin.");
+      const hintedScope = input.scope?.trim() || undefined;
+      async function probeChallenge() {
+        const getProbe = await resourceFetch(resource, {
+          headers: { accept: "application/json, text/event-stream" },
+        });
+        try {
+          if (getProbe.status === 401) return extractWWWAuthenticateParams(getProbe);
+          if (getProbe.status !== 405) return {};
+        } finally {
+          await getProbe.body?.cancel();
+        }
+        const postProbe = await resourceFetch(resource, {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/event-stream",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 0,
+            method: "initialize",
+            params: {
+              protocolVersion: LATEST_PROTOCOL_VERSION,
+              capabilities: {},
+              clientInfo: { name: "Armada", version: "1" },
+            },
+          }),
+        });
+        try {
+          return postProbe.status === 401 ? extractWWWAuthenticateParams(postProbe) : {};
+        } finally {
+          await postProbe.body?.cancel();
+        }
+      }
+      const challenge = hintedMetadataUrl && (hintedScope || input.binding) ? {} : await probeChallenge();
+      const metadataUrl = hintedMetadataUrl ?? challenge.resourceMetadataUrl?.href;
       const prm = await discoverOAuthProtectedResourceMetadata(
         resource,
         metadataUrl ? { resourceMetadataUrl: metadataUrl } : {},
@@ -247,8 +289,9 @@ export function createOAuthBroker(options: OAuthBrokerOptions) {
           "unsafe_endpoint",
           "Registered service OAuth endpoints or client authentication changed.",
         );
+      const challengeScope = challenge.scope?.trim() || undefined;
       const scopes =
-        (binding ? input.scope : (challenge.scope ?? input.scope))?.split(/\s+/).filter(Boolean) ??
+        (binding ? hintedScope : (challengeScope ?? hintedScope))?.split(/\s+/).filter(Boolean) ??
         prm.scopes_supported ??
         [];
       if (binding && (!scopes.length || scopes.some((scope) => !metadata.scopes_supported?.includes(scope))))
