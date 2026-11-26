@@ -57,7 +57,10 @@ export function sharedArtifactWarmer(
       credentials: "omit",
       signal: AbortSignal.timeout(10_000),
     });
-    if (response.status !== 200) return;
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      return false;
+    }
     const text = await response.text();
     if (text.length > MAX_SET_BYTES) throw Error("invalid_artifact_set");
     const set = JSON.parse(text) as { runtime?: unknown; artifacts?: unknown };
@@ -91,18 +94,40 @@ export function sharedArtifactWarmer(
         await rm(temporary, { force: true });
       }
     }
-    if (!changed) return;
+    if (!changed) return true;
     if (current.size) previous = current;
     current = named;
     for (const directory of [options.sharedDir, options.privateDir])
       for (const name of await readdir(directory).catch(() => [] as string[]))
         if (!current.has(name) && !previous.has(name))
           await rm(join(directory, name), { recursive: true, force: true });
+    return true;
   }
 
-  return (runtime: string): Promise<void> => {
-    if (!digest.test(runtime)) return queue;
-    queue = queue.then(() => warm(runtime)).catch(() => {});
-    return queue;
+  return (runtime: string) => {
+    if (!digest.test(runtime)) return queue.then(() => false);
+    const next = queue.then(() => warm(runtime)).catch(() => false);
+    queue = next.then(() => {});
+    return next;
   };
+}
+
+export async function warmCachedRuntimeArtifacts(runtimeCacheDir: string, warm: (runtime: string) => unknown) {
+  const dir = await lstat(runtimeCacheDir).catch(() => undefined);
+  if (!dir?.isDirectory() || dir.isSymbolicLink()) return;
+  const entries = await readdir(runtimeCacheDir).catch(() => [] as string[]);
+  const candidates: { sha256: string; mtimeMs: number }[] = [];
+  for (const name of entries) {
+    if (!digest.test(name)) continue;
+    const info = await lstat(join(runtimeCacheDir, name)).catch(() => undefined);
+    if (!info?.isFile() || info.isSymbolicLink()) continue;
+    candidates.push({ sha256: name, mtimeMs: info.mtimeMs });
+  }
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const candidate of candidates.slice(0, 2)) {
+    const warmed = await Promise.resolve()
+      .then(() => warm(candidate.sha256))
+      .catch(() => false);
+    if (warmed === true) return;
+  }
 }
