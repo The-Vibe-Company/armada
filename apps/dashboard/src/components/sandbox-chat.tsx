@@ -1347,6 +1347,13 @@ function Composer({
 }) {
   const form = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [draft, setDraftState] = useState(() => getChatDraft(orgId, sandboxId));
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -1480,6 +1487,7 @@ function Composer({
       setResult(outcome);
       if (!outcome.ok) {
         if (
+          mountedRef.current &&
           intent !== "interrupt" &&
           isDefiniteComposerRefusal(outcome) &&
           draftRef.current === "" &&

@@ -52,7 +52,7 @@ const clampTerminalHeight = (n: number) => Math.min(maxTerminalHeight(), Math.ma
 function readStoredHeight() {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage?.getItem(TERMINAL_HEIGHT_STORAGE_KEY) : null;
-    if (raw === null || raw.trim() === "") return DEFAULT_H;
+    if (!raw || raw.trim() === "") return DEFAULT_H;
     const parsed = Number(raw);
     return Number.isFinite(parsed) && parsed > 0 ? clampTerminalHeight(parsed) : DEFAULT_H;
   } catch {

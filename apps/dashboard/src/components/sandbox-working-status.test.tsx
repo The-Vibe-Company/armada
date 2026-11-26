@@ -8,7 +8,7 @@ import SandboxesPage from "@/app/(app)/sandboxes/page";
 import * as sandboxActions from "@/app/actions/sandboxes";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { clearChatCache, setChatCache } from "@/lib/chat-cache";
+import { clearChatCache, getChatDraft, setChatCache } from "@/lib/chat-cache";
 import { SEND_KEY_FIELD } from "@/lib/composer";
 import * as dockerHosts from "@/lib/data/docker-hosts";
 import * as providerSetup from "@/lib/data/provider-setup";
@@ -1048,6 +1048,33 @@ test("SandboxChat persists unsent composer drafts across sandbox switches and cl
     expect(ta().props.value).toBe("");
     await open(sandboxB);
     expect(ta().props.value).toBe("Draft for sandbox B");
+
+    let resolveRefusal!: (result: { ok: false; error: string }) => void;
+    /* oxlint-disable landmines-testing/no-test-doubles -- Hold refusal settlement across unmount and cache clear. */
+    spyOn(sandboxActions, "sendToSandbox").mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          resolveRefusal = resolve;
+        }),
+    );
+    /* oxlint-enable landmines-testing/no-test-doubles */
+    await act(async () =>
+      ta().props.onKeyDown({
+        key: "Enter",
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        preventDefault: noop,
+      }),
+    );
+    await act(async () => renderer.unmount());
+    clearChatCache();
+    await act(async () => {
+      resolveRefusal({ ok: false, error: "This sandbox needs an account before it can resume." });
+      await Promise.resolve();
+    });
+    expect(getChatDraft("org-1", sandboxB)).toBe("");
   } finally {
     mock.restore();
     await act(async () => renderer?.unmount());
