@@ -1,44 +1,51 @@
 {
-  "version": 1,
+  "version": 2,
   "skills": {
     "better-ui": {
       "source": "jakubkrehel/skills",
       "sourceType": "github",
       "skillPath": "skills/better-ui/SKILL.md",
-      "computedHash": "d05cf568f197e47b15e71e21b19be1897eba2bf187ef7b0a341bc5ffaf3ffd4d"
+      "computedHash": "086bb100281b79da584d6c5355730ce3828f23451b73da8d944b4a5069ff7f03"
     },
     "capture-learning-tools": {
       "source": "The-Vibe-Company/armada",
       "sourceType": "github",
       "skillPath": "skills/capture-learning-tools/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "bda86f4f0810a83de8924f796d311da5e9f810894b0c7fecfaaa5f00146e1207"
+      "computedHash": "4980567ca213e70f089d9b4a600b09e0ee2c168bb860a7c212fcb50cb8542847"
     },
     "emil-design-eng": {
       "source": "emilkowalski/skills",
       "sourceType": "github",
       "skillPath": "skills/emil-design-eng/SKILL.md",
-      "computedHash": "51f2537e04d15911b41d78e2de24c36a0e26d41beae15e82a954fe5496a5eda9"
+      "computedHash": "8c563f971b37710a80a95b88d5f2ea6758b3ec4b66ec15f5bb41850830e8f5ed"
     },
     "frontend-design": {
       "source": "anthropics/skills",
       "sourceType": "github",
       "skillPath": "skills/frontend-design/SKILL.md",
-      "computedHash": "89496d5dd00f4810205f351759594fc2742bf8eea85a2f2b2d1de59f4bd91576"
+      "computedHash": "83485963700bcf11d5bf78118facb301676b69d918fee2e45a95e7f1a2840f6c"
+    },
+    "openboard": {
+      "source": "The-Vibe-Company/openboard",
+      "commit": "6e0f1f0f9cb3279a840dc138f51c0c97e48f6c93",
+      "sourceType": "github",
+      "skillPath": "skills/openboard/SKILL.md",
+      "computedHash": "5cb0cb76fc3306283cb32ece876cb87bdf3c8690d67b117fff9dd7b73025336c"
     },
     "review-code-dev": {
       "source": "The-Vibe-Company/armada",
       "sourceType": "github",
       "skillPath": "skills/review-code-dev/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "d4f6bb0dac361a6a4422cbe3b4c14a437f117eba9f5bd9a8ea8f97982d1a305d"
+      "computedHash": ""
     },
     "ship-pr-dev": {
       "source": "The-Vibe-Company/armada",
       "sourceType": "github",
       "skillPath": "skills/ship-pr-dev/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "f5e659679da412c54f1a29e536f4d969993448fc56831a25a840539242723d7f"
+      "computedHash": ""
     }
   }
 }

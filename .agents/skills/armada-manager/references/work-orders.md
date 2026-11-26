@@ -3,6 +3,7 @@
 Keep a handoff self-contained but narrow:
 
 - Issue and desired behavior, acceptance criteria, approved side effects and explicit exclusions.
+- OpenBoard task ID in channel `armada` (board https://openboard.thevibecompany.co/api/tvc/main): worker installs `ob` (or uses `npx -y @the-vibe-company/openboard-cli`), connects under its own worker profile via the `armada` connection (secret supplied out-of-repo via stdin/env), checks `ob whoami`, claims with `ob tasks claim <id>`, reads `ob read <id>`, renews via `ob tasks renew <id>`, replies with progress and PR URL via `ob reply <id>`, puts `OpenBoard #<id>` in the PR body (never `Closes #<id>` for an OpenBoard ID), and closes with `ob tasks complete <id>` under the same profile.
 - Repository, base, branch/worktree and files the worker owns; another worker owns a shared file or contract explicitly.
 - Harness/model requested by the user, or the instance's supported default.
 - Actual producer contract/source revision and dependency order; identify what can proceed now.
