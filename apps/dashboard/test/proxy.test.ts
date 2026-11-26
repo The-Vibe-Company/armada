@@ -35,6 +35,20 @@ test("API v1 bypasses the dashboard cookie guard", async () => {
   expect(response.headers.get("x-middleware-next")).toBe("1");
 });
 
+test("public GET to /.well-known/armada-mcp-client.json bypasses the login redirect", async () => {
+  delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+  delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const response = await proxy(request("/.well-known/armada-mcp-client.json"));
+  expect(response.headers.get("x-middleware-next")).toBe("1");
+
+  setSupabaseEnvironment();
+  const post = await proxy(request("/.well-known/armada-mcp-client.json", "POST"));
+  expect(post.status).toBe(307);
+  expect(post.headers.get("location")).toBe(
+    "https://dashboard.test/login?next=%2F.well-known%2Farmada-mcp-client.json",
+  );
+});
+
 test("the dashboard guard still protects non-API pages", async () => {
   setSupabaseEnvironment();
   const response = await proxy(request("/sandboxes"));

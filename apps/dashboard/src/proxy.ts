@@ -42,12 +42,18 @@ function stashInvitation(request: NextRequest): NextResponse {
   return response;
 }
 
+const MCP_CLIENT_METADATA_PATH = "/.well-known/armada-mcp-client.json";
+
 /**
  * Refreshes the session cookie on every request, shows the landing on `/` to a signed-out visitor and sends
  * one anywhere else to the login page.
  */
 export async function proxy(request: NextRequest) {
-  if (request.nextUrl.pathname === CLIENT_CONFIG_PATH || request.nextUrl.pathname.startsWith("/api/v1/"))
+  if (
+    request.nextUrl.pathname === CLIENT_CONFIG_PATH ||
+    (request.nextUrl.pathname === MCP_CLIENT_METADATA_PATH && request.method === "GET") ||
+    request.nextUrl.pathname.startsWith("/api/v1/")
+  )
     return NextResponse.next();
   if (request.nextUrl.pathname === INVITATION_ACCEPT_PATH && request.nextUrl.search !== "")
     return stashInvitation(request);
