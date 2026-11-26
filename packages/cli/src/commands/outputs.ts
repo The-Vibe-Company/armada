@@ -67,13 +67,18 @@ const outputs: Command["run"] = async (argv, { io, deps, auth }) => {
     const temporaryFile = join(temporaryDir, "download");
     await writeFile(temporaryFile, "", { mode: 0o600 });
     if (response.body) await Bun.write(temporaryFile, response);
-    await link(temporaryFile, path);
+    try {
+      await link(temporaryFile, path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "EEXIST")
+        throw new AuthError(
+          `Output file ${JSON.stringify(path)} already exists. Choose a different destination directory or remove the existing file.`,
+          "conflict",
+        );
+      throw error;
+    }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "EEXIST")
-      throw new AuthError(
-        `Output file ${JSON.stringify(path)} already exists. Choose a different destination directory or remove the existing file.`,
-        "conflict",
-      );
+    if (error instanceof AuthError) throw error;
     throw new AuthError("Could not save the sandbox output. Check the destination and retry.", "unavailable");
   } finally {
     if (temporaryDir) await rm(temporaryDir, { recursive: true, force: true });

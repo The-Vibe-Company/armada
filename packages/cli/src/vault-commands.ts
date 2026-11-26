@@ -509,7 +509,8 @@ async function antigravityLogin(args: ReturnType<typeof parseArgs>, { auth, read
   const started = startedParsed.data;
   const path = antigravityLoginPath(started.loginId);
   const url = authorizationUrl(started.authorizationUrl);
-  if (new URL(url).origin !== "https://accounts.google.com") throw usage("The server returned an unsafe Google link.");
+  if (new URL(url).origin !== "https://accounts.google.com")
+    throw new VaultError("unavailable", "The server returned an unsafe Google link.");
   auth.err(`Open this link to sign in with Google: ${url}\n`);
   try {
     if (auth.interactive) auth.open(url);

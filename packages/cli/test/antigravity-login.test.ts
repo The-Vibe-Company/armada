@@ -158,18 +158,25 @@ test("a refused code can be retried with a fresh CLI sign-in immediately", async
   expect((await signIn(server, code)).exit).toBe(0);
 });
 
-test("antigravity login wraps malformed start and complete responses into typed exit-1 errors", async () => {
-  for (const stage of ["start", "complete"] as const) {
+test("antigravity login wraps malformed start, unsafe link, and complete responses into typed exit-1 errors", async () => {
+  for (const stage of ["start", "unsafe", "complete"] as const) {
     const { exit, output } = await signIn(
       {
         fetch: async (input) =>
           String(input).endsWith(loginPath)
-            ? Response.json(stage === "start" ? { bad: true } : { loginId: account, authorizationUrl: link })
+            ? Response.json(
+                stage === "start"
+                  ? { bad: true }
+                  : {
+                      loginId: account,
+                      authorizationUrl: stage === "unsafe" ? "https://evil.example/auth" : link,
+                    },
+              )
             : Response.json({ bad: true }),
       } as ReturnType<typeof fixture>,
       code,
     );
     expect(exit).toBe(1);
-    expect(output.join("")).toContain("invalid Antigravity");
+    expect(output.join("")).toMatch(/invalid Antigravity|unsafe Google link/);
   }
 });

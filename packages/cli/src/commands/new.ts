@@ -41,11 +41,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
   if (usesHostLaunch(single(args, "--provider"))) {
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch }, deps.sandboxFile);
   }
-  if (
-    ["--host", "--credential-version", "--golden", "--variable", "--secret"].some(
-      (key) => single(args, key) !== undefined,
-    )
-  )
+  if (["--host", "--credential-version", "--golden", "--variable", "--secret"].some((key) => args.options.has(key)))
     throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
   acceptedOptions(args, "new", [
     "--provider",
