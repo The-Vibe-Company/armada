@@ -590,7 +590,10 @@ export class CodexDriver implements Driver {
         return;
       }
       const active = await current;
-      if (!terminalTurns.has(turnId)) await rpc("turn/interrupt", { threadId, turnId });
+      if (!closed && !terminalTurns.has(turnId))
+        await rpc("turn/interrupt", { threadId, turnId }).catch((error) => {
+          if (!closed && !terminalTurns.has(turnId)) throw error;
+        });
       try {
         await bounded(active.terminal, 10000);
       } catch (error) {
@@ -750,7 +753,11 @@ export class CodexDriver implements Driver {
         throw error;
       } finally {
         closed = true;
-        for (const p of pending.values()) clearTimeout(p.timer);
+        const closeError = failure ?? new HarnessError("harness_process_lost");
+        for (const p of pending.values()) {
+          clearTimeout(p.timer);
+          p.reject(closeError);
+        }
         pending.clear();
         const snapshot = settleCodexTurnUsage({
           tokenTotals: this.tokenTotals,

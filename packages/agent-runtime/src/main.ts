@@ -215,7 +215,9 @@ async function main(dialout = false) {
   configureOpenCodeEndpoint(opencodeEnv);
   const journal = new Journal(`${config.root}/journal.sqlite`, redact);
   const refreshNativeSecrets =
-    config.nativeAuthRevision !== undefined
+    (config.nativeAuthRevision !== undefined || Boolean(config.codexAuthJson)) &&
+    !config.subscription &&
+    !config.runtimeSubscription
       ? createNativeAuthRefresher(
           config.root,
           (values) => journal.registerSecrets(values),
