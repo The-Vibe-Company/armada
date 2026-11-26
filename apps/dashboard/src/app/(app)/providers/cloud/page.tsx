@@ -69,9 +69,10 @@ export default async function CloudProvidersPage({ searchParams }: Props) {
     selected ? readLaunchTimes(supabase, selected.org.id) : null,
   ]);
   const query = await searchParams;
+  const dockerUnknown = hosts.state === "error" || (hosts.state === "ready" && hosts.list.skipped > 0);
   const hasDocker = hosts.state === "ready" && hasDockerHost(hosts.list.hosts);
   const onboarding =
-    selected && setup?.state === "pending" && !hasDocker ? (
+    selected && setup?.state === "pending" && !hasDocker && !dockerUnknown ? (
       <FirstRunGuide orgName={selected.org.name} isAdmin={selected.role === "admin"} />
     ) : null;
   const cloud = (

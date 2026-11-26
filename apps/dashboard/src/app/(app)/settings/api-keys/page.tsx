@@ -74,9 +74,14 @@ export default async function ApiKeysPage({ searchParams }: { searchParams: Prom
           ) : null
         }
         footer={
-          <Card data-armada-mcp-guide className="gap-3">
+          <Card data-armada-mcp-guide aria-labelledby="armada-mcp-guide-title" className="gap-3">
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-sm">
+              <CardTitle
+                id="armada-mcp-guide-title"
+                role="heading"
+                aria-level={2}
+                className="flex items-center gap-2 text-sm"
+              >
                 <PlugIcon aria-hidden className="size-4" />
                 Connect Claude, Cursor, or Codex to Armada MCP
               </CardTitle>

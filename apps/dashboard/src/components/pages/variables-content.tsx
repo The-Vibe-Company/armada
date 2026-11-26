@@ -123,6 +123,12 @@ export default async function VariablesContent({ searchParams }: Props) {
   );
 }
 
+function vaultValueLabel(item: Pick<VaultItem, "kind" | "status">) {
+  if (item.status === "revoked") return "Erased";
+  if (item.kind === "secret") return "Encrypted";
+  return "Click to view";
+}
+
 /** One variable or secret as a row: its kind and scope, whether it is active, and who can use it. */
 function row(
   item: VaultItem,
@@ -131,14 +137,7 @@ function row(
   now: number,
 ): ResourceRow & { bucket: Bucket; tie: string } {
   const state = vaultState(item);
-  const valueCell =
-    item.status === "revoked" ? (
-      <span className="text-muted-foreground">Erased</span>
-    ) : item.kind === "secret" ? (
-      <span className="text-muted-foreground">Encrypted</span>
-    ) : (
-      <span className="text-muted-foreground">Click to view</span>
-    );
+  const valueCell = <span className="text-muted-foreground">{vaultValueLabel(item)}</span>;
   const meta =
     item.kind === "secret" ? "Secret · write-only, encrypted" : "Variable · anyone who can use it can read it";
   return {
