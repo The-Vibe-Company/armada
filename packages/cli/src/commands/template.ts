@@ -5,7 +5,7 @@ export default {
   name: "template",
   summary: "Inspect and launch versioned templates",
   usage: {
-    templates: "  armada template list|get|launch          Inspect and launch published template versions",
+    templates: "  armada template --help                   Inspect and launch published template versions",
   },
   help: `Usage: armada template <command> [arguments]
 Inspect reusable launch definitions and launch their immutable template versions.

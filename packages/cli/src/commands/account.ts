@@ -42,8 +42,7 @@ export default {
   name: "account",
   summary: "Manage model credentials, GitHub access and your Armada session",
   usage: {
-    hosts: `  armada account ls|add|login|import|default|limits|rm|test
-                                           Manage encrypted model accounts (see account --help)
+    hosts: `  armada account --help                    Manage encrypted model accounts (ls|add|login|import|default|limits|rm|test)
   armada account ls|add|login|rm github    Manage GitHub connection and installations
   armada account status|logout             Show server account status or revoke login session`,
   },

@@ -36,12 +36,12 @@ Quick start / common examples:
 Usage: armada [global options] <command> [arguments]
 
 Sandboxes:
-  armada new <snapshot> --agent claude|codex|opencode|antigravity --provider boat|modal ["prompt"] [options]
-                                           Launch an agent sandbox from a snapshot (see new --help)
-  armada new [prompt] --provider docker --host UUID|NAME --agent claude|codex|opencode|antigravity [options]
+  armada new <snapshot> --agent claude|codex|opencode|antigravity --provider boat|modal ["prompt"] [--model <id>] [--reasoning-effort <level>] [--credential-id <id>] [--repo <dir|owner/repo>] [--ttl 4h] [--skill <pin>] [--connections <id,...> | --no-connections] [--keep-after-merge] [--armada-access [--max-active-children <1..100>]] [--idempotency-key KEY] [--org <org>] [--json]
+                                           Fork a snapshot into a sandbox (see new --help)
+  armada new [prompt] --provider docker [--host UUID|NAME | --golden UUID] --agent claude|codex|opencode|antigravity [--credential-id UUID] [--credential-version N] [--repo owner/repo[@branch]] [--variable KEY:UUID:V] [--secret KEY:UUID:V] [--idempotency-key KEY] [--ttl 4h] [--org ORG] [--json]
                                            Launch on a registered Docker host (see new --help)
-  armada ls [--status STATUS] [--agent claude|codex|opencode|antigravity] [--org ORG] [--json]
-                                           List visible sandboxes (see ls --help for filters/pagination)
+  armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode|antigravity] [--golden UUID] [--owner UUID|me] [--page N] [--limit 1..200] [--org ORG] [--json] [--page-info]
+                                           List visible sandboxes (default page size 25)
   armada info [sandbox-id] [--live | --wait [--timeout S]] [--org ORG] [--json]
                                            Inspect sandbox state, probe provider, or wait for activity
   armada info --setup [--org ORG] [--json] Check identity, server, GitHub, hosts and accounts
@@ -69,14 +69,20 @@ Interactive & Relay:
                                            List or download saved sandbox outputs
 
 Templates & Snapshots:
-  armada template list|get|launch          Inspect and launch published template versions
-  armada snapshot ls|show [--provider boat|modal|docker] [--org ORG] [--json]
-                                           List or inspect provider-scoped snapshots
-  armada snapshot new|update|rebuild|rm    Create, update, rebuild or remove snapshots (see snapshot --help)
+  armada template --help                   Inspect and launch published template versions
+  armada snapshot ls [--provider boat|modal|docker] [--org ORG] [--json]
+  armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--wait [--timeout SECONDS]] [--provider boat|modal|docker] [--org ORG] [--private] [--json]
+    [--setup FILE] [--idempotency-key KEY] [--host UUID|NAME] [--request-id UUID]
+  armada snapshot update NAME (--add-repo URL ... | --replace (--config FILE | --repo URL ...)) [--wait [--timeout SECONDS]] [--provider boat|modal] [--org ORG] [--init CMD] [--setup FILE] [--idempotency-key KEY] [--json]
+  armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
+  armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG] [--json]
+  armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
+  armada snapshot show --build JOB_ID [--json]
+  armada snapshot show --idempotency-key KEY --org ORG_UUID [--json]
+                                           Manage provider-scoped snapshots (see snapshot --help)
 
 Hosts & Accounts:
-  armada account ls|add|login|import|default|limits|rm|test
-                                           Manage encrypted model accounts (see account --help)
+  armada account --help                    Manage encrypted model accounts (ls|add|login|import|default|limits|rm|test)
   armada account ls|add|login|rm github    Manage GitHub connection and installations
   armada account status|logout             Show server account status or revoke login session
   armada org list                          List your organizations, roles and IDs
@@ -84,7 +90,13 @@ Hosts & Accounts:
   armada org connect boat|modal [--org <name>] [--file <path>]
                                            Connect an org provider via stdin or private file
   armada host install --server HTTPS_ORIGIN  Install daemon on Docker host (token on stdin)
-  armada host add|ls|limits|rm [--org ORG]   Register, list, tune or revoke Docker hosts
+  armada host add [--name NAME] [--org ORG] [--json]
+                                           Register a Docker host and print its installer
+  armada host ls [HOST] [--org ORG] [--json]
+                                           List or inspect registered Docker hosts
+  armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org ORG] [--json]
+                                           Update host resource limits or reset with --auto
+  armada host rm UUID [--org ORG] [--json] Revoke a Docker host registration
 
 Auth & API:
   armada completion bash|zsh|fish          Print a shell completion script

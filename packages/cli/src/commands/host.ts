@@ -6,7 +6,13 @@ export default {
   summary: "Manage registered Docker hosts",
   usage: {
     hosts: `  armada host install --server HTTPS_ORIGIN  Install daemon on Docker host (token on stdin)
-  armada host add|ls|limits|rm [--org ORG]   Register, list, tune or revoke Docker hosts`,
+  armada host add [--name NAME] [--org ORG] [--json]
+                                           Register a Docker host and print its installer
+  armada host ls [HOST] [--org ORG] [--json]
+                                           List or inspect registered Docker hosts
+  armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org ORG] [--json]
+                                           Update host resource limits or reset with --auto
+  armada host rm UUID [--org ORG] [--json] Revoke a Docker host registration`,
   },
   help: `Usage: armada host <command> [arguments]
 Manage Docker machines registered with Armada.

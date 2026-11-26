@@ -5,8 +5,8 @@ export default sandboxOperation({
   name: "ls",
   summary: "List visible sandboxes",
   usage: {
-    sandboxes: `  armada ls [--status STATUS] [--agent ${HARNESSES.join("|")}] [--org ORG] [--json]
-                                           List visible sandboxes (see ls --help for filters/pagination)`,
+    sandboxes: `  armada ls [--status STATUS] [--ref REF] [--agent|--harness ${HARNESSES.join("|")}] [--golden UUID] [--owner UUID|me] [--page N] [--limit 1..200] [--org ORG] [--json] [--page-info]
+                                           List visible sandboxes (default page size 25)`,
   },
   help: `Usage: armada ls [--status <status>] [--ref REF] [--agent <harness> | --harness <harness>]
   [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--org UUID] [--json] [--page-info]

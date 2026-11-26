@@ -143,9 +143,9 @@ export default {
   name: "new",
   summary: "Launch an agent sandbox",
   usage: {
-    sandboxes: `  armada new <snapshot> --agent ${agentChoices} --provider boat|modal ["prompt"] [options]
-                                           Launch an agent sandbox from a snapshot (see new --help)
-  armada new [prompt] --provider docker --host UUID|NAME --agent ${agentChoices} [options]
+    sandboxes: `  armada new <snapshot> --agent ${agentChoices} --provider boat|modal ["prompt"] [--model <id>] [--reasoning-effort <level>] [--credential-id <id>] [--repo <dir|owner/repo>] [--ttl 4h] [--skill <pin>] [--connections <id,...> | --no-connections] [--keep-after-merge] [--armada-access [--max-active-children <1..100>]] [--idempotency-key KEY] [--org <org>] [--json]
+                                           Fork a snapshot into a sandbox (see new --help)
+  armada new [prompt] --provider docker [--host UUID|NAME | --golden UUID] --agent ${agentChoices} [--credential-id UUID] [--credential-version N] [--repo owner/repo[@branch]] [--variable KEY:UUID:V] [--secret KEY:UUID:V] [--idempotency-key KEY] [--ttl 4h] [--org ORG] [--json]
                                            Launch on a registered Docker host (see new --help)`,
   },
   help: `Usage: armada new <snapshot> --provider boat|modal --agent ${agentChoices} ["prompt"] [options]
