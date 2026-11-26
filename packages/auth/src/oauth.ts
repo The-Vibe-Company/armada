@@ -2,7 +2,7 @@ import { BodyTooLargeError, readBoundedText } from "./bounded-body.ts";
 import { bearerKind, generateClientId, generateCode, generateToken, randomHex, sha256Hex } from "./codec.ts";
 import { clearCookie, openSeal, type PendingLogin, readCookie, seal, writeCookie } from "./cookie.ts";
 import { AuthError } from "./errors.ts";
-import { loginPage, orgPage, page } from "./html.ts";
+import { loginPage, orgPage, page, resolveLoginProviders } from "./html.ts";
 import { refreshClientId, refreshLabel } from "./labels.ts";
 import {
   ACCESS_TOKEN_TTL_MS,
@@ -15,7 +15,13 @@ import {
 } from "./limits.ts";
 import { createPkce, pkceMatches, s256 } from "./pkce.ts";
 import { isAllowedRedirect } from "./redirect.ts";
-import { assertProvider, assertSupabaseUrl, exchangeSupabaseCode, supabaseAuthorizeUrl } from "./supabase-auth.ts";
+import {
+  assertProvider,
+  assertSupabaseUrl,
+  exchangeSupabaseCode,
+  type Provider,
+  supabaseAuthorizeUrl,
+} from "./supabase-auth.ts";
 import type { AuthFetch, AuthStore } from "./types.ts";
 import { fresh } from "./verify.ts";
 
@@ -52,6 +58,7 @@ export interface OAuthServerOptions {
   authSecret: string;
   publicUrl: string;
   now: () => Date;
+  loginProviders?: readonly Provider[];
 }
 
 export function oauthOptionsFromEnv(options: {
@@ -69,6 +76,15 @@ export function oauthOptionsFromEnv(options: {
     throw new AuthError("Set SUPABASE_URL, SUPABASE_ANON_KEY, ARMADA_AUTH_SECRET and ARMADA_PUBLIC_URL.", "usage");
   }
   if (authSecret.length < 16) throw new AuthError("ARMADA_AUTH_SECRET must be at least 16 characters.", "usage");
+  const rawProviders = env.ARMADA_AUTH_PROVIDERS;
+  const loginProviders =
+    rawProviders === undefined
+      ? undefined
+      : rawProviders
+          .split(",")
+          .map((name) => name.trim())
+          .filter(Boolean)
+          .map(assertProvider);
   return {
     store: options.store,
     fetch: options.fetch ?? fetch,
@@ -77,6 +93,7 @@ export function oauthOptionsFromEnv(options: {
     authSecret,
     publicUrl: assertPublicUrl(publicUrl),
     now: options.now ?? (() => new Date()),
+    ...(loginProviders !== undefined ? { loginProviders } : {}),
   };
 }
 
@@ -250,7 +267,7 @@ async function authorize(url: URL, options: OAuthServerOptions): Promise<Respons
 async function showLogin(request: Request, options: OAuthServerOptions): Promise<Response> {
   const pending = await pendingFrom(request, options);
   if (!pending?.supabaseVerifier) return page("Authorization failed", "<p>Start again from your client.</p>", 400);
-  return loginPage(pending.csrf);
+  return loginPage(pending.csrf, options.loginProviders);
 }
 
 async function startProvider(url: URL, request: Request, options: OAuthServerOptions): Promise<Response> {
@@ -259,11 +276,15 @@ async function startProvider(url: URL, request: Request, options: OAuthServerOpt
   if (!pending?.supabaseVerifier || url.searchParams.get("csrf") !== pending.csrf) {
     return page("Authorization failed", "<p>Start again from your client.</p>", 400);
   }
-  let name: "github" | "google";
+  const enabled = resolveLoginProviders(options.loginProviders);
+  let name: Provider;
   try {
     name = assertProvider(provider);
   } catch {
-    return page("Authorization failed", "<p>The provider is GitHub or Google.</p>", 400);
+    return page("Authorization failed", "<p>That sign-in provider is not enabled.</p>", 400);
+  }
+  if (!enabled.includes(name)) {
+    return page("Authorization failed", "<p>That sign-in provider is not enabled.</p>", 400);
   }
   const challenge = await s256(pending.supabaseVerifier);
   const location = supabaseAuthorizeUrl({
@@ -401,7 +422,9 @@ async function refreshGrant(form: URLSearchParams, options: OAuthServerOptions):
   const presented = form.get("refresh_token") ?? "";
   const clientId = form.get("client_id") ?? "";
   if (bearerKind(presented) !== "refresh") return oauthError(400, "invalid_grant", "The refresh token is invalid.");
-  if (!sameResource(form.get("resource") ?? "", resourceUrl(options.publicUrl))) {
+  const expectedResource = resourceUrl(options.publicUrl);
+  const resources = form.getAll("resource");
+  if (resources.length > 1 || (resources.length === 1 && !sameResource(resources[0] ?? "", expectedResource))) {
     return oauthError(400, "invalid_target", "resource must be this server's MCP endpoint.");
   }
   const now = options.now();
