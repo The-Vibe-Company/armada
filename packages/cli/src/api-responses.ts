@@ -26,9 +26,11 @@ export class ArmadaApiError extends AuthError {
           ? "unavailable"
           : status === 400
             ? "usage"
-            : status === 409 || status === 403
-              ? "conflict"
-              : "unavailable",
+            : status === 401
+              ? "unauthorized"
+              : status === 409 || status === 403
+                ? "conflict"
+                : "unavailable",
     );
   }
 }

@@ -85,7 +85,7 @@ function machine() {
       files.set(binary, { directory: false, file: true, symlink: false });
       current = state;
     },
-    capture: async (args = ["host", "install", "--server", "https://armada.example"]) => {
+    capture: async (args = ["host", "install", "--server", "https://armada.example"], stdoutIsTTY?: boolean) => {
       const code = await run(
         args,
         {
@@ -97,6 +97,7 @@ function machine() {
           },
         },
         {
+          ...(stdoutIsTTY === undefined ? {} : { stdoutIsTTY }),
           localHost: native,
           get auth(): never {
             throw new Error("Local host command accessed login/org preferences");
@@ -229,11 +230,12 @@ test("offline named host points to its own daemon and service after the check-in
   m.files.set(namedBinary, { directory: false, file: true, symlink: false });
   m.native.listInstances = async () => [`armada-docker-host@${instance}`];
   m.native.readServer = async (path) => (path.includes("@") ? server : "https://armada.example");
-  const result = await m.capture(["host", "install", "--server", server]);
+  const result = await m.capture(["host", "install", "--server", server], false);
   expect(result.code).toBe(1);
   expect(result.elapsed).toBe(60_000);
   expect(result.inputReads).toBe(1);
   expect(result.err).toContain("Registration preserved");
+  expect(result.err).not.toContain("command_failed");
   expect(result.err).toContain(`'${namedBinary}' status --instance ${instance}`);
   expect(result.err).toContain(`journalctl --user -u armada-docker-host@${instance}.service`);
 });

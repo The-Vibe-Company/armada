@@ -9,7 +9,7 @@ import {
 } from "@armada/core";
 import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { requireLaunchAgent } from "../agent-validation.ts";
-import { flag, parseArgs, providerFlag, single, usesHostLaunch, values } from "../args.ts";
+import { acceptedOptions, flag, parseArgs, providerFlag, single, usesHostLaunch, values } from "../args.ts";
 import { rememberSandbox } from "../current-sandbox.ts";
 import { prepareLaunch } from "../devx.ts";
 import { launchDocker } from "../docker-launch.ts";
@@ -30,7 +30,6 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
       "--skill",
       "--max-active-children",
       "--host",
-      "--image",
       "--idempotency-key",
       "--credential-version",
       "--variable",
@@ -42,14 +41,31 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
   if (usesHostLaunch(single(args, "--provider"))) {
     return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch }, deps.sandboxFile);
   }
-  if (
-    ["--host", "--image", "--idempotency-key", "--credential-version", "--golden", "--variable", "--secret"].some(
-      (key) => single(args, key) !== undefined,
-    )
-  )
+  if (["--host", "--credential-version", "--golden", "--variable", "--secret"].some((key) => args.options.has(key)))
     throw new GoldenError("invalid_config", "Docker placement flags require --provider docker.");
+  acceptedOptions(args, "new", [
+    "--provider",
+    "--agent",
+    "--model",
+    "--reasoning-effort",
+    "--credential-id",
+    "--repo",
+    "--ttl",
+    "--skill",
+    "--connections",
+    "--no-connections",
+    "--keep-after-merge",
+    "--armada-access",
+    "--max-active-children",
+    "--idempotency-key",
+    "--org",
+    "--json",
+  ]);
   const provider = providerFlag(args);
   if (provider === undefined) throw new GoldenError("invalid_config", "Pass --provider boat, modal, or docker.");
+  const idempotencyKey = single(args, "--idempotency-key");
+  if (idempotencyKey !== undefined && (idempotencyKey.length < 16 || idempotencyKey.length > 128))
+    throw new GoldenError("invalid_config", "--idempotency-key requires 16–128 characters.");
   const maxActiveChildren = single(args, "--max-active-children");
   if (
     maxActiveChildren !== undefined &&
@@ -61,14 +77,6 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     );
   if (flag(args, "--no-connections") && single(args, "--connections") !== undefined)
     throw new GoldenError("invalid_config", "Use --connections or --no-connections, not both.");
-  const legacyVisibility = single(args, "--visibility");
-  if (legacyVisibility !== undefined) {
-    if (legacyVisibility !== "private" && legacyVisibility !== "org")
-      throw new GoldenError("invalid_config", "Legacy --visibility must be private or org.");
-    io.err(
-      "Warning: --visibility is deprecated and ignored. The server enforces sandbox access and resolves omitted connection defaults.\n",
-    );
-  }
   const connections = single(args, "--connections");
   if (connections !== undefined && connections.split(",").some((id) => !id.trim()))
     throw new GoldenError(
@@ -95,7 +103,8 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
       ...(flag(args, "--no-connections") ? { connections: [] } : {}),
       ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
       ...(values(args, "--skill").length ? { skills: values(args, "--skill") } : {}),
-      ...(connections === undefined ? {} : { connections: connections.split(",") }),
+      ...(connections === undefined ? {} : { connections: connections.split(",").map((id) => id.trim()) }),
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       ...(flag(args, "--armada-access")
         ? {
             armadaAccessVersion: 1,
