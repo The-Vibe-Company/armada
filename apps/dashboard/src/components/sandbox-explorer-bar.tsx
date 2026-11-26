@@ -102,6 +102,8 @@ export function SandboxExplorerBar({
   const timerRef = useRef<number | null>(null);
   const latestRef = useRef({ current, tab });
   latestRef.current = { current, tab };
+  const propHref = buildHref(filters, activity);
+  const prevPropRef = useRef({ href: propHref, q: filters.q });
 
   const stopDebounce = useCallback(() => {
     if (timerRef.current === null) return;
@@ -110,11 +112,16 @@ export function SandboxExplorerBar({
   }, []);
 
   useEffect(() => {
-    stopDebounce();
-    setCurrent(filters);
-    setTab(activity);
-    setQuery(filters.q);
-  }, [filters, activity, stopDebounce]);
+    if (propHref !== prevPropRef.current.href) {
+      setCurrent(filters);
+      setTab(activity);
+    }
+    if (filters.q !== prevPropRef.current.q) {
+      stopDebounce();
+      setQuery(filters.q);
+    }
+    prevPropRef.current = { href: propHref, q: filters.q };
+  }, [propHref, filters, activity, stopDebounce]);
 
   useEffect(() => stopDebounce, [stopDebounce]);
 
@@ -490,12 +497,13 @@ export function SandboxExplorerBar({
             variant="ghost"
             size="xs"
             className="text-muted-foreground"
-            onClick={() =>
+            onClick={() => {
+              setQuery("");
               navigate(
                 parseSandboxFilters({ sort: current.sort, ...(showScopeToggle && isMine ? { owner: "me" } : {}) }),
                 tab,
-              )
-            }
+              );
+            }}
           >
             Clear all
           </Button>

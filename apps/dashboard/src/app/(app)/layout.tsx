@@ -44,7 +44,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <AppSidebar
         header={header}
         launch={
-          <div className="px-3 pb-2 group-data-[state=collapsed]:px-2">
+          <div data-shell-launch className="px-3 pb-2 group-data-[state=collapsed]:px-2">
             <SandboxLaunchAction shortcut />
           </div>
         }

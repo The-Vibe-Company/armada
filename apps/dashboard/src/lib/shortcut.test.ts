@@ -24,4 +24,15 @@ test("single-key global shortcuts ignore editable targets and modifiers, while a
     true,
   );
   expect(shouldIgnoreGlobalShortcut({ ...base, repeat: true })).toBe(true);
+  const origDoc = globalThis.document;
+  try {
+    /* oxlint-disable landmines-testing/no-test-doubles -- Simulate open dialog/menu DOM overlay without jsdom. */
+    globalThis.document = { querySelector: (sel: string) => (sel.includes('role="menu"') ? {} : null) } as Document;
+    /* oxlint-enable landmines-testing/no-test-doubles */
+    expect(shouldIgnoreGlobalShortcut(base)).toBe(true);
+  } finally {
+    /* oxlint-disable landmines-testing/no-test-doubles -- Restore document global after shortcut overlay test. */
+    globalThis.document = origDoc;
+    /* oxlint-enable landmines-testing/no-test-doubles */
+  }
 });
