@@ -16,12 +16,14 @@ import { Empty, PageHeader } from "@/components/page-header";
 import { ProviderMark } from "@/components/provider-mark";
 import { PullRequestList } from "@/components/pull-requests";
 import { RowCost } from "@/components/sandbox-cost";
+import { SandboxExplorerBar } from "@/components/sandbox-explorer-bar";
 import { SandboxLaunchAction } from "@/components/sandbox-launch-action";
-import { SandboxActivityTabs, SandboxListTabs, sandboxRowGrid } from "@/components/sandbox-list-tabs";
+import { SandboxListLiveSync } from "@/components/sandbox-list-live-sync";
+import { SandboxListTabs, sandboxRowGrid } from "@/components/sandbox-list-tabs";
 import { SandboxRowMenu } from "@/components/sandbox-row-menu";
 import { SandboxState } from "@/components/sandbox-state";
-import { SandboxToolbar } from "@/components/sandbox-toolbar";
 import LoadingSandboxes from "@/components/sandboxes-skeleton";
+import { StatusDot } from "@/components/status-badge";
 import { OutcomeBadge, OutcomeDetail } from "@/components/task-outcome";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -129,10 +131,11 @@ async function SandboxesContent({ searchParams }: Props) {
 
   const hostNames = new Map(hostRead.state === "ready" ? hostRead.list.hosts.map((host) => [host.id, host.name]) : []);
   const filtered = hasSandboxFilters(filters);
+  const deletedCount = facets.status.get("deleted") ?? 0;
   // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
   const hasDocker = hostRead.state === "ready" && hasDockerHost(hostRead.list.hosts);
   const setupPending = selected !== null && setup?.state === "pending" && !hasDocker;
-  if (setupPending && !filtered && inventoryTotal === 0 && counts.deleted === 0 && skipped === 0)
+  if (setupPending && !filtered && inventoryTotal === 0 && deletedCount === 0 && skipped === 0)
     redirect(CLOUD_PROVIDERS_PATH);
 
   const launchAction = setupPending ? (
@@ -145,22 +148,54 @@ async function SandboxesContent({ searchParams }: Props) {
     </div>
   ) : null;
 
+  const workingCount = workingIds.size;
+  const waitingCount = waitingIds.size;
+  const waitingParams = new URLSearchParams(filtersToSearch({ ...filters, page: 1 }));
+  waitingParams.set("activity", "need");
+  const waitingHref = `/sandboxes?${waitingParams}`;
+  const hasOtherOwners = [...facets.owner.keys()].some((id) => id !== viewer.id);
+  const showScopeToggle = directory.size > 1 || hasOtherOwners || filters.owner.includes("me");
+
   return (
     <>
+      <SandboxListLiveSync organizationId={selected.org.id} />
       <PageHeader
         title="Sandboxes"
         meta={
-          <span className="inline-flex items-center gap-2">
-            <span aria-hidden="true" className="size-1.5 rounded-full bg-success" />
-            {total > 0 ? countLabel(total, filtered) : "0 sandboxes"}
-          </span>
+          workingCount > 0 || waitingCount > 0 ? (
+            <span className="inline-flex flex-wrap items-center gap-3">
+              {workingCount > 0 && (
+                <span className="inline-flex items-center gap-1.5 text-foreground">
+                  <StatusDot tone="success" pulse />
+                  {`${workingCount} working`}
+                </span>
+              )}
+              {waitingCount > 0 && (
+                <Link
+                  href={waitingHref}
+                  className="inline-flex items-center gap-1.5 text-warning underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-ring"
+                >
+                  <StatusDot tone="warning" />
+                  {`${waitingCount} waiting`}
+                </Link>
+              )}
+            </span>
+          ) : (
+            <span>{total > 0 ? countLabel(total, filtered) : "0 sandboxes"}</span>
+          )
         }
       >
         {launchAction}
       </PageHeader>
 
-      <SandboxToolbar
+      <SandboxExplorerBar
         filters={filters}
+        activity={activity}
+        counts={counts}
+        deletedCount={deletedCount}
+        workingCount={workingCount}
+        waitingCount={waitingCount}
+        showScopeToggle={showScopeToggle}
         options={
           Object.fromEntries(
             FACETS.map((key) => {
@@ -207,9 +242,7 @@ async function SandboxesContent({ searchParams }: Props) {
             }),
           ) as Record<Facet, FacetOption[]>
         }
-      >
-        <SandboxActivityTabs counts={counts} tab={activity} search={filtersToSearch(filters)} />
-      </SandboxToolbar>
+      />
 
       {skipped > 0 && (
         <p role="status" className="text-sm text-muted-foreground">
@@ -217,7 +250,7 @@ async function SandboxesContent({ searchParams }: Props) {
         </p>
       )}
 
-      {total === 0 && activity !== "deleted" ? (
+      {total === 0 ? (
         skipped > 0 ? (
           <Empty
             title="Sandboxes are not fully loaded"

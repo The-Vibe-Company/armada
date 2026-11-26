@@ -1,3 +1,4 @@
+import { AuthError } from "@armada/auth";
 import { GoldenError } from "@armada/core";
 import type { ListResult, LogsInput, LogsResult } from "@armada/core/contract";
 import { acceptedOptions, flag, parseArgs, single } from "../args.ts";
@@ -6,15 +7,15 @@ import { createSdkCommandClient } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 const events: Command["run"] = async (argv, { io, deps, auth }) => {
-  const args = parseArgs(argv, ["--tail"], ["-f"]);
-  acceptedOptions(args, "events", ["-f", "--tail", "--org", "--json"]);
+  const args = parseArgs(argv, ["--tail"], ["-f", "--follow"]);
+  acceptedOptions(args, "events", ["-f", "--follow", "--tail", "--org", "--json"]);
   if (args.positionals.length > 1) throw new GoldenError("invalid_config", "Pass at most one sandbox ID.");
   const tail = single(args, "--tail");
   const limit = Number(tail);
   if (tail !== undefined && (!/^\d+$/.test(tail) || limit < 1 || limit > 1000))
     throw new GoldenError("invalid_config", "--tail must be between 1 and 1000.");
   const org = single(args, "--org");
-  const follow = flag(args, "-f");
+  const follow = flag(args, "-f") || flag(args, "--follow");
   const json = flag(args, "--json");
   const client = await createSdkCommandClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
   const id = await resolveSandboxId(
@@ -39,7 +40,7 @@ const events: Command["run"] = async (argv, { io, deps, auth }) => {
     const next: string | null = page.cursor ?? cursor;
     if (!follow || (!hasMore && page.settled)) return 0;
     if (hasMore && next === cursor)
-      throw new GoldenError("invalid_config", "Armada events response has more events but did not advance its cursor.");
+      throw new AuthError("Armada events response has more events but did not advance its cursor.", "unavailable");
     cursor = next;
     if (!hasMore) await (deps.sleep ?? Bun.sleep)(1000);
   }

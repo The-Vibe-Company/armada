@@ -194,60 +194,90 @@ describe("launch through the Armada API", () => {
   });
 });
 
-for (const visibility of [undefined, "private", "org"]) {
-  for (const selection of [undefined, "selected", "none"]) {
-    test(`launch keeps connection selection ${selection ?? "default"} with legacy visibility ${visibility ?? "omitted"}`, async () => {
-      let body: Record<string, unknown> = {};
-      let out = "",
-        err = "";
-      const code = await run(
-        [
-          "new",
-          "web",
-          "--provider",
-          "boat",
-          "--agent",
-          "codex",
-          "--json",
-          ...(visibility ? ["--visibility", visibility] : []),
-          ...(selection === "selected"
-            ? ["--connections", "connection-a,connection-b"]
-            : selection === "none"
-              ? ["--no-connections"]
-              : []),
-        ],
-        {
-          out: (text) => {
-            out += text;
-          },
-          err: (text) => {
-            err += text;
-          },
+for (const selection of [undefined, "selected", "none"]) {
+  test(`launch keeps connection selection ${selection ?? "default"}, trims commas, and forwards --idempotency-key`, async () => {
+    let body: Record<string, unknown> = {};
+    let out = "",
+      err = "";
+    const key = "launch_idempotency_key_01";
+    const code = await run(
+      [
+        "new",
+        "web",
+        "--provider",
+        "boat",
+        "--agent",
+        "codex",
+        "--idempotency-key",
+        key,
+        "--json",
+        ...(selection === "selected"
+          ? ["--connections", " connection-a , connection-b "]
+          : selection === "none"
+            ? ["--no-connections"]
+            : []),
+      ],
+      {
+        out: (text) => {
+          out += text;
         },
-        {
-          auth: {
-            out: () => undefined,
-            err: () => undefined,
-            env: { ARMADA_TOKEN: token },
-            fetch: async (_input, init) => {
-              body = JSON.parse(String(init?.body));
-              return Response.json(response);
-            },
-            now: () => new Date(),
-            open: () => undefined,
-            session: memorySessionStore(),
-          },
+        err: (text) => {
+          err += text;
         },
-      );
-      expect(code).toBe(0);
-      expect(body).not.toHaveProperty("visibility");
-      if (selection === undefined) expect(body).not.toHaveProperty("connections");
-      else expect(body.connections).toEqual(selection === "none" ? [] : ["connection-a", "connection-b"]);
-      expect(JSON.parse(out)).not.toHaveProperty("visibility");
-      expect(err.includes("deprecated and ignored")).toBe(visibility !== undefined);
-    });
-  }
+      },
+      {
+        auth: {
+          out: () => undefined,
+          err: () => undefined,
+          env: { ARMADA_TOKEN: token },
+          fetch: async (_input, init) => {
+            body = JSON.parse(String(init?.body));
+            return Response.json(response);
+          },
+          now: () => new Date(),
+          open: () => undefined,
+          session: memorySessionStore(),
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(err).toBe("");
+    expect(body.idempotencyKey).toBe(key);
+    expect(body).not.toHaveProperty("visibility");
+    if (selection === undefined) expect(body).not.toHaveProperty("connections");
+    else expect(body.connections).toEqual(selection === "none" ? [] : ["connection-a", "connection-b"]);
+    expect(JSON.parse(out)).not.toHaveProperty("visibility");
+  });
 }
+
+test("Boat/Modal launch rejects unsupported, removed, and malformed flags before HTTP", async () => {
+  let calls = 0;
+  const fetch = Object.assign(
+    async () => {
+      calls++;
+      return Response.json(response);
+    },
+    { preconnect: () => {} },
+  );
+  for (const extra of [
+    ["--visibility", "private"],
+    ["--image", "ubuntu:latest"],
+    ["--cwd", "/tmp"],
+    ["--file", "x.json"],
+    ["--name", "box"],
+    ["--private"],
+    ["--idempotency-key", "short"],
+  ]) {
+    expect(
+      await run(
+        ["new", "web", "--provider", "modal", "--agent", "codex", ...extra],
+        { out: () => {}, err: () => {} },
+        { env: { ARMADA_TOKEN: token }, fetch },
+      ),
+    ).toBe(2);
+  }
+  expect(calls).toBe(0);
+});
 
 test("repository authorization refusal keeps no_credentials and the reconnect remedy in CLI JSON", async () => {
   let errors = "";

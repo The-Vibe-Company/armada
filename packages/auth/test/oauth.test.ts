@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { seal } from "../src/cookie.ts";
 import { createMemoryAuthStore } from "../src/memory.ts";
-import { handleOAuthRequest } from "../src/oauth.ts";
+import { handleOAuthRequest, type OAuthServerOptions, oauthOptionsFromEnv } from "../src/oauth.ts";
 import { createPkce, s256 } from "../src/pkce.ts";
+import type { Provider } from "../src/supabase-auth.ts";
 import type { AuthFetch } from "../src/types.ts";
+import { authenticate } from "../src/verify.ts";
 import { ORG_ID, proveAuth, USER_ID } from "./prove.ts";
 
 const PUBLIC = "http://127.0.0.1:8080";
@@ -242,4 +244,262 @@ describe("oauth", () => {
     expect(await response?.text()).toContain("Start again from your client");
     expect(response?.headers.getSetCookie().join(";")).toContain("Max-Age=0");
   });
+
+  test.each([
+    { redirectUri: "https://client.example/oauth/callback", expectedTarget: "https://client.example" },
+    { redirectUri: "http://127.0.0.1:9999/callback", expectedTarget: "http://127.0.0.1:9999" },
+    { redirectUri: "http://[::1]:9999/callback", expectedTarget: "http:" },
+    { redirectUri: "claude://oauth/callback", expectedTarget: "claude:" },
+    { redirectUri: "vscode://armada.ext/callback", expectedTarget: "vscode:" },
+  ])(
+    "orgPage CSP allows validated redirect_uri $redirectUri without navigate-to",
+    async ({ redirectUri, expectedTarget }) => {
+      const flow = await runAuthToConsent(redirectUri);
+      expect(flow.login.headers.get("content-security-policy")).toBe("default-src 'none'; form-action 'self'");
+      const csp = flow.callback.headers.get("content-security-policy") ?? "";
+      expect(csp).toBe(`default-src 'none'; form-action 'self' ${expectedTarget}`);
+      expect(csp).not.toContain("navigate-to");
+
+      const chosen = await flow.allow();
+      expect(chosen.status).toBe(302);
+      expect(chosen.headers.get("location")?.startsWith(redirectUri)).toBe(true);
+    },
+  );
+
+  test("register rejects non-loopback IPv6 HTTP redirect URIs", async () => {
+    const rejected = await handleOAuthRequest(
+      new Request(`${PUBLIC}/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: ["http://[::2]:9999/callback"] }),
+      }),
+      makeTestServer(),
+    );
+    expect(rejected?.status).toBe(400);
+  });
+
+  test.each<{
+    label: string;
+    loginProviders?: readonly Provider[];
+    status: number;
+    expected: readonly Provider[];
+    blocked: readonly Provider[];
+  }>([
+    { label: "default", status: 200, expected: ["github", "google"], blocked: [] },
+    { label: "github only", loginProviders: ["github"], status: 200, expected: ["github"], blocked: ["google"] },
+    { label: "google only", loginProviders: ["google"], status: 200, expected: ["google"], blocked: ["github"] },
+    { label: "empty", loginProviders: [], status: 503, expected: [], blocked: ["github", "google"] },
+  ])(
+    "loginPage and /oauth/start respect configured loginProviders ($label)",
+    async ({ loginProviders, status, expected, blocked }) => {
+      const server = makeTestServer(loginProviders);
+      const pending = await seal(
+        {
+          clientId: "client-id",
+          redirectUri: "http://[::1]:9999/callback",
+          codeChallenge: "challenge",
+          resource: `${PUBLIC}/mcp`,
+          csrf: "csrf-token",
+          exp: Date.parse("2026-11-08T00:10:00.000Z"),
+          supabaseVerifier: "verifier",
+        },
+        server.authSecret,
+      );
+      const headers = { cookie: `armada_oauth=${pending}` };
+      const login = await handleOAuthRequest(new Request(`${PUBLIC}/oauth/login`, { headers }), server);
+      expect(login?.status).toBe(status);
+      const html = (await login?.text()) ?? "";
+      for (const provider of expected) {
+        expect(html).toContain(`/oauth/start?provider=${provider}&amp;csrf=csrf-token`);
+        const start = await handleOAuthRequest(
+          new Request(`${PUBLIC}/oauth/start?provider=${provider}&csrf=csrf-token`, { headers }),
+          server,
+        );
+        expect(start?.status).toBe(302);
+      }
+      for (const provider of blocked) {
+        expect(html).not.toContain(`provider=${provider}`);
+        const start = await handleOAuthRequest(
+          new Request(`${PUBLIC}/oauth/start?provider=${provider}&csrf=csrf-token`, { headers }),
+          server,
+        );
+        expect(start?.status).toBe(400);
+      }
+    },
+  );
+
+  test("oauthOptionsFromEnv parses ARMADA_AUTH_PROVIDERS when set", () => {
+    const env = {
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_ANON_KEY: "anon-test",
+      ARMADA_AUTH_SECRET: "test-secret-at-least-16",
+      ARMADA_PUBLIC_URL: PUBLIC,
+    };
+    const store = createMemoryAuthStore();
+    expect(oauthOptionsFromEnv({ store, env }).loginProviders).toBeUndefined();
+    expect(oauthOptionsFromEnv({ store, env: { ...env, ARMADA_AUTH_PROVIDERS: "google" } }).loginProviders).toEqual([
+      "google",
+    ]);
+    expect(oauthOptionsFromEnv({ store, env: { ...env, ARMADA_AUTH_PROVIDERS: "" } }).loginProviders).toEqual([]);
+    expect(() => oauthOptionsFromEnv({ store, env: { ...env, ARMADA_AUTH_PROVIDERS: "unknown" } })).toThrow(
+      "github or google",
+    );
+  });
+
+  test("refresh_token succeeds when resource is omitted and rejects invalid resource", async () => {
+    const redirectUri = "http://[::1]:9999/callback";
+    const flow = await runAuthToConsent(redirectUri);
+    const code = new URL((await flow.allow()).headers.get("location") ?? "").searchParams.get("code") ?? "";
+    const exchanged = await postForm(flow.server, "/token", {
+      grant_type: "authorization_code",
+      code,
+      client_id: flow.clientId,
+      redirect_uri: redirectUri,
+      code_verifier: flow.verifier,
+      resource: `${PUBLIC}/mcp`,
+    });
+    const { refresh_token: refreshToken } = (await exchanged.json()) as { refresh_token: string };
+
+    for (const badBody of [
+      new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: flow.clientId,
+        resource: "https://other.example/mcp",
+      }),
+      new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: flow.clientId,
+        resource: "",
+      }),
+      new URLSearchParams([
+        ["grant_type", "refresh_token"],
+        ["refresh_token", refreshToken],
+        ["client_id", flow.clientId],
+        ["resource", `${PUBLIC}/mcp`],
+        ["resource", "https://other.example/mcp"],
+      ]),
+    ]) {
+      const bad = await postForm(flow.server, "/token", badBody);
+      expect(bad.status).toBe(400);
+      expect(await bad.json()).toMatchObject({ error: "invalid_target" });
+    }
+
+    const refreshed = await postForm(flow.server, "/token", {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: flow.clientId,
+    });
+    expect(refreshed.status).toBe(200);
+    const rotated = (await refreshed.json()) as { access_token: string; refresh_token: string };
+    expect((await authenticate(`Bearer ${rotated.access_token}`, flow.store, flow.now)).ok).toBe(true);
+    expect(rotated.refresh_token).not.toBe(refreshToken);
+  });
 });
+
+function makeTestServer(loginProviders?: readonly Provider[]) {
+  return {
+    store: createMemoryAuthStore(),
+    fetch: async () => {
+      throw new Error("unexpected identity request");
+    },
+    supabaseUrl: "https://example.supabase.co",
+    anonKey: "anon-test",
+    authSecret: "test-secret-at-least-16",
+    publicUrl: PUBLIC,
+    now: () => new Date("2026-11-08T00:00:00.000Z"),
+    ...(loginProviders !== undefined ? { loginProviders } : {}),
+  } satisfies OAuthServerOptions;
+}
+
+async function postForm(server: OAuthServerOptions, path: string, body: Record<string, string> | URLSearchParams) {
+  const form = body instanceof URLSearchParams ? body : new URLSearchParams(body);
+  const response = await handleOAuthRequest(
+    new Request(`${PUBLIC}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    }),
+    server,
+  );
+  if (!response) throw new Error(`missing response for ${path}`);
+  return response;
+}
+
+async function runAuthToConsent(redirectUri: string) {
+  const store = createMemoryAuthStore();
+  store.addMembership(USER_ID, { orgId: ORG_ID, name: "Example", role: "admin" });
+  const now = new Date("2026-11-08T00:00:00.000Z");
+  const pkce = await createPkce();
+  let challenge = "";
+  const server: OAuthServerOptions = {
+    ...makeTestServer(),
+    store,
+    now: () => now,
+    fetch: async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { code_verifier?: string };
+      if (!body.code_verifier || (await s256(body.code_verifier)) !== challenge) {
+        return new Response("no", { status: 400 });
+      }
+      return Response.json({
+        access_token: "supabase-access-token",
+        refresh_token: "supabase-refresh-token",
+        expires_in: 3600,
+        user: { id: USER_ID },
+      });
+    },
+  };
+  const registered = await handleOAuthRequest(
+    new Request(`${PUBLIC}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_name: "MCP Client", redirect_uris: [redirectUri] }),
+    }),
+    server,
+  );
+  if (!registered) throw new Error("missing register response");
+  expect(registered.status).toBe(201);
+  const { client_id: clientId } = (await registered.json()) as { client_id: string };
+  const authz = await handleOAuthRequest(
+    new Request(
+      `${PUBLIC}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${pkce.challenge}&code_challenge_method=S256&state=s1&resource=${encodeURIComponent(`${PUBLIC}/mcp`)}`,
+    ),
+    server,
+  );
+  const cookie = authz?.headers.getSetCookie()[0]?.split(";")[0] ?? "";
+  const login = await handleOAuthRequest(new Request(`${PUBLIC}/oauth/login`, { headers: { cookie } }), server);
+  if (!login) throw new Error("missing login response");
+  const href = /href="([^"]+)"/.exec(await login.text())?.[1]?.replaceAll("&amp;", "&") ?? "";
+  const start = await handleOAuthRequest(new Request(`${PUBLIC}${href}`, { headers: { cookie } }), server);
+  challenge = new URL(start?.headers.get("location") ?? "").searchParams.get("code_challenge") ?? "";
+  const callback = await handleOAuthRequest(
+    new Request(`${PUBLIC}/oauth/callback?code=ok`, { headers: { cookie } }),
+    server,
+  );
+  if (!callback) throw new Error("missing callback response");
+  expect(callback.status).toBe(200);
+  const nextCookie = callback.headers.getSetCookie()[0]?.split(";")[0] ?? "";
+  const csrf = /name="csrf" value="([^"]+)"/.exec(await callback.text())?.[1] ?? "";
+  return {
+    store,
+    server,
+    now,
+    clientId,
+    verifier: pkce.verifier,
+    login,
+    callback,
+    allow: async () => {
+      const response = await handleOAuthRequest(
+        new Request(`${PUBLIC}/oauth/org`, {
+          method: "POST",
+          headers: { cookie: nextCookie, "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ csrf, org: ORG_ID, decision: "allow" }).toString(),
+        }),
+        server,
+      );
+      if (!response) throw new Error("missing org response");
+      return response;
+    },
+  };
+}

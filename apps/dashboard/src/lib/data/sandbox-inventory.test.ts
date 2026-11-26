@@ -68,83 +68,56 @@ test("the Sandboxes list reads activity once for the organization without per-sa
     "org",
     parseSandboxFilters({ status: "ready" }),
     "viewer",
-    "working",
+    "active",
     control,
     readSandboxMetadata(supabase, "org", false),
   );
   expect(metadataOffsets).toEqual([0, 500]);
   expect(controlCalls).toEqual(["/api/v1/sandbox/list-turns"]);
-  expect(inventory.rows.map(({ id }) => id)).toEqual(["500"]);
+  expect([...inventory.workingIds]).toEqual(["500"]);
+  expect(inventory.counts.active).toBe(501);
 });
 
 const inventoryScopeCases: Array<{
   name: string;
   params: Record<string, string | string[] | undefined>;
-  activity: "deleted" | undefined;
   statusQuery: string | null;
-  expectedDeletedTab: number;
   expectedTotal: number;
   visibleId: string | undefined;
 }> = [
   {
     name: "default",
     params: {},
-    activity: undefined,
     statusQuery: "neq.deleted",
-    expectedDeletedTab: 505,
     expectedTotal: 1,
     visibleId: "0",
   },
   {
     name: "non-deleted status filter",
     params: { status: "ready" },
-    activity: undefined,
     statusQuery: "neq.deleted",
-    expectedDeletedTab: 0,
     expectedTotal: 1,
     visibleId: "0",
   },
   {
-    name: "deleted activity with conflicting status filter",
-    params: { status: "ready" },
-    activity: "deleted",
-    statusQuery: "neq.deleted",
-    expectedDeletedTab: 0,
-    expectedTotal: 0,
-    visibleId: undefined,
-  },
-  {
     name: "explicit deleted",
     params: { status: "deleted" },
-    activity: undefined,
     statusQuery: null,
-    expectedDeletedTab: 505,
     expectedTotal: 505,
     visibleId: "1",
   },
   {
     name: "mixed status with deleted",
     params: { status: ["ready", "deleted"] },
-    activity: undefined,
     statusQuery: null,
-    expectedDeletedTab: 505,
     expectedTotal: 506,
-    visibleId: "1",
-  },
-  {
-    name: "deleted activity",
-    params: {},
-    activity: "deleted",
-    statusQuery: null,
-    expectedDeletedTab: 505,
-    expectedTotal: 505,
     visibleId: "1",
   },
 ];
 
 test.each(inventoryScopeCases)(
   "$name inventory keeps exact status counts with the expected row scope",
-  async ({ params, activity, statusQuery, expectedDeletedTab, expectedTotal, visibleId }) => {
+  async ({ params, statusQuery, expectedTotal, visibleId }) => {
     const deleted = 505;
     const active = sandbox(0);
     const history = Array.from({ length: deleted }, (_, index) => ({
@@ -182,7 +155,7 @@ test.each(inventoryScopeCases)(
       "org",
       parseSandboxFilters(params),
       "viewer",
-      activity,
+      undefined,
       null,
       readSandboxMetadata(supabase, "org", !statusQuery),
     );
@@ -196,8 +169,7 @@ test.each(inventoryScopeCases)(
           ],
     );
     expect(countReads).toEqual(statusQuery ? ["eq.deleted"] : []);
-    expect(result.activity).toBe(activity ?? "all");
-    expect(result.counts.deleted).toBe(expectedDeletedTab);
+    expect(result.activity).toBe("all");
     expect(result.total).toBe(expectedTotal);
     expect(result.rows[0]?.id).toBe(visibleId);
     expect(result.facets.status.get("deleted")).toBe(deleted);
@@ -253,7 +225,6 @@ test("structured facet filters count deleted sandboxes via HEAD without download
     "(machineSize.is.null,machineSize.in.(large))",
     '(model.is.null,model.in.("unknown","gpt-5.4, \\"beta\\"\\\\1"))',
   ]);
-  expect(result.counts.deleted).toBe(17);
   expect(result.facets.status.get("deleted")).toBe(17);
 
   const second = await loadSandboxInventory(
@@ -310,7 +281,6 @@ test("non-fallback text search counts deleted sandboxes via HEAD without downloa
     "(displayLabel.ilike.*bx\\_worker-42*,providerSandboxId.ilike.*bx\\_worker-42*)",
   ]);
   expect(result.facets.status.get("deleted")).toBe(4);
-  expect(result.counts.deleted).toBe(4);
 });
 
 test("fallback-matching text search keeps shared inventory active-only and pages narrow deleted rows cleanly", async () => {
@@ -377,7 +347,6 @@ test("fallback-matching text search keeps shared inventory active-only and pages
     { offset: 500, select: "id,providerSandboxId,displayLabel,harness,createdAt", provider: "in.(modal)" },
   ]);
   expect(result.facets.status.get("deleted")).toBe(1);
-  expect(result.counts.deleted).toBe(0);
 });
 
 test("one JWT sandbox read enriches only readable rows with cost, host and snapshot", async () => {
@@ -427,9 +396,8 @@ test("one JWT sandbox read enriches only readable rows with cost, host and snaps
 test("only sandbox list requests share metadata with the shell, using full inventory only when deleted rows are displayed", () => {
   expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("status=deleted"))).toBe("all");
   expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("status=ready&status=deleted"))).toBe("all");
-  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("activity=deleted"))).toBe("all");
-  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("activity=deleted&provider=modal"))).toBe("all");
-  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("activity=deleted&status=ready"))).toBe("active");
+  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("activity=deleted"))).toBe("active");
+  expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("activity=active&provider=modal"))).toBe("active");
   expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("status=ready&status=invalid"))).toBe("active");
   expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("owner=me&provider=modal&q=codex"))).toBe("active");
   expect(sandboxInventoryScope("/sandboxes", new URLSearchParams("sort=name&page=2&status=invalid"))).toBe("active");

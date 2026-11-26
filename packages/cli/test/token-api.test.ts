@@ -64,3 +64,13 @@ test("whoami works with a saved login and organization", async () => {
 
   expect(await cli(["whoami"])).toEqual({ code: 0, out: "user (saved login)\n", err: "" });
 });
+
+test("whoami wraps malformed server responses into a typed exit-1 error", async () => {
+  const cli = fixture(async () => Response.json({ unexpected: true }));
+  const result = await cli(["whoami", "--json"]);
+  expect(result.code).toBe(1);
+  expect(JSON.parse(result.err).error).toMatchObject({
+    code: "unavailable",
+    message: expect.stringContaining("invalid whoami"),
+  });
+});
