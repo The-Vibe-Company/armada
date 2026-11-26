@@ -4,7 +4,12 @@ import { revalidatePath } from "next/cache";
 import { ControlError } from "@/lib/control";
 import { viewerLangfuse } from "@/lib/data/langfuse";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { type LangfuseEditable, type LangfuseTest, readLangfuseForm } from "@/lib/langfuse";
+import {
+  LANGFUSE_MISSING_FIELDS_ERROR,
+  type LangfuseEditable,
+  type LangfuseTest,
+  readLangfuseForm,
+} from "@/lib/langfuse";
 
 type Result = { ok: true; test?: LangfuseTest } | { ok: false; error: string };
 
@@ -24,10 +29,11 @@ export async function updateLangfuse(
       case "connect":
       case "edit":
       case "test": {
-        const input = form && readLangfuseForm(form, change === "edit" ? baseline : undefined);
-        if (!input || (change === "connect" && !input.secretKey)) {
-          return { ok: false, error: "Enter the host and keys from your Langfuse project settings." };
-        }
+        const parsed = form ? readLangfuseForm(form, change === "connect" ? undefined : baseline) : null;
+        if (!parsed) return { ok: false, error: LANGFUSE_MISSING_FIELDS_ERROR };
+        if (!parsed.ok) return { ok: false, error: parsed.error };
+        const { input } = parsed;
+        if (change === "connect" && !input.secretKey) return { ok: false, error: LANGFUSE_MISSING_FIELDS_ERROR };
         if (change === "test") return { ok: true, test: await control.test(input) };
         if (change === "connect") await control.save({ ...input, enabled: true });
         else if (Object.keys(input).length) await control.save(input);

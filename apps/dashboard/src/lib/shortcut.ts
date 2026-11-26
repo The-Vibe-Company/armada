@@ -30,8 +30,11 @@ type GlobalShortcutEvent = {
   target: EventTarget | null;
 };
 
-export function shouldIgnoreGlobalShortcut(event: GlobalShortcutEvent, options?: { allowShift?: boolean }) {
-  if (event.defaultPrevented || event.repeat || event.isComposing) return true;
+export function shouldIgnoreGlobalShortcut(
+  event: GlobalShortcutEvent,
+  options?: { allowShift?: boolean; allowRepeat?: boolean },
+) {
+  if (event.defaultPrevented || (!options?.allowRepeat && event.repeat) || event.isComposing) return true;
   if (event.metaKey || event.ctrlKey || event.altKey) return true;
   if (!options?.allowShift && event.shiftKey) return true;
   const target = event.target as {

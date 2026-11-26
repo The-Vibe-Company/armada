@@ -176,8 +176,14 @@ export function RowCost({ cost, className }: { cost: SandboxCost; className?: st
         title={figure.text}
         data-row-cost={figure.kind}
       >
-        {/* A row stays narrow: the full words are its title, and on the sandbox's page. */}
-        {figure.kind === "none" ? "No usage yet" : figure.text}
+        {figure.kind === "none" ? (
+          <>
+            <span aria-hidden="true">—</span>
+            <span className="sr-only">{figure.text}</span>
+          </>
+        ) : (
+          figure.text
+        )}
       </span>
     );
   return (
