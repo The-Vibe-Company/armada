@@ -236,6 +236,9 @@ export function createRuntimeFollowup(
             reconciling: boolean;
             extending: boolean;
             mcp_unchanged: boolean;
+            saved_epoch: string | null;
+            saved_finished: boolean;
+            has_checkpoint: boolean;
           }>(
             `select s.activity_lease_id,(s.reconcile_lease_until>now()) as reconciling,
                (s.provider='boat' and s.boat_runtime and exists (
@@ -258,18 +261,33 @@ export function createRuntimeFollowup(
                  join public.mcp_connections c on c.id=mb.connection_id
                  join public.mcp_grants g on g.id=mb.grant_id and g.connection_id=c.id
                  where mb.sandbox_id=s.id and (
-                   c.transport='stdio' or c.disabled
+                   c.disabled
+                   or (c.scope<>'org' and c.owner_id<>s.owner_id)
                    or public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)<>'connected'
-                   or not exists(
+                   or (c.transport='stdio' and (
+                     s.created_at<=now()-interval '6 days'
+                     or exists(
+                       select 1 from public.mcp_invalidations mi
+                       where mi.org_id=s.org_id and mi.created_at>=s.created_at
+                         and mi.connection_id=mb.connection_id
+                         and mi.reason in ('definition','grant')
+                     )
+                   ))
+                   or (c.transport<>'stdio' and not exists(
                      select 1 from public.mcp_leases l
                      where l.sandbox_id=s.id and l.connection_id=mb.connection_id
                        and l.runtime_epoch=$2::bigint and l.generation=g.generation
                        and l.sandbox_generation=s.mcp_generation and l.revoked_at is null and l.expires_at>now()
-                   )
+                   ))
                  )
-               )) as mcp_unchanged
-             from public.sandboxes s where s.id=$1`,
-            [found.id, scope.epoch],
+               )) as mcp_unchanged,
+               rc.epoch::text as saved_epoch,
+               coalesce(rc.result_enc is not null, false) as saved_finished,
+               exists(select 1 from public.runtime_checkpoints p where p.sandbox_id=s.id and p.epoch=$2::bigint) as has_checkpoint
+             from public.sandboxes s
+             left join public.runtime_commands rc on rc.sandbox_id=s.id and rc.request_id=$3
+             where s.id=$1`,
+            [found.id, scope.epoch, commandId],
           )
         ).rows[0];
         if (
@@ -293,12 +311,8 @@ export function createRuntimeFollowup(
           );
         // The durable command identity decides first: an admitted turn may have executed, so the
         // checkpoint fence below refuses only new work and never hides a stored reply.
-        const saved = (
-          await locked.query<{ epoch: string; finished: boolean }>(
-            "select epoch::text,result_enc is not null as finished from public.runtime_commands where sandbox_id=$1 and request_id=$2",
-            [found.id, commandId],
-          )
-        ).rows[0];
+        const saved =
+          lease.saved_epoch !== null ? { epoch: lease.saved_epoch, finished: lease.saved_finished } : undefined;
         if (lease.reconciling) {
           if (saved || previous.state !== "missing" || lease.activity_lease_id === requestId)
             throw new RuntimeFollowupConflict(
@@ -307,15 +321,7 @@ export function createRuntimeFollowup(
             );
           throw new RuntimeReconciliationConflict();
         }
-        const checkpoint =
-          !saved &&
-          (
-            await locked.query("select 1 from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2", [
-              found.id,
-              scope.epoch,
-            ])
-          ).rows[0];
-        if (checkpoint)
+        if (!saved && lease.has_checkpoint)
           throw new VaultError(
             "conflict",
             "Runtime checkpoint is pending or complete; stop it before a fresh enrolment.",
@@ -330,7 +336,14 @@ export function createRuntimeFollowup(
         if (!saved && configuredEpoch !== undefined && configuredEpoch !== scope.epoch)
           throw new VaultError("conflict", "Runtime environment epoch changed; retry the same request.");
         if (saved?.finished && lease.activity_lease_id !== requestId)
-          return { current, epoch: scope.epoch, replay: true, mcpUnchanged: lease.mcp_unchanged };
+          return {
+            current,
+            epoch: scope.epoch,
+            replay: true,
+            mcpUnchanged: lease.mcp_unchanged,
+            freshClaim: false,
+            commandSaved: true,
+          };
         if (lease.extending || (lease.activity_lease_id !== requestId && (lease.activity_lease_id || saved)))
           throw new RuntimeFollowupConflict(
             "runtime_activity_busy",
@@ -343,7 +356,14 @@ export function createRuntimeFollowup(
             expectedGeneration: current.lifecycleGeneration,
           });
           await assertClaim(locked);
-          return { current, epoch: scope.epoch, replay: false, mcpUnchanged: lease.mcp_unchanged };
+          return {
+            current,
+            epoch: scope.epoch,
+            replay: false,
+            mcpUnchanged: lease.mcp_unchanged,
+            freshClaim: false,
+            commandSaved: Boolean(saved),
+          };
         }
         await createSqlData(locked)(caller).sandboxes.update(found.id, {
           turnActivity: "claim",
@@ -352,10 +372,16 @@ export function createRuntimeFollowup(
           activityToken: requestId,
           expectedGeneration: current.lifecycleGeneration,
         });
-        const active = await createSqlData(locked)(caller).sandboxes.get(found.id);
-        if (!active) throw new VaultError("not_found", "Runtime admission disappeared.");
+        const active = { ...current, taskOutcome: null, taskPromptId: null };
         await assertClaim(locked);
-        return { current: active, epoch: scope.epoch, replay: false, mcpUnchanged: lease.mcp_unchanged };
+        return {
+          current: active,
+          epoch: scope.epoch,
+          replay: false,
+          mcpUnchanged: lease.mcp_unchanged,
+          freshClaim: true,
+          commandSaved: false,
+        };
       });
     });
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
@@ -399,8 +425,12 @@ export function createRuntimeFollowup(
       admitted.current,
       {},
       async (signal) => {
-        const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
-        if (existing.state === "missing") {
+        const commandMissing = admitted.freshClaim
+          ? true
+          : admitted.commandSaved
+            ? false
+            : (await commands.result(caller.userId, found.id, commandId, admitted.epoch)).state === "missing";
+        if (commandMissing) {
           if (!admitted.mcpUnchanged) await prepareMcp?.(caller, found.id, signal, commandGuard);
           if (found.boatRuntime || found.modalTransport === "dialout")
             await restoreScopedAccess?.(

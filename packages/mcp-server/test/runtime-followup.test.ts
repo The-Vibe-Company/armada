@@ -2,7 +2,7 @@ import { describe, expect, jest, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failureDiagnostic, type Sql } from "@armada/core/server";
+import { createSqlMcpRegistry, failureDiagnostic, type Sql } from "@armada/core/server";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
@@ -534,6 +534,89 @@ test("follow-up skips getPrompt when runtime_idle_turns is settled and skips unc
     await send(f.caller, f.input("checked follow-up"));
     expect(ops).toContain("getPrompt");
     expect(mcpCalls).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("follow-up skips post-update sandbox get, redundant commands.result on fresh claim, and unchanged stdio MCP", async () => {
+  const f = await fixture(await sharedDatabase(), "modal", "codex");
+  try {
+    const registry = createSqlMcpRegistry(f.sql, ENCRYPTION_KEY);
+    const stdio = await registry.save(f.people.owner, f.people.org, {
+      name: "local-stdio",
+      scope: "personal",
+      transport: "stdio",
+      command: "npx",
+      args: ["@example/mcp@1.0.0"],
+    });
+    await f.db.query(
+      "insert into public.mcp_bindings(sandbox_id,connection_id,grant_id) select $1,c.id,g.id from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id where c.id=$2",
+      [f.row.id, stdio.id],
+    );
+    await f.db.query(
+      "insert into public.mcp_bootstraps(sandbox_id,physical_generation,revision,configured) values($1,$2,'rev',true)",
+      [f.row.id, `runtime:${f.active.epoch}`],
+    );
+    await f.db.query("delete from public.mcp_invalidations where org_id=$1", [f.people.org]);
+
+    const queries: string[] = [];
+    const trackedSql: Sql = {
+      query(text, params) {
+        queries.push(text);
+        return f.sql.query(text, params);
+      },
+      transaction: (work) =>
+        f.sql.transaction!((tx) =>
+          work({
+            query(text, params) {
+              queries.push(text);
+              return tx.query(text, params);
+            },
+          }),
+        ),
+    };
+    let resultCalls = 0;
+    let mcpCalls = 0;
+    const send = createRuntimeFollowup(
+      trackedSql,
+      ENCRYPTION_KEY,
+      {
+        ...f.bridge,
+        result(...args) {
+          resultCalls++;
+          return f.bridge.result(...args);
+        },
+      },
+      async () => {
+        mcpCalls++;
+        return undefined;
+      },
+    );
+
+    const receipt = await send(f.caller, f.input("fresh stdio turn"));
+    expect(receipt.promptId).not.toBe(f.first.promptId);
+    expect(mcpCalls).toBe(0);
+    expect(resultCalls).toBe(1);
+    expect(queries.filter((q) => q.includes("from public.sandboxes s join public.goldens g"))).toHaveLength(2);
+    expect(queries.some((q) => q.includes("from public.runtime_commands where sandbox_id=$1 and request_id=$2"))).toBe(
+      false,
+    );
+
+    await registry.save(
+      f.people.owner,
+      f.people.org,
+      {
+        name: "local-stdio",
+        scope: "personal",
+        transport: "stdio",
+        command: "npx",
+        args: ["@example/mcp@2.0.0"],
+      },
+      stdio.id,
+    );
+    await send(f.caller, f.input("after stdio change"));
+    expect(mcpCalls).toBe(1);
   } finally {
     await f.close();
   }

@@ -416,7 +416,7 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
         (receipt.promptId === undefined) !== (receipt.conversationId === undefined))
     )
       throw failure("conflict");
-    return { membership, row, manifest, receipt };
+    return { membership, row, manifest, receipt, requestHash: claim.request_hash };
   }
   function envelope(row: Row, receipt?: Receipt) {
     const sandbox: DockerSandboxRecord = {
@@ -794,8 +794,40 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           });
       };
       const watches: ReturnType<typeof runtimeWakes.watch>[] = [];
-      const watch = (wakeKey: string) => {
-        const handle = runtimeWakes.watch(wakeKey);
+      const watch = (...wakeKeys: string[]) => {
+        if (wakeKeys.length === 1) {
+          const handle = runtimeWakes.watch(wakeKeys[0]!);
+          watches.push(handle);
+          return handle;
+        }
+        let wake = new AbortController();
+        const unsubs = wakeKeys.map((wakeKey) => runtimeWakes.subscribe(wakeKey, () => wake.abort()));
+        const handle: ReturnType<typeof runtimeWakes.watch> = {
+          close() {
+            for (const unsub of unsubs) unsub();
+          },
+          async wait(signal, ms = 0, delay) {
+            if (!wake.signal.aborted && !signal.aborted) {
+              const waiting = AbortSignal.any([signal, wake.signal]);
+              const { promise, resolve } = Promise.withResolvers<void>();
+              const onAbort = () => resolve();
+              waiting.addEventListener("abort", onAbort, { once: true });
+              try {
+                await Promise.race([
+                  promise,
+                  delay
+                    ? delay(ms, waiting)
+                    : new Promise<void>((r) => waiting.addEventListener("abort", () => r(), { once: true })),
+                ]);
+              } finally {
+                waiting.removeEventListener("abort", onAbort);
+              }
+            }
+            const notified = wake.signal.aborted;
+            if (notified) wake = new AbortController();
+            return notified;
+          },
+        };
         watches.push(handle);
         return handle;
       };
@@ -836,18 +868,68 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
         };
         if (manifest.template) await transaction((tx) => assertTemplate(tx, true));
         const deadline = clock.now() + (options.timeoutMs ?? 600_000);
+        const expectedCredentialId = manifest.credentialId ?? manifest.request.credentialId;
+        const expectedRequestHash = state.requestHash;
         const live = async () => {
           if (!(await worker.context.canDispatch())) throw failure("unavailable");
-          const current = await transaction((tx) => load(tx, actor, request, hash));
-          if (!current.row) throw failure("not_found");
-          if (!active(current.row)) {
+          const current = await transaction(async (tx) => {
+            const {
+              rows: [row],
+            } = await tx.query<{
+              member_epoch: string;
+              owner_id: string | null;
+              org_id: string | null;
+              provider: string | null;
+              status: Row["status"] | null;
+              status_reason: string | null;
+              stop_requested_at: Date | string | null;
+              deleted_at: Date | string | null;
+              expired: boolean | null;
+              credential_id: string | null;
+              credential_version: number | null;
+              claim_epoch: string | null;
+              request_hash: string | null;
+              has_receipt: boolean | null;
+            }>(
+              `select e.epoch::text as member_epoch,
+                s.owner_id,s.org_id,s.provider,s.status,s.status_reason,s.stop_requested_at,s.deleted_at,
+                (s.expires_at<=now()) as expired,s.credential_id,s.credential_version,
+                d.actor_epoch::text as claim_epoch,d.request_hash,(d.result_enc is not null) as has_receipt
+               from public.members m
+               join public.mcp_actor_epochs e on e.org_id=m.org_id and e.user_id=m.user_id
+               left join public.sandboxes s on s.id=$3
+               left join public.docker_launch_manifests d on d.sandbox_id=s.id
+               where m.org_id=$1 and m.user_id=$2
+               for share of m`,
+              [actor.orgId, actor.userId, request.requestId],
+            );
+            if (!row || !row.owner_id || !row.status) throw failure("not_found");
+            if (row.owner_id !== actor.userId || row.org_id !== actor.orgId || row.provider !== "docker")
+              throw failure("not_found");
+            if (row.claim_epoch === null) throw failure("conflict");
+            if (row.claim_epoch !== row.member_epoch) throw failure("not_found");
+            if (row.request_hash !== expectedRequestHash) throw failure("conflict");
+            const isLive =
+              ["starting", "ready", "running"].includes(row.status) &&
+              row.stop_requested_at === null &&
+              row.deleted_at === null &&
+              !row.expired;
+            if (
+              !row.has_receipt &&
+              isLive &&
+              (row.credential_version !== manifest.credentialVersion || row.credential_id !== expectedCredentialId)
+            )
+              throw failure("conflict");
+            return { row, isLive };
+          });
+          if (!current.isLive) {
             if (reason === "runtime_readiness") {
               const { status, status_reason: statusReason } = current.row;
               readinessCause =
                 Object.entries(RUNTIME_STARTUP_FAILURES).find(([, message]) => message === statusReason)?.[0] ??
                 (status === "failed" ? "startup_failed" : "sandbox_inactive");
             }
-            throw notReady(current.row);
+            throw notReady(current.row as Pick<Row, "status" | "status_reason"> as Row);
           }
           return current;
         };
@@ -868,10 +950,10 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
           );
           worker.context.signal.throwIfAborted();
         }
+        const readinessWatch = watch(`enrol:${request.requestId}`, `socket:${request.requestId}`);
         await startMachine(actor, request, state.row, worker, assertClaim);
         reason = "runtime_readiness";
         let receipt: Receipt;
-        const readinessWatch = watch(`socket:${request.requestId}`);
         for (;;) {
           await live();
           const ready = await runtime
@@ -1184,7 +1266,6 @@ export function createDockerLaunchPlacement(sql: Sql, key: string, options: Opti
             computeTtlSeconds: row.effective_ttl_seconds,
           });
     await options.bootstrap!.bootstrapMachine(actor, targetMachine, { ...context, canDispatch });
-    throw new DockerMachinePending("pending");
   }
 
   async function run(job: Job, context: JobContext) {

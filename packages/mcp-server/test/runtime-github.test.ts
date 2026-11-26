@@ -721,3 +721,71 @@ test("Docker resume GitHub preparation skips plain images, rejects tampered mani
   await expect(service.prepareLaunch(caller, staleEpochId)).rejects.toThrow();
   expect(githubCalls).toBe(callsBeforeDisconnect);
 });
+
+test("Modal prepareLaunch skips docker_launch_manifests, canonicalizes JSONB in JS, and avoids duplicate owner/authority queries", async () => {
+  const x = await fixture("modal");
+  const { f } = x;
+  try {
+    const queries: string[] = [];
+    let transactions = 0;
+    const trackedSql: Sql = {
+      async query(text, params) {
+        queries.push(text);
+        return f.sql.query(text, params);
+      },
+      async transaction(work) {
+        transactions++;
+        return f.sql.transaction!((tx) =>
+          work({
+            query(text, params) {
+              queries.push(text);
+              return tx.query(text, params);
+            },
+          }),
+        );
+      },
+    };
+    const launchWorkspace = {
+      repos: [{ dir: "web", branch: "main", url: "https://github.com/example/web.git" }],
+      init: [],
+    };
+    await createJobsStore(f.sql, ENCRYPTION_KEY).enqueue(
+      "launch_initial_turn",
+      f.row.id,
+      1,
+      f.row.id,
+      { launchJobId: crypto.randomUUID(), workspace: launchWorkspace, skills: [] },
+      { orgId: f.people.org, maxAttempts: 3 },
+    );
+    const service = createRuntimeGitHub({
+      sql: trackedSql,
+      key: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      commands: f.bridge,
+      github: {
+        store: createSqlVaultStore(trackedSql),
+        encryptionKey: ENCRYPTION_KEY,
+        app: { clientId: "app", clientSecret: "offline-app-secret" },
+        fetch: (async () => Response.json({ id: 123, login: "owner", name: "Owner" })) as unknown as typeof fetch,
+      },
+    });
+    expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected", login: "owner" });
+    expect(queries.some((q) => q.includes("select $1::jsonb"))).toBe(false);
+    expect(queries.some((q) => q.includes("docker_launch_manifests"))).toBe(false);
+    expect(queries.filter((q) => q.includes("from public.sandboxes s join public.goldens g"))).toHaveLength(1);
+    expect(queries.filter((q) => q.includes("as binding,s.expires_at"))).toHaveLength(2);
+    expect(transactions).toBe(2);
+    const broker = new GitHubBroker(
+      () => {},
+      (async (url: Parameters<typeof fetch>[0], init?: RequestInit) =>
+        (await service.route(url instanceof Request ? new Request(url, init) : new Request(url.toString(), init))) ??
+        new Response(null, { status: 404 })) as unknown as typeof fetch,
+    );
+    broker.configure(x.config());
+    expect(await broker.acquire("example/web", "git")).toBe(x.access);
+    expect(queries.some((q) => q.includes("select $1::jsonb"))).toBe(false);
+    expect(queries.some((q) => q.includes("docker_launch_manifests"))).toBe(false);
+  } finally {
+    await x.close();
+  }
+});

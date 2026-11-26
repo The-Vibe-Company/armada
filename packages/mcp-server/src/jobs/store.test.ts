@@ -1911,8 +1911,8 @@ test("Modal admission and deferred enrolment wake jobs and stay within the SQL s
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(60);
-    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 35, 9, 8]);
+    expect(statements.length).toBeLessThanOrEqual(59);
+    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 34, 9, 8]);
   } finally {
     unsubscribe();
     log.mockRestore();
@@ -4015,8 +4015,8 @@ test.each([
   ["credential unavailable after binding", "create response", 4],
   ["ticket unavailable", "create response", undefined],
   ["ownership unavailable", "create response", undefined],
-  ["ticket and credential unavailable", "create response", 5],
-  ["ownership and credential unavailable", "create response", 5],
+  ["ticket and credential unavailable", "create response", 4],
+  ["ownership and credential unavailable", "create response", 4],
 ] as const)(
   "a replacement Modal launch claimant defers bootstrap for %s after losing the %s",
   async (observation, lostAt, credentialFailure) => {

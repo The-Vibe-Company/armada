@@ -63,10 +63,18 @@ test.each(["boat", "modal", "docker"] as const)(
           rows = [{ epoch, runtime_protocol_version: PROTOCOL_VERSION }];
         else if (query.includes("jsonb_build_object"))
           rows = [
-            { binding: { ...binding, epoch }, expires_at: "2099-01-01", modal_setup_id: null, modal_setup_enc: null },
+            {
+              binding: { ...binding, epoch },
+              expires_at: "2099-01-01",
+              provider,
+              modal_setup_id: null,
+              modal_setup_enc: null,
+            },
           ];
-        else if (query.includes("from public.docker_launch_manifests")) rows = [];
-        else if (query.includes("insert into public.github_runtime_issued")) rows = [];
+        else if (query.includes("from public.docker_launch_manifests")) {
+          expect(provider).toBe("docker");
+          rows = [];
+        } else if (query.includes("insert into public.github_runtime_issued")) rows = [];
         else if (query.includes("update runtime_github_capabilities")) {
           acquisitions++;
           rows = [];

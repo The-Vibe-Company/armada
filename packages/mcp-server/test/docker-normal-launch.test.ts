@@ -481,12 +481,22 @@ async function fixture(
     const handler = createLaunchJob({ docker: launch.run });
     const jobs = createJobsStore(sql, key);
     const workerId = randomUUID();
-    async function runClaim(canDispatch = async (_tx?: Sql) => true) {
+    async function runClaim(canDispatch = async (_tx?: Sql) => true, stopAfterBootstrap = false) {
       const job = await jobs.claim("launch", workerId, 30, 1);
       if (!job) return false;
+      const controller = new AbortController();
       const result = await handler.run(job, {
-        signal: new AbortController().signal,
-        canDispatch: async (tx) => (await canDispatch(tx)) && (await jobs.inspect(job, workerId, tx)) === "dispatch",
+        signal: controller.signal,
+        canDispatch: async (tx) => {
+          if (stopAfterBootstrap && !tx && !controller.signal.aborted) {
+            const enqueued = await db.query(
+              "select 1 from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='bootstrap'",
+              [job.sandbox_id],
+            );
+            if (enqueued.rows.length) controller.abort();
+          }
+          return (await canDispatch(tx)) && (await jobs.inspect(job, workerId, tx)) === "dispatch";
+        },
         handoffGeneration: async () => {
           throw Error("Unexpected launch generation handoff.");
         },
@@ -1627,7 +1637,7 @@ test("revoking the admitted actor rejects a previously delivered bootstrap ticke
   await launch.launch(f.caller, f.body);
   await launch.runClaim();
   f.setDrive(false);
-  await launch.runClaim();
+  await launch.runClaim(undefined, true);
   await f.step(true, true);
   const bootstrap = f.jobs.at(-1) as { operation: string; bootstrap: { enrolmentToken: string } };
   expect(bootstrap.operation).toBe("bootstrap");
@@ -1659,7 +1669,7 @@ test("launch keeps the runtime grant when enrolment races Machine bootstrap repl
   await launch.launch(f.caller, f.body);
   await launch.runClaim();
   f.setDrive(false);
-  await launch.runClaim();
+  await launch.runClaim(undefined, true);
   expect(f.session()).toBeUndefined();
   await sql.query("update public.jobs set run_after=now() where sandbox_id=$1 and kind='launch'", [f.body.requestId]);
 
@@ -1681,7 +1691,7 @@ test("a stale worker cannot enqueue runtime setup after enrolment", async () => 
   const launch = f.service(sql, true, 10000, officialImage, true);
   await launch.launch(f.caller, f.body);
   await launch.runClaim();
-  await launch.runClaim();
+  await launch.runClaim(undefined, true);
   expect(f.session()).toBeDefined();
   await launch.runClaim(async (tx) => !tx);
   expect((await counts(f))?.commands).toBe(0);
@@ -1695,7 +1705,7 @@ test.each([false, true])(
     await launch.launch(f.caller, f.body);
     if (allocated) await launch.runClaim();
     f.setDrive(false);
-    await launch.runClaim();
+    await launch.runClaim(undefined, allocated);
     await sql.query(
       "update jobs set deadline_at=now()-interval '1 second',run_after=now() where sandbox_id=$1 and kind='launch'",
       [f.body.requestId],
@@ -3898,10 +3908,71 @@ test("Docker launch runs GitHub preflight only before create is dispatched and w
     expect(wakes).toBeGreaterThan(wakesBeforeComplete);
 
     const third = await runTick();
-    expect(third.result.status).toBe("retry");
+    expect(third.result.status).toBe("done");
     expect(preflightSpy).toHaveBeenCalledTimes(1);
   } finally {
     unsubscribe();
     preflightSpy.mockRestore();
   }
+});
+
+test("Docker launch transitions straight from bootstrap to readiness wake and avoids manifest decryption in live() loops", async () => {
+  const f = await fixture();
+  let manifestEncryptedReads = 0;
+  let liveChecks = 0;
+  const trackedSql: Sql = {
+    query(text, params) {
+      if (
+        text.includes(
+          "select actor_epoch::text,request_hash,request_enc,result_enc from public.docker_launch_manifests",
+        )
+      )
+        manifestEncryptedReads++;
+      if (text.includes("left join public.docker_launch_manifests d on d.sandbox_id=s.id")) liveChecks++;
+      return sql.query(text, params);
+    },
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          query(text, params) {
+            if (
+              text.includes(
+                "select actor_epoch::text,request_hash,request_enc,result_enc from public.docker_launch_manifests",
+              )
+            )
+              manifestEncryptedReads++;
+            if (text.includes("left join public.docker_launch_manifests d on d.sandbox_id=s.id")) liveChecks++;
+            return tx.query(text, params);
+          },
+        }),
+      ),
+  };
+  const svc = f.service(trackedSql, true, 10_000, officialImage, true);
+  await svc.admit(f.caller, f.body);
+  const jobs = createJobsStore(sql, key);
+  const workerId = randomUUID();
+  const runOnce = async () => {
+    const job = (await jobs.claim("launch", workerId, 30, 1))!;
+    const result = await svc.run(job, {
+      signal: new AbortController().signal,
+      canDispatch: async (tx) => (await jobs.inspect(job, workerId, tx)) === "dispatch",
+      handoffGeneration: async () => {
+        throw Error("Unexpected generation handoff.");
+      },
+    });
+    expect(await jobs.complete(job, workerId, result)).toBe(true);
+    return { job, result };
+  };
+  const createTick = await runOnce();
+  expect(createTick.result.status).toBe("retry");
+  await f.step();
+  await database().query("update public.jobs set run_after='-infinity' where id=$1", [createTick.job.id]);
+
+  manifestEncryptedReads = 0;
+  liveChecks = 0;
+  const bootstrapTick = await runOnce();
+  expect(bootstrapTick.result.status).toBe("done");
+  expect(liveChecks).toBeGreaterThanOrEqual(2);
+  expect(manifestEncryptedReads).toBe(3);
+  expect(f.jobs.map((job) => (job as { operation: string }).operation)).toEqual(["create", "bootstrap"]);
 });
