@@ -4,6 +4,7 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 // Release-only PostgreSQL contracts; retained unit cases stay in the sibling test file.
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
+import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { fakeBoat } from "../../mcp-server/test/support.ts";
 import { sqlGoldenBackendSlots } from "../src/golden-create.ts";
 import {
@@ -162,16 +163,16 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
 const storeFor = createSqlGoldenStore;
 
 const postgres = process.env.ARMADA_TEST_POSTGRES_URL;
+const wrapSql = (client: SQL) =>
+  sqlOver({
+    unsafe: (text, params) => client.unsafe(text, params),
+    begin: (work) => client.begin((tx) => work({ unsafe: (text, params) => tx.unsafe(text, params) })),
+  });
 test("PostgreSQL serializes retirement replicas, stale admission and pointer resurrection while deletion is in flight", async () => {
   const a = new SQL(postgres!, { max: 1 }),
     b = new SQL(postgres!, { max: 1 });
-  const adapt = (client: Pick<SQL, "unsafe">): Sql => ({
-    query: async <T>(text: string, params: unknown[] = []) => ({
-      rows: Array.from(await client.unsafe(text, params as never[])) as T[],
-    }),
-  });
-  const sqlA: Sql = { ...adapt(a), transaction: (work) => a.begin((tx) => work(adapt(tx))) };
-  const sqlB: Sql = { ...adapt(b), transaction: (work) => b.begin((tx) => work(adapt(tx))) };
+  const sqlA = wrapSql(a);
+  const sqlB = wrapSql(b);
   let release!: () => void;
   const gate = new Promise<void>((r) => {
     release = r;
@@ -224,7 +225,6 @@ test("PostgreSQL serializes retirement replicas, stale admission and pointer res
 
 test("PostgreSQL image reference predicate preserves retained recovery IDs through the production SQL adapter", async () => {
   const client = new SQL(postgres!, { max: 2 });
-  const { sqlOver } = await import("../../mcp-server/src/sql.ts");
   const { createSqlModalStore } = await import("../../provider-modal/src/store.ts");
   const sql = sqlOver(client);
   try {
