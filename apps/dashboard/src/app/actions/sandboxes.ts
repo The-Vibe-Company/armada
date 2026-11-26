@@ -194,6 +194,7 @@ export async function deleteSandbox(_previous: ActionResult | null, data: FormDa
     throw error;
   }
   revalidatePath("/sandboxes");
+  if (formString(data, "stay") === "1") return done("Sandbox deleted.");
   redirect("/sandboxes");
 }
 
