@@ -5,26 +5,26 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
+import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { encryptSecret } from "../src/crypto.ts";
 import { GoldenBuildJobs } from "../src/golden-build-jobs.ts";
 import type { GoldenConfig } from "../src/golden-config.ts";
-import type { Sql } from "../src/golden-store.ts";
 import { createSqlGoldenStore } from "../src/golden-store.ts";
 import type { Provider } from "../src/provider.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 
 // Dedicated disposable database with migrations applied, never a production URL.
 const url = process.env.ARMADA_TEST_POSTGRES_URL;
+const wrapSql = (client: SQL) =>
+  sqlOver({
+    unsafe: (text, params) => client.unsafe(text, params),
+    begin: (work) => client.begin((tx) => work({ unsafe: (text, params) => tx.unsafe(text, params) })),
+  });
 test("PostgreSQL serializes durable admission and fences a crashed claim across workers", async () => {
   const a = new SQL(url!, { max: 2 });
   const b = new SQL(url!, { max: 2 });
-  const adapt = (client: Pick<SQL, "unsafe">): Sql => ({
-    query: async <T>(query: string, params: unknown[] = []) => ({
-      rows: Array.from(await client.unsafe(query, params as never[])) as T[],
-    }),
-  });
-  const sqlA: Sql = { ...adapt(a), transaction: (work) => a.begin((tx) => work(adapt(tx))) };
-  const sqlB: Sql = { ...adapt(b), transaction: (work) => b.begin((tx) => work(adapt(tx))) };
+  const sqlA = wrapSql(a);
+  const sqlB = wrapSql(b);
   const owner = crypto.randomUUID(),
     org = crypto.randomUUID();
   const actor = { userId: owner, orgId: org, role: "admin" as const };
@@ -124,12 +124,7 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
 
 test("Bun/PostgreSQL golden config bindings persist objects and reject scalar/secret configs", async () => {
   const client = new SQL(url!, { max: 1 });
-  const adapt = (driver: Pick<SQL, "unsafe">): Sql => ({
-    query: async <T>(text: string, params: unknown[] = []) => ({
-      rows: Array.from(await driver.unsafe(text, params as never[])) as T[],
-    }),
-  });
-  const sql = adapt(client);
+  const sql = wrapSql(client);
   const store = createSqlGoldenStore(sql);
   const owner = crypto.randomUUID(),
     org = crypto.randomUUID();
@@ -153,8 +148,8 @@ test("Bun/PostgreSQL golden config bindings persist objects and reject scalar/se
     await sql.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [org, owner]);
     const golden = await store.insert(input);
     expect(golden.config).toEqual(initial);
-    await client.begin(async (tx) => {
-      await createSqlGoldenStore(adapt(tx)).setConfig(golden.id, updated);
+    await sql.transaction!(async (tx) => {
+      await createSqlGoldenStore(tx).setConfig(golden.id, updated);
     });
     expect((await store.findByName(org, input.name))[0]?.config).toEqual(updated);
     expect((await sql.query("select jsonb_typeof(config) as kind from goldens where id=$1", [golden.id])).rows).toEqual(

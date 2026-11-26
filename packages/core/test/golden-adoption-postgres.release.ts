@@ -3,8 +3,8 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 
 import { expect, test } from "bun:test";
 import { SQL } from "bun";
+import { sqlOver } from "../../mcp-server/src/sql.ts";
 import { sqlGoldenBackendSlots } from "../src/golden-create.ts";
-import type { Sql } from "../src/golden-store.ts";
 
 // Dedicated disposable database with migrations applied; never point this at production.
 const url = process.env.ARMADA_TEST_POSTGRES_URL;
@@ -12,14 +12,8 @@ test("real PostgreSQL serializes adoption/create and competing account binding; 
   const a = new SQL(url!, { max: 1 });
   const b = new SQL(url!, { max: 1 });
   const observer = new SQL(url!, { max: 1 });
-  const slotsFor = (client: SQL) => {
-    const sql: Sql = {
-      query: async <T>(query: string, params: unknown[] = []) => ({
-        rows: Array.from(await client.unsafe(query, params as never[])) as T[],
-      }),
-    };
-    return sqlGoldenBackendSlots(sql);
-  };
+  const slotsFor = (client: SQL) =>
+    sqlGoldenBackendSlots(sqlOver({ unsafe: (query, params) => client.unsafe(query, params) }));
   const slotsA = slotsFor(a);
   const slotsB = slotsFor(b);
   const org = "11111111-1111-4111-8111-111111111111";
