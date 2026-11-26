@@ -100,3 +100,65 @@ test("CLI info and stop forward authenticated scope through the public proxy", a
     else process.env.ARMADA_MCP_URL = previous;
   }
 });
+
+test("POST /api/v1/sandboxes/{uuid}/relay-ticket forwards authenticated requests and rejects unauthenticated or malformed paths", async () => {
+  const previous = process.env.ARMADA_MCP_URL;
+  process.env.ARMADA_MCP_URL = "https://control.test/mcp";
+  try {
+    const body = JSON.stringify({ mode: "pty", cwd: "/workspace" });
+    const forwarded: Request[] = [];
+    const send = (method: string, segments: string[], bearer: string | null = "Bearer session-fixture") =>
+      forwardControl(
+        new Request(`https://dashboard.test/api/v1/${segments.join("/")}`, {
+          method,
+          headers: {
+            ...(bearer ? { authorization: bearer } : {}),
+            ...(method === "POST" ? { "content-type": "application/json" } : {}),
+          },
+          ...(method === "POST" ? { body } : {}),
+        }),
+        segments,
+        async (target, options) => {
+          forwarded.push(new Request(target, options));
+          return Response.json(
+            {
+              ticket: "rly_fixture",
+              wsUrl: "wss://relay.test/api/v1/relay/ws",
+              expiresAt: "2026-11-26T07:00:00.000Z",
+            },
+            { headers: { "cache-control": "no-store" } },
+          );
+        },
+      );
+
+    expect((await send("POST", ["sandboxes", id, "relay-ticket"], null)).status).toBe(401);
+    const ok = await send("POST", ["sandboxes", id, "relay-ticket"]);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("cache-control")).toBe("no-store");
+    expect(await ok.json()).toEqual({
+      ticket: "rly_fixture",
+      wsUrl: "wss://relay.test/api/v1/relay/ws",
+      expiresAt: "2026-11-26T07:00:00.000Z",
+    });
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]?.url).toBe(`https://control.test/api/v1/sandboxes/${id}/relay-ticket`);
+    expect(forwarded[0]?.method).toBe("POST");
+    expect(forwarded[0]?.headers.get("authorization")).toBe("Bearer session-fixture");
+    expect(forwarded[0]?.headers.get("content-type")).toBe("application/json");
+    expect(forwarded[0]?.headers.get("accept")).toBe("application/json");
+    expect(await forwarded[0]?.text()).toBe(body);
+
+    for (const [method, segments] of [
+      ["POST", ["sandboxes", "not-a-uuid", "relay-ticket"]],
+      ["POST", ["sandboxes", id, "relay-ticket", "extra"]],
+      ["GET", ["sandboxes", id, "relay-ticket"]],
+      ["DELETE", ["sandboxes", id, "relay-ticket"]],
+    ] as const) {
+      expect((await send(method, [...segments])).status).toBe(404);
+    }
+    expect(forwarded).toHaveLength(1);
+  } finally {
+    if (previous === undefined) delete process.env.ARMADA_MCP_URL;
+    else process.env.ARMADA_MCP_URL = previous;
+  }
+});
