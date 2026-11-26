@@ -30,6 +30,7 @@ test("the dashboard imports only browser-safe Armada core entry points", () => {
         "@armada/core/harnesses",
         "@armada/core/launch-workdir",
         "@armada/core/machine-capabilities",
+        "@armada/core/relay",
       ]).toContain(specifier);
   }
 });

@@ -8,6 +8,7 @@ import {
   SANDBOX_PLACEMENT_LABELS,
   validateSkillPins,
 } from "@armada/core";
+import { type RelayTicketRequest, relayTicketRequest } from "@armada/core/contract";
 import { capabilities, openCodeRequiresRuntimeDiscovery } from "@armada/core/machine-capabilities";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
@@ -104,6 +105,29 @@ export async function execSandbox(_previous: ActionResult | null, data: FormData
     );
   } catch (error) {
     if (error instanceof GatewayError) return fail(error.message);
+    throw error;
+  }
+}
+
+export async function mintRelayTicket(sandboxId: string, input: RelayTicketRequest) {
+  if (!isUuid(sandboxId)) return { ok: false as const, error: "That sandbox ID is not valid." };
+  const parsed = relayTicketRequest.safeParse(input);
+  if (!parsed.success)
+    return { ok: false as const, error: parsed.error.issues[0]?.message ?? "That relay request is not valid." };
+  const target = await gatewayFor(sandboxId);
+  if (target.error) return { ok: false as const, error: target.error.error };
+  if (target.sandbox.application_secret_tainted)
+    return {
+      ok: false as const,
+      error: "Application-secret exposed sandboxes do not allow relay.",
+      code: "forbidden" as const,
+    };
+  try {
+    const ticket = await target.gateway.relayTicket(sandboxId, { ...parsed.data, org: target.sandbox.org_id });
+    return { ok: true as const, ticket };
+  } catch (error) {
+    if (error instanceof GatewayError)
+      return { ok: false as const, error: error.message, ...(error.code ? { code: error.code } : {}) };
     throw error;
   }
 }
