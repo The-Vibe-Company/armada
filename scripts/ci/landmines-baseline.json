@@ -108,7 +108,7 @@
     "apps/dashboard/src/components/sandbox-attention-actions.tsx": 4,
     "apps/dashboard/src/components/sandbox-attention.tsx": 1,
     "apps/dashboard/src/components/sandbox-chat.tsx": 30,
-    "apps/dashboard/src/components/sandbox-cost.tsx": 5,
+    "apps/dashboard/src/components/sandbox-cost.tsx": 4,
     "apps/dashboard/src/components/sandbox-details-panel.tsx": 2,
     "apps/dashboard/src/components/sandbox-list-tabs.tsx": 1,
     "apps/dashboard/src/components/sandbox-state.tsx": 1,

@@ -22,7 +22,10 @@ import type { SandboxListMetadata } from "@/lib/sandbox-access";
 import * as supabase from "@/lib/supabase/server";
 import { NavLinks } from "./nav-links";
 import { SandboxChat, SandboxThreadStateProvider, ThreadSandboxState } from "./sandbox-chat";
+import { SandboxListRows } from "./sandbox-list";
 import { SandboxListLiveSync } from "./sandbox-list-live-sync";
+import { SandboxListTabs } from "./sandbox-list-tabs";
+import { SandboxRowMenu } from "./sandbox-row-menu";
 import { SandboxState } from "./sandbox-state";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -113,6 +116,19 @@ test("SandboxState shows green pulsing Working across working states and never o
     expect(html).not.toContain("bg-success");
     expect(html).not.toContain("data-pulse");
   }
+  for (const [label, status] of [
+    ["Starting", "starting"],
+    ["Stopping", "stopping"],
+  ] as const) {
+    const html = renderToString(<SandboxState status={status} />);
+    expect(html).toContain(`>${label}<`);
+    expect(html).toContain('data-pulse="true"');
+    expect(html).toContain("bg-muted-foreground/60");
+  }
+  const deletedHtml = renderToString(<SandboxState status="deleted" />);
+  expect(deletedHtml).toContain(">Deleted<");
+  expect(deletedHtml).toContain("border-muted-foreground");
+  expect(deletedHtml).not.toContain("data-pulse");
 });
 
 test("NavLinks skips redundant SSR mount poll, broadcasts live fingerprint changes, and syncs /sandboxes", async () => {
@@ -402,13 +418,15 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     /* oxlint-enable landmines-testing/no-test-doubles */
 
     const stream = await renderToReadableStream(
-      <AppRouterContext.Provider value={router}>
-        <PathnameContext.Provider value="/sandboxes">
-          <SearchParamsContext.Provider value={new URLSearchParams()}>
-            <SandboxesPage searchParams={Promise.resolve({})} />
-          </SearchParamsContext.Provider>
-        </PathnameContext.Provider>
-      </AppRouterContext.Provider>,
+      <TooltipProvider>
+        <AppRouterContext.Provider value={router}>
+          <PathnameContext.Provider value="/sandboxes">
+            <SearchParamsContext.Provider value={new URLSearchParams()}>
+              <SandboxesPage searchParams={Promise.resolve({})} />
+            </SearchParamsContext.Provider>
+          </PathnameContext.Provider>
+        </AppRouterContext.Provider>
+      </TooltipProvider>,
     );
     await stream.allReady;
     const html = await new Response(stream).text();
@@ -421,10 +439,17 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     for (const className of enclosingClassesFor(articleHtml, 'data-pulse="true"')) {
       expect(hasClippingClass(className)).toBe(false);
     }
+    expect(html).not.toContain("overflow-hidden");
     expect(articleHtml).toMatch(/<span[^>]*class="[^"]*\btruncate\b[^"]*"[^>]*>Working<\/span>/);
     expect(articleHtml).toMatch(
       /<p[^>]*class="[^"]*\btruncate\b[^"]*"[^>]*data-lifecycle="overdue"[^>]*>Past deadline<\/p>/,
     );
+    expect(articleHtml).toContain('data-provider-mark-slot="true"');
+    expect(articleHtml).not.toContain("Details for");
+    expect(articleHtml).not.toContain("hover:underline");
+    expect(articleHtml).not.toContain("Model not reported");
+    expect(articleHtml).not.toContain("No usage yet");
+    expect(articleHtml).not.toContain("Not recorded");
     expect(html).toContain("1 working");
     expect(html).not.toContain('aria-label="Sandbox scope"');
   } finally {
@@ -967,4 +992,117 @@ test("SandboxChat observes inner <ol>, stays pinned on tool updates, smoothly co
     mock.restore();
     await act(async () => renderer?.unmount());
   }
+});
+
+test("SandboxListRows navigates with j/k/arrows, opens on Enter, copies on c, and ignores inputs and dialogs", async () => {
+  const pushed: string[] = [];
+  const copied: string[] = [];
+  const { windowEvents, fakeDocument } = installDom(async () => Response.json([]));
+  let dialogOpen = false;
+  /* oxlint-disable landmines-testing/no-test-doubles -- Provide clipboard and dialog query in DOM-free renderer. */
+  const origNav = globalThis.navigator;
+  Object.assign(fakeDocument, { querySelector: () => (dialogOpen ? {} : null) });
+  Object.assign(globalThis, {
+    navigator: { clipboard: { writeText: async (text: string) => void copied.push(text) } },
+  });
+  /* oxlint-enable landmines-testing/no-test-doubles */
+  const spyRouter = { ...router, push: (href: string) => void pushed.push(href) } satisfies AppRouterInstance;
+  const dispatch = (key: string, extra: Record<string, unknown> = {}) =>
+    act(async () => {
+      const { target, ...rest } = extra;
+      const ev = Object.assign(new Event("keydown", { cancelable: true }), {
+        key,
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        ...rest,
+      });
+      if (target !== undefined) Object.defineProperty(ev, "target", { value: target });
+      windowEvents.dispatchEvent(ev);
+    });
+  let renderer!: ReactTestRenderer;
+  try {
+    await act(async () => {
+      renderer = create(
+        <AppRouterContext.Provider value={spyRouter}>
+          <SandboxListRows
+            rows={[
+              { id: "sb-1", canOpen: true, content: <article>Row 1</article> },
+              { id: "sb-2", canOpen: false, content: <article>Row 2</article> },
+            ]}
+          />
+        </AppRouterContext.Provider>,
+      );
+    });
+    const focused = () =>
+      renderer.root.findAllByProps({ "data-kb-focused": true }).map((n) => n.props["data-sandbox-row"]);
+    expect(focused()).toEqual([]);
+    await dispatch("j");
+    expect(focused()).toEqual(["sb-1"]);
+    await dispatch("ArrowDown");
+    expect(focused()).toEqual(["sb-2"]);
+    await dispatch("Enter");
+    expect(pushed).toEqual([]);
+    await dispatch("k");
+    expect(focused()).toEqual(["sb-1"]);
+    await dispatch("Enter");
+    expect(pushed).toEqual(["/sandboxes/sb-1"]);
+    await dispatch("c");
+    expect(copied).toEqual(["sb-1"]);
+    await dispatch("c", { target: { tagName: "INPUT" } });
+    dialogOpen = true;
+    await dispatch("j");
+    expect([focused(), copied]).toEqual([["sb-1"], ["sb-1"]]);
+    dialogOpen = false;
+    await dispatch("Escape");
+    expect(focused()).toEqual([]);
+  } finally {
+    /* oxlint-disable landmines-testing/no-test-doubles -- Restore global navigator. */
+    Object.assign(globalThis, { navigator: origNav });
+    /* oxlint-enable landmines-testing/no-test-doubles */
+    await act(async () => renderer?.unmount());
+  }
+});
+
+test("SandboxListTabs renders Button pagination range and actionable empty tab states, and SandboxRowMenu gates Stop/Delete by capability", () => {
+  const pageHtml = renderToString(
+    <AppRouterContext.Provider value={router}>
+      <SandboxListTabs
+        rows={[
+          { id: "sb-1", canOpen: true, content: <article>One</article> },
+          { id: "sb-2", canOpen: true, content: <article>Two</article> },
+        ]}
+        counts={{ all: 52, active: 2, need: 0, stopped: 50, failed: 0 }}
+        tab="all"
+        page={1}
+        search=""
+      />
+    </AppRouterContext.Provider>,
+  );
+  expect(pageHtml).toContain("Showing 1–2 of 52");
+  expect(pageHtml).toContain('href="?page=2"');
+  expect(pageHtml).not.toContain("overflow-hidden");
+
+  const emptyNeedHtml = renderToString(
+    <AppRouterContext.Provider value={router}>
+      <SandboxListTabs
+        rows={[]}
+        counts={{ all: 4, active: 1, need: 0, stopped: 3, failed: 0 }}
+        tab="need"
+        page={1}
+        search=""
+      />
+    </AppRouterContext.Provider>,
+  );
+  expect(emptyNeedHtml).toContain("Nothing waiting for you");
+  expect(emptyNeedHtml).toContain("View all 4 sandboxes");
+
+  const hostStopped = renderToString(
+    <AppRouterContext.Provider value={router}>
+      <SandboxRowMenu id="sb-h" name="Host box" canOpen canManage status="stopped" provider="docker" />
+    </AppRouterContext.Provider>,
+  );
+  expect(hostStopped).toContain('aria-label="Actions for Host box"');
+  expect(hostStopped).toContain("size-8");
 });
