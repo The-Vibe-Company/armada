@@ -32,7 +32,7 @@ export default async function LoginPage({ searchParams }: Props) {
             <p className="text-sm leading-normal text-muted-foreground">
               {next === INVITATION_ACCEPT_PATH
                 ? "Use the address your invitation was sent to. We email you a sign-in link and a code."
-                : "Run Claude Code and Codex in sandboxes built from your repositories."}
+                : "Run Claude Code, Codex, OpenCode and Antigravity in sandboxes on Boat, Modal or your Docker hosts."}
             </p>
           </div>
         </header>

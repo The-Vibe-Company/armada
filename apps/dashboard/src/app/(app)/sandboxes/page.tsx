@@ -37,7 +37,7 @@ import { readProviderSetup } from "@/lib/data/provider-setup";
 import { listSandboxMetadata, loadSandboxInventory } from "@/lib/data/sandbox-inventory";
 import { listSandboxEnrichment } from "@/lib/data/sandboxes";
 import { selectedOrganization } from "@/lib/data/selected-org";
-import { displayUser, listMemberships, memberDirectory, requireViewer } from "@/lib/data/viewer";
+import { displayUser, memberDirectory, requireViewer } from "@/lib/data/viewer";
 import { hasDockerHost } from "@/lib/docker-snapshots";
 import { mcpUrl } from "@/lib/env";
 import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
@@ -111,8 +111,15 @@ async function SandboxesContent({ searchParams }: Props) {
     control,
     listSandboxMetadata(selected.org.id),
   );
-  const hosts = readSelectedDockerHosts();
   const enrichmentRead = inventory.then(({ rows }) => listSandboxEnrichment(supabase, selected.org.id, rows));
+  const setupRead = inventory.then(({ inventoryTotal }) =>
+    inventoryTotal === 0 ? readProviderSetup(selected.org.id) : null,
+  );
+  const hostReadPromise = inventory.then(async ({ rows }) => {
+    if (rows.some((row) => capabilities(row.provider).launchSource === "host")) return readSelectedDockerHosts();
+    const setup = await setupRead;
+    return setup?.state === "pending" ? readSelectedDockerHosts() : null;
+  });
   const [
     { rows, total, inventoryTotal, skipped, facets, activity, counts, page, workingIds, waitingIds, now },
     directory,
@@ -121,24 +128,17 @@ async function SandboxesContent({ searchParams }: Props) {
     enrichment,
   ] = await Promise.all([
     inventory,
-    listMemberships(supabase, viewer.id)
-      .then((items) => items.filter((item) => item.org.id === selected?.org.id))
-      .then((memberships) =>
-        memberDirectory(
-          supabase,
-          memberships.map((item) => item.org.id),
-        ),
-      ),
-    selected ? readProviderSetup(selected.org.id) : null,
-    hosts,
+    memberDirectory(supabase, [selected.org.id]),
+    setupRead,
+    hostReadPromise,
     enrichmentRead,
   ]);
 
-  const hostNames = new Map(hostRead.state === "ready" ? hostRead.list.hosts.map((host) => [host.id, host.name]) : []);
+  const hostNames = new Map(hostRead?.state === "ready" ? hostRead.list.hosts.map((host) => [host.id, host.name]) : []);
   const filtered = hasSandboxFilters(filters);
   const deletedCount = facets.status.get("deleted") ?? 0;
   // An organization without a sandbox provider goes to the Cloud providers page to connect one; one with sandboxes to manage stays here.
-  const hasDocker = hostRead.state === "ready" && hasDockerHost(hostRead.list.hosts);
+  const hasDocker = hostRead?.state === "ready" && hasDockerHost(hostRead.list.hosts);
   const setupPending = selected !== null && setup?.state === "pending" && !hasDocker;
   if (setupPending && !filtered && inventoryTotal === 0 && deletedCount === 0 && skipped === 0)
     redirect(CLOUD_PROVIDERS_PATH);
@@ -347,7 +347,7 @@ async function SandboxesContent({ searchParams }: Props) {
             const facts = enrichment.get(sandbox.id);
             const isHostProvider = capabilities(sandbox.provider).launchSource === "host";
             const hostName =
-              isHostProvider && hostRead.state === "ready" && facts
+              isHostProvider && hostRead?.state === "ready" && facts
                 ? facts.hostId === null
                   ? "Machine not recorded"
                   : hostNames.has(facts.hostId)

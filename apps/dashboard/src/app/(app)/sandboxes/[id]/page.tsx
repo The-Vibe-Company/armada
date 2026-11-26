@@ -85,13 +85,11 @@ export default async function SandboxPage({ params }: Props) {
   const org = selected?.org.id === sandbox.org_id ? selected : undefined;
   const accounts = credentialMetadata(supabase, [sandbox.credential_id]);
   if (capabilities(sandbox.provider).launchSource === "host") {
-    const option = await readDockerLaunchOption();
     return (
       <DockerSandbox
         viewer={viewer}
         supabase={supabase}
         sandbox={sandbox}
-        controls={dockerSandboxControls(option)}
         org={org?.org.name ?? "Unknown"}
         accounts={accounts}
         ownerCanChange={sandbox.owner_id === viewer.id && sandbox.status !== "deleted"}
@@ -373,11 +371,90 @@ function ConnectionsSkeleton() {
   );
 }
 
+function ConversationSkeleton() {
+  return (
+    <div aria-hidden="true" className="space-y-3 py-2">
+      <Skeleton className="h-10 w-3/4 rounded-lg" />
+      <Skeleton className="h-16 w-full rounded-lg" />
+    </div>
+  );
+}
+
+type DockerControlsPromise = Promise<DockerSandboxControls>;
+
+async function DockerHeaderActions({ sandbox, controls }: { sandbox: SandboxDetail; controls: DockerControlsPromise }) {
+  const { reasons } = await controls;
+  return (
+    <SandboxActions
+      sandboxId={sandbox.id}
+      status={sandbox.status}
+      canStop={!reasons.stop}
+      canDelete={!reasons.delete}
+      stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
+    />
+  );
+}
+
+async function DockerUnavailableCard({ controls }: { controls: DockerControlsPromise }) {
+  const { unavailable } = await controls;
+  if (unavailable.length === 0) return null;
+  return (
+    <Card className="gap-3 py-5" data-docker-unavailable>
+      <CardHeader className="px-5">
+        <CardTitle className="text-sm">Not available on Docker yet</CardTitle>
+      </CardHeader>
+      <CardContent className="px-5">
+        <ul className="space-y-1.5 text-[13px]">
+          {unavailable.map((item) => (
+            <li key={item.name}>
+              <span className="font-medium">{item.name}</span>
+              <span className="text-muted-foreground">: {item.reason}</span>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
+async function DockerCommandSection({
+  sandbox,
+  controls,
+}: {
+  sandbox: SandboxDetail;
+  controls: DockerControlsPromise;
+}) {
+  const { reasons } = await controls;
+  if (reasons.exec) return null;
+  return <SandboxCommand sandboxId={sandbox.id} />;
+}
+
+async function DockerConversationSection({
+  sandbox,
+  configured,
+  controls,
+}: {
+  sandbox: SandboxDetail;
+  configured: boolean;
+  controls: DockerControlsPromise;
+}) {
+  const { reasons } = await controls;
+  if (reasons.logs) {
+    return (
+      <Alert data-docker-conversation-unavailable role="status">
+        <ContainerIcon />
+        <AlertTitle>Conversation unavailable</AlertTitle>
+        <AlertDescription>{reasons.logs}</AlertDescription>
+      </Alert>
+    );
+  }
+  return <ThreadConversation sandbox={sandbox} configured={configured} composerUnavailable={reasons.followupPrompts} />;
+}
+
 function DockerSandbox({
   viewer,
   supabase,
   sandbox,
-  controls,
   org,
   accounts,
   ownerCanChange,
@@ -385,7 +462,6 @@ function DockerSandbox({
   sandbox: SandboxDetail;
   viewer: Viewer;
   supabase: Supabase;
-  controls: DockerSandboxControls;
   org: string;
   accounts: AccountsPromise;
   ownerCanChange: boolean;
@@ -393,7 +469,7 @@ function DockerSandbox({
   const configured = mcpUrl() !== null;
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
-  const { reasons } = controls;
+  const controls = readDockerLaunchOption().then(dockerSandboxControls);
   const relayEligible = configured && isSandboxRelayEligible(sandbox);
   const relayInitialStatus = sandbox.stop_requested_at ? "stopping" : sandbox.publicStatus;
   return (
@@ -404,13 +480,9 @@ function DockerSandbox({
       bar={
         <ThreadHeader sandbox={sandbox} viewer={viewer} life={life} accounts={accounts}>
           {configured && (
-            <SandboxActions
-              sandboxId={sandbox.id}
-              status={sandbox.status}
-              canStop={!reasons.stop}
-              canDelete={!reasons.delete}
-              stopDescription={`The container stops and its workspace stays on the host.${reasons.resume ? ` It cannot be resumed from here: ${reasons.resume}` : ""}`}
-            />
+            <Suspense fallback={null}>
+              <DockerHeaderActions sandbox={sandbox} controls={controls} />
+            </Suspense>
           )}
         </ThreadHeader>
       }
@@ -428,23 +500,9 @@ function DockerSandbox({
             />
           </Suspense>
           <ThreadDetails sandbox={sandbox} />
-          {controls.unavailable.length > 0 && (
-            <Card className="gap-3 py-5" data-docker-unavailable>
-              <CardHeader className="px-5">
-                <CardTitle className="text-sm">Not available on Docker yet</CardTitle>
-              </CardHeader>
-              <CardContent className="px-5">
-                <ul className="space-y-1.5 text-[13px]">
-                  {controls.unavailable.map((item) => (
-                    <li key={item.name}>
-                      <span className="font-medium">{item.name}</span>
-                      <span className="text-muted-foreground">: {item.reason}</span>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          )}
+          <Suspense fallback={null}>
+            <DockerUnavailableCard controls={controls} />
+          </Suspense>
         </>
       }
       usage={
@@ -452,8 +510,10 @@ function DockerSandbox({
           <Suspense fallback={<CostSkeleton />}>
             <SandboxCostSection sandbox={sandbox} accounts={accounts} />
           </Suspense>
-          {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
-            <SandboxCommand sandboxId={sandbox.id} />
+          {configured && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
+            <Suspense fallback={null}>
+              <DockerCommandSection sandbox={sandbox} controls={controls} />
+            </Suspense>
           )}
         </>
       }
@@ -465,15 +525,9 @@ function DockerSandbox({
           <SandboxAccountChoiceSection sandbox={sandbox} viewer={viewer} owner />
         </Suspense>
       )}
-      {reasons.logs ? (
-        <Alert data-docker-conversation-unavailable role="status">
-          <ContainerIcon />
-          <AlertTitle>Conversation unavailable</AlertTitle>
-          <AlertDescription>{reasons.logs}</AlertDescription>
-        </Alert>
-      ) : (
-        <ThreadConversation sandbox={sandbox} configured={configured} composerUnavailable={reasons.followupPrompts} />
-      )}
+      <Suspense fallback={<ConversationSkeleton />}>
+        <DockerConversationSection sandbox={sandbox} configured={configured} controls={controls} />
+      </Suspense>
     </ThreadLayout>
   );
 }

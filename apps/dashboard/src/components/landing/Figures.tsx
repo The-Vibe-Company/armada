@@ -92,9 +92,9 @@ export function GoldenFigure() {
 
 const SANDBOXES = [
   { agent: "Claude Code", model: "claude-opus-5-5", effort: "high", status: "running", ship: "is-lime" },
-  { agent: "Codex", model: "gpt-6.1-sol", effort: "medium", status: "running", ship: "is-sky" },
+  { agent: "Codex", model: "gpt-6.2-sol", effort: "medium", status: "running", ship: "is-sky" },
   { agent: "Claude Code", model: "claude-opus-5-5", effort: "low", status: "ready", ship: "is-orange" },
-  { agent: "Codex", model: "gpt-6.1-sol", effort: "high", status: "running", ship: "is-amber" },
+  { agent: "Codex", model: "gpt-6.2-sol", effort: "high", status: "running", ship: "is-amber" },
 ];
 
 export function FleetFigure() {
