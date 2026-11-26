@@ -31,5 +31,6 @@ export function SandboxThreadStateProvider({ children }: { children: ReactNode }
 }
 
 export function useThreadSandboxStatus(initialStatus: SandboxStatus) {
-  return useContext(ThreadStateContext)?.live?.status ?? initialStatus;
+  const live = useContext(ThreadStateContext)?.live;
+  return live?.hasLiveStatus ? live.status : initialStatus;
 }

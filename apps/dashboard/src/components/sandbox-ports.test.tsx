@@ -98,7 +98,10 @@ test("SandboxPorts opens a named window synchronously before minting, submits to
     tree = create(<SandboxPorts sandboxId="sb-1" />);
   });
   const form = tree.root.findByType("form");
-  await act(async () => form.props.onSubmit({ preventDefault() {} }));
+  await act(async () => {
+    form.props.onSubmit({ preventDefault() {} });
+    form.props.onSubmit({ preventDefault() {} });
+  });
   expect(opened).toHaveLength(1);
   expect(opened[0]!.target).toMatch(/^armada-preview-sb-1-3000-/);
   expect(opened[0]!.opener).toBeNull();
@@ -144,13 +147,13 @@ test("SandboxPorts renders an explicit fallback button instead of false success 
   ]);
 });
 
-test("Terminal button and Ports panel appear reactively when a starting sandbox transitions to ready", async () => {
+test("Terminal button and Ports panel appear reactively only after live status confirms ready", async () => {
   installPreviewDom(() => null);
-  let pushStatus!: (status: "starting" | "ready" | "stopped") => void;
+  let pushStatus!: (status: "starting" | "ready" | "stopped", hasLiveStatus?: boolean) => void;
   function StatusDriver() {
     const ctx = useContext(ThreadStateContext);
-    pushStatus = (status) =>
-      ctx?.setLive({ status, idlePaused: false, statusMessage: null, hasLiveStatus: true, turnRunning: false });
+    pushStatus = (status, hasLiveStatus = true) =>
+      ctx?.setLive({ status, idlePaused: false, statusMessage: null, hasLiveStatus, turnRunning: false });
     return null;
   }
   let tree!: ReactTestRenderer;
@@ -174,8 +177,10 @@ test("Terminal button and Ports panel appear reactively when a starting sandbox 
   const portsSections = () =>
     tree.root.findAll((node) => node.type === "section" && node.props["aria-label"] === "Ports");
   expect([terminalButtons().length, portsSections().length]).toEqual([0, 0]);
-  await act(async () => pushStatus("ready"));
+  await act(async () => pushStatus("ready", false));
+  expect([terminalButtons().length, portsSections().length]).toEqual([0, 0]);
+  await act(async () => pushStatus("ready", true));
   expect([terminalButtons().length, portsSections().length]).toEqual([1, 1]);
-  await act(async () => pushStatus("stopped"));
+  await act(async () => pushStatus("stopped", true));
   expect([terminalButtons().length, portsSections().length]).toEqual([0, 0]);
 });

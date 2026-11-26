@@ -2,7 +2,7 @@
 
 import type { SandboxStatus } from "@armada/core";
 import { ExternalLinkIcon, Loader2Icon } from "lucide-react";
-import { type FormEvent, useState, useTransition } from "react";
+import { type FormEvent, useRef, useState, useTransition } from "react";
 import { mintRelayTicket } from "@/app/actions/sandboxes";
 import { CopyButton } from "@/components/copy-button";
 import { useThreadSandboxStatus } from "@/components/sandbox-thread-state";
@@ -28,17 +28,20 @@ export function SandboxPorts({ sandboxId, initialStatus }: { sandboxId: string; 
   const [feedback, setFeedback] = useState<{ kind: "error" | "status"; text: string } | null>(null);
   const [pendingPreview, setPendingPreview] = useState<PendingPreview | null>(null);
   const [pending, startTransition] = useTransition();
+  const openingRef = useRef(false);
   if (initialStatus && !isRelayActiveStatus(status)) return null;
   const parsed = parseRelayPort(portInput);
   const command = portForwardCommand(sandboxId, parsed.ok ? parsed.port : 3000);
 
   function openPreview(ev: FormEvent) {
     ev.preventDefault();
+    if (openingRef.current) return;
     const checked = parseRelayPort(portInput);
     if (!checked.ok) {
       setPendingPreview(null);
       return setFeedback({ kind: "error", text: checked.error });
     }
+    openingRef.current = true;
     setFeedback(null);
     setPendingPreview(null);
     const targetName = `armada-preview-${sandboxId}-${checked.port}-${++previewWindowSeq}`;
@@ -57,41 +60,53 @@ export function SandboxPorts({ sandboxId, initialStatus }: { sandboxId: string; 
       }
     };
     startTransition(async () => {
-      let minted: Awaited<ReturnType<typeof mintRelayTicket>>;
       try {
-        minted = await mintRelayTicket(sandboxId, { mode: "preview", port: checked.port });
-      } catch {
-        closePopup();
-        return setFeedback({ kind: "error", text: "Could not reach the Armada server. Try again." });
-      }
-      if (!minted.ok) {
-        closePopup();
-        return setFeedback({ kind: "error", text: minted.error });
-      }
-      if (!minted.ticket.bootstrapUrl) {
-        closePopup();
-        return setFeedback({ kind: "error", text: "The Armada server did not return a preview bootstrap URL." });
-      }
-      if (!parsePreviewBootstrapUrl(minted.ticket.bootstrapUrl, minted.ticket.ticket)) {
-        closePopup();
-        return setFeedback({ kind: "error", text: "The preview address from the server was refused as unsafe." });
-      }
-      if (popup && !popup.closed) {
-        if (!submitPreviewBootstrap(minted.ticket.bootstrapUrl, minted.ticket.ticket, { target: targetName })) {
+        let minted: Awaited<ReturnType<typeof mintRelayTicket>>;
+        try {
+          minted = await mintRelayTicket(sandboxId, { mode: "preview", port: checked.port });
+        } catch {
+          closePopup();
+          return setFeedback({ kind: "error", text: "Could not reach the Armada server. Try again." });
+        }
+        if (!minted.ok) {
+          closePopup();
+          return setFeedback({ kind: "error", text: minted.error });
+        }
+        if (!minted.ticket.bootstrapUrl) {
+          closePopup();
+          return setFeedback({ kind: "error", text: "The Armada server did not return a preview bootstrap URL." });
+        }
+        if (!parsePreviewBootstrapUrl(minted.ticket.bootstrapUrl, minted.ticket.ticket)) {
           closePopup();
           return setFeedback({ kind: "error", text: "The preview address from the server was refused as unsafe." });
         }
-        return setFeedback({ kind: "status", text: `Opening port ${checked.port} in a new tab…` });
+        if (popup && !popup.closed) {
+          let submitted = false;
+          try {
+            submitted = submitPreviewBootstrap(minted.ticket.bootstrapUrl, minted.ticket.ticket, {
+              target: targetName,
+            });
+          } catch {
+            submitted = false;
+          }
+          if (!submitted) {
+            closePopup();
+            return setFeedback({ kind: "error", text: "The preview address from the server was refused as unsafe." });
+          }
+          return setFeedback({ kind: "status", text: `Opening port ${checked.port} in a new tab…` });
+        }
+        setPendingPreview({
+          port: checked.port,
+          bootstrapUrl: minted.ticket.bootstrapUrl,
+          ticket: minted.ticket.ticket,
+        });
+        setFeedback({
+          kind: "error",
+          text: `Your browser blocked the preview tab for port ${checked.port}. Click below to open it.`,
+        });
+      } finally {
+        openingRef.current = false;
       }
-      setPendingPreview({
-        port: checked.port,
-        bootstrapUrl: minted.ticket.bootstrapUrl,
-        ticket: minted.ticket.ticket,
-      });
-      setFeedback({
-        kind: "error",
-        text: `Your browser blocked the preview tab for port ${checked.port}. Click below to open it.`,
-      });
     });
   }
 
