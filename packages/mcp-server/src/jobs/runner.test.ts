@@ -34,16 +34,21 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
   const changed = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   let renewalGate: Promise<void> | undefined;
   const store: JobStore = {
-    async claim(kind, owner, seconds, concurrency) {
+    async claimNext(kinds, limits, owner, seconds) {
       claims++;
-      const candidates = rows.filter((row) => row.kind === kind && !row.terminal);
-      if (candidates.filter((row) => row.expires > now).length >= concurrency) return;
-      const row = candidates.find((row) => row.expires <= now && row.due <= now);
-      if (!row) return;
-      row.owner = owner;
-      row.expires = now + seconds * 1000;
-      row.lease_epoch = String(++row.attempts);
-      return { ...row, ...(dispatchBudgetMs === undefined ? {} : { dispatchBudgetMs }) };
+      for (let i = 0; i < kinds.length; i++) {
+        const currentKind = kinds[i]!;
+        const concurrency = limits[i]!;
+        const candidates = rows.filter((row) => row.kind === currentKind && !row.terminal);
+        if (candidates.filter((row) => row.expires > now).length >= concurrency) continue;
+        const row = candidates.find((row) => row.expires <= now && row.due <= now);
+        if (!row) continue;
+        row.owner = owner;
+        row.expires = now + seconds * 1000;
+        row.lease_epoch = String(++row.attempts);
+        return { ...row, ...(dispatchBudgetMs === undefined ? {} : { dispatchBudgetMs }) };
+      }
+      return undefined;
     },
     async inspect(job, owner) {
       if (!current(job, owner)) return "lost";
@@ -376,7 +381,7 @@ test("hung golden recovery yields its lease to the next build and stays tracked 
   }
 });
 
-test("reconcileOne skips store.claim while a kind holds its local leased concurrency", async () => {
+test("reconcileOne skips store.claimNext while a kind holds its local leased concurrency", async () => {
   const f = fixture();
   const finish = Promise.withResolvers<void>();
   const runner = f.runner(async () => {
@@ -388,4 +393,100 @@ test("reconcileOne skips store.claim while a kind holds its local leased concurr
   expect(f.claims).toBe(1);
   finish.resolve();
   await runner.drain();
+});
+
+test("reconcileOne batches all eligible kinds into one claimNext call, omits saturated/unprepared kinds, and rotates priority", async () => {
+  const calls: Array<{ kinds: readonly string[]; limits: readonly number[] }> = [];
+  const queue: Job[] = [];
+  const finishBeta = Promise.withResolvers<void>();
+  let gammaReady = false;
+  const ran: string[] = [];
+
+  const store: JobStore = {
+    async claimNext(kinds, limits, owner) {
+      calls.push({ kinds, limits });
+      for (const kind of kinds) {
+        const idx = queue.findIndex((job) => job.kind === kind);
+        if (idx >= 0) {
+          const [job] = queue.splice(idx, 1);
+          return { ...job!, lease_owner: owner };
+        }
+      }
+      return undefined;
+    },
+    async inspect() {
+      return "dispatch";
+    },
+    async retireStale() {},
+    async handoffGeneration() {
+      throw new Error("Unexpected handoff.");
+    },
+    async renew() {
+      return true;
+    },
+    async complete() {
+      return true;
+    },
+  };
+
+  const runner = createJobsRunner(
+    store,
+    {
+      alpha: {
+        concurrency: 2,
+        run: async (job) => {
+          ran.push(job.id);
+          return { status: "done" };
+        },
+      },
+      beta: {
+        concurrency: 1,
+        run: async (job) => {
+          ran.push(job.id);
+          await finishBeta.promise;
+          return { status: "done" };
+        },
+      },
+      gamma: {
+        concurrency: 3,
+        prepare: async () => gammaReady,
+        run: async (job) => {
+          ran.push(job.id);
+          return { status: "done" };
+        },
+      },
+    },
+    () => {},
+  );
+
+  expect(await runner.reconcileOne(tick)).toBe(false);
+  expect(calls).toEqual([{ kinds: ["alpha", "beta"], limits: [2, 1] }]);
+
+  const makeJob = (id: string, kind: string) =>
+    ({
+      id,
+      kind,
+      sandbox_id: null,
+      generation: null,
+      lease_epoch: "1",
+      attempts: 1,
+      max_attempts: 1,
+      payload: null,
+      outcome: null,
+    }) satisfies Job;
+  queue.push(makeJob("b1", "beta"), makeJob("a1", "alpha"), makeJob("g1", "gamma"));
+  gammaReady = true;
+
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  expect(calls[1]).toEqual({ kinds: ["alpha", "beta", "gamma"], limits: [2, 1, 3] });
+
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  expect(calls[2]).toEqual({ kinds: ["beta", "gamma", "alpha"], limits: [1, 3, 2] });
+
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  expect(calls[3]).toEqual({ kinds: ["gamma", "alpha"], limits: [3, 2] });
+
+  finishBeta.resolve();
+  await runner.drain();
+  expect(ran).toEqual(["a1", "b1", "g1"]);
 });

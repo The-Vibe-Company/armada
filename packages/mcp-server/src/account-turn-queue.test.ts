@@ -85,6 +85,9 @@ beforeAll(async () => {
   await database().exec(
     await Bun.file(new URL("../../../supabase/migrations/20261119024017_jobs.sql", import.meta.url)).text(),
   );
+  await database().exec(
+    await Bun.file(new URL("../../../supabase/migrations/20261126100908_claim_next_job.sql", import.meta.url)).text(),
+  );
   await database().query("insert into credentials values($1,'Shared account',1,1,'active',null,'user',$2)", [
     account,
     owner,

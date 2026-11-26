@@ -1911,8 +1911,8 @@ test("Modal admission and deferred enrolment wake jobs and stay within the SQL s
       .map(([line]) => JSON.parse(String(line)))
       .find(({ event }) => event === "modal_golden_launch_timing");
     expect(statements.length).toBe(sample?.sqlStatements);
-    expect(statements.length).toBeLessThanOrEqual(59);
-    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 34, 9, 8]);
+    expect(statements.length).toBeLessThanOrEqual(57);
+    expect(checkpoints.map((total, phase) => total - (checkpoints[phase - 1] ?? 0))).toEqual([8, 33, 9, 7]);
   } finally {
     unsubscribe();
     log.mockRestore();
@@ -5678,9 +5678,9 @@ test.each([
   const runner = createJobsRunner(
     {
       ...store,
-      claim(kind, owner, seconds, concurrency) {
+      claimNext(kinds, limits, owner, seconds) {
         firstOwner = owner;
-        return store.claim(kind, owner, seconds, concurrency);
+        return store.claimNext(kinds, limits, owner, seconds);
       },
     },
     {
@@ -6069,4 +6069,49 @@ test("a failed Boat VM observed absent under its pinned account releases capacit
     (await f.db.query("select stopped_at is not null as confirmed from sandboxes where id=$1", [id])).rows,
   ).toEqual([{ confirmed: true }]);
   expect((await f.db.query("select 1 from account_agent_reservations where sandbox_id=$1", [id])).rows).toEqual([]);
+});
+
+test("jobs runner claims across multiple kinds and stays at one SQL round-trip on idle ticks", async () => {
+  const statements: string[] = [];
+  const f = await fixture(statements);
+  const done: string[] = [];
+  const noop = async (job: Job) => {
+    done.push(`${job.kind}:${job.id}`);
+    return { status: "done" as const };
+  };
+  const runner = createJobsRunner(
+    f.store,
+    {
+      webhook: { concurrency: 1, run: noop },
+      maintenance: { concurrency: 1, run: noop },
+      pr_scan: { concurrency: 1, run: noop },
+      langfuse_export: { concurrency: 2, run: noop },
+    },
+    () => {},
+  );
+
+  statements.length = 0;
+  expect(await runner.reconcileOne(signal)).toBe(false);
+  expect(statements).toHaveLength(1);
+  expect(statements[0]).toContain("claim_next_job");
+
+  const w1 = await f.store.enqueue("webhook", null, null, "w1", null, { orgId: f.people.org, maxAttempts: 1 });
+  const w2 = await f.store.enqueue("webhook", null, null, "w2", null, { orgId: f.people.org, maxAttempts: 1 });
+  const lf = await f.store.enqueue("langfuse_export", null, null, "lf1", null, { orgId: f.people.org, maxAttempts: 1 });
+
+  const otherOwner = crypto.randomUUID();
+  const held = await f.store.claim("webhook", otherOwner, 60, 1);
+  expect(held?.id).toBe(w1);
+
+  statements.length = 0;
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  const claimQueries = statements.filter((s) => s.includes("claim_next_job"));
+  expect(claimQueries).toHaveLength(1);
+  await runner.drain();
+  expect(done).toEqual([`langfuse_export:${lf}`]);
+
+  expect(await f.store.complete(held!, otherOwner, { status: "done" })).toBe(true);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(done).toEqual([`langfuse_export:${lf}`, `webhook:${w2}`]);
 });
