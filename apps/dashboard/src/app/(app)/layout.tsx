@@ -83,7 +83,17 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           />
         </Suspense>
       </AppSidebar>
-      <CommandMenu organizationAdmin={selected?.role === "admin"} />
+      <Suspense
+        fallback={
+          <CommandMenu organizationAdmin={selected?.role === "admin"} organizationId={selected?.org.id ?? null} />
+        }
+      >
+        <ShellCommandMenu
+          organizationAdmin={selected?.role === "admin"}
+          organizationId={selected?.org.id ?? null}
+          sandboxes={liveSandboxes}
+        />
+      </Suspense>
       <Toaster />
       <main className="min-w-0 flex-1">
         <ShellToolbar organization={selected?.org.name ?? "Armada"} launch={<SandboxLaunchAction />} />
@@ -108,6 +118,20 @@ function SignOut({ compact = false }: { compact?: boolean }) {
         {!compact && "Sign out"}
       </Button>
     </SignOutForm>
+  );
+}
+
+async function ShellCommandMenu({
+  sandboxes,
+  organizationId,
+  organizationAdmin,
+}: {
+  sandboxes: ReturnType<typeof readLiveSandboxes>;
+  organizationId: string | null;
+  organizationAdmin: boolean;
+}) {
+  return (
+    <CommandMenu organizationId={organizationId} organizationAdmin={organizationAdmin} initialLive={await sandboxes} />
   );
 }
 

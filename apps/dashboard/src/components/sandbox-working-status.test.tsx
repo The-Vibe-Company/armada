@@ -8,7 +8,7 @@ import SandboxesPage from "@/app/(app)/sandboxes/page";
 import * as sandboxActions from "@/app/actions/sandboxes";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { clearChatCache, setChatCache } from "@/lib/chat-cache";
+import { clearChatCache, getChatDraft, setChatCache } from "@/lib/chat-cache";
 import { SEND_KEY_FIELD } from "@/lib/composer";
 import * as dockerHosts from "@/lib/data/docker-hosts";
 import * as providerSetup from "@/lib/data/provider-setup";
@@ -1082,6 +1082,93 @@ test("SandboxChat observes inner <ol>, stays pinned on tool updates, smoothly co
     await act(async () => ta().props.onKeyDown(key("Enter", { metaKey: true })));
     await act(async () => ta().props.onKeyDown(key("Escape")));
     expect([sent, interrupts]).toEqual([["Line 1\nLine 2", "Second"], 2]);
+  } finally {
+    mock.restore();
+    await act(async () => renderer?.unmount());
+  }
+});
+
+test("SandboxChat persists unsent composer drafts across sandbox switches and clears on send", async () => {
+  const [sandboxA, sandboxB] = ["77777777-7777-4777-8777-777777777777", "88888888-8888-4888-8888-888888888888"];
+  installDom(async (input) =>
+    Response.json({
+      status: "ready",
+      configured: true,
+      cursor: `ar1_${String(input).includes(sandboxB) ? sandboxB : sandboxA}_1`,
+      hasMore: false,
+      prompt: { state: "finished", conversationId: "c1" },
+      events: [],
+    }),
+  );
+  /* oxlint-disable landmines-testing/no-test-doubles -- Control send settlement in DOM-free renderer. */
+  spyOn(sandboxActions, "sendToSandbox").mockImplementation(async () => ({
+    ok: true,
+    message: "Sent.",
+    promptId: "p1",
+  }));
+  /* oxlint-enable landmines-testing/no-test-doubles */
+  const formStub = { elements: { namedItem: () => null }, reset: noop, requestSubmit: noop };
+  const nodeMock = (el: { type: unknown }) => (el.type === "form" ? formStub : null);
+
+  let renderer!: ReactTestRenderer;
+  const ta = () => renderer.root.findByType("textarea");
+  const open = async (id: string) => {
+    if (renderer) await act(async () => renderer.unmount());
+    await act(async () => {
+      renderer = mountChat(id, "ready", router, nodeMock);
+    });
+  };
+  try {
+    await open(sandboxA);
+    await act(async () => ta().props.onChange({ target: { value: "Draft for sandbox A" } }));
+    await open(sandboxB);
+    expect(ta().props.value).toBe("");
+    await act(async () => ta().props.onChange({ target: { value: "Draft for sandbox B" } }));
+    await open(sandboxA);
+    expect(ta().props.value).toBe("Draft for sandbox A");
+
+    await act(async () =>
+      ta().props.onKeyDown({
+        key: "Enter",
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        preventDefault: noop,
+      }),
+    );
+    expect(ta().props.value).toBe("");
+    await open(sandboxA);
+    expect(ta().props.value).toBe("");
+    await open(sandboxB);
+    expect(ta().props.value).toBe("Draft for sandbox B");
+
+    let resolveRefusal!: (result: { ok: false; error: string }) => void;
+    /* oxlint-disable landmines-testing/no-test-doubles -- Hold refusal settlement across unmount and cache clear. */
+    spyOn(sandboxActions, "sendToSandbox").mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          resolveRefusal = resolve;
+        }),
+    );
+    /* oxlint-enable landmines-testing/no-test-doubles */
+    await act(async () =>
+      ta().props.onKeyDown({
+        key: "Enter",
+        shiftKey: false,
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        preventDefault: noop,
+      }),
+    );
+    await act(async () => renderer.unmount());
+    clearChatCache();
+    await act(async () => {
+      resolveRefusal({ ok: false, error: "This sandbox needs an account before it can resume." });
+      await Promise.resolve();
+    });
+    expect(getChatDraft("org-1", sandboxB)).toBe("");
   } finally {
     mock.restore();
     await act(async () => renderer?.unmount());

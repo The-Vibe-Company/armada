@@ -1,3 +1,4 @@
+import { type LiveSandbox, liveSandboxLook } from "./live-sandbox-view";
 import { NAV_GROUPS } from "./navigation";
 
 /**
@@ -9,9 +10,10 @@ export type Command = {
   label: string;
   /** Where it goes. */
   href: string;
-  group: "Go to" | "Actions";
+  group: "Live sandboxes" | "Go to" | "Actions";
   /** Other words a person might type for it. */
   keywords?: readonly string[];
+  sandbox?: LiveSandbox;
 };
 
 const CATALOG: readonly Command[] = [
@@ -109,9 +111,13 @@ export const COMMANDS: readonly Command[] = CATALOG.map((command) => {
     : command;
 });
 
-export function commandsForOrganization(isAdmin: boolean) {
+export function commandsForOrganization(isAdmin: boolean, liveSandboxes?: readonly LiveSandbox[] | null) {
   const restricted = NAV_GROUPS.flatMap((group) => group.links).filter((link) => link.adminOnly);
-  return isAdmin ? COMMANDS : COMMANDS.filter((command) => !restricted.some((link) => link.href === command.href));
+  const base = isAdmin
+    ? COMMANDS
+    : COMMANDS.filter((command) => !restricted.some((link) => link.href === command.href));
+  const live = liveSandboxCommands(liveSandboxes);
+  return live.length ? [...live, ...base] : base;
 }
 
 /**
@@ -142,4 +148,20 @@ function rankOf(command: Command, needle: string): number | null {
 /** The modifier a shortcut is pressed with on this platform: ⌘ on Apple systems, Ctrl elsewhere. */
 export function modifierKey(platform: string): "⌘" | "Ctrl" {
   return /mac|iphone|ipad|ipod/i.test(platform) ? "⌘" : "Ctrl";
+}
+
+export function liveSandboxCommands(sandboxes: readonly LiveSandbox[] | null | undefined) {
+  const empty: Command[] = [];
+  if (!sandboxes?.length) return empty;
+  return sandboxes.map((sandbox) => {
+    const look = liveSandboxLook(sandbox);
+    return {
+      id: `sandbox:${sandbox.id}`,
+      label: sandbox.label,
+      href: `/sandboxes/${sandbox.id}`,
+      group: "Live sandboxes",
+      keywords: [sandbox.id, sandbox.id.slice(0, 8), sandbox.status, look.label.toLowerCase(), "live", "sandbox"],
+      sandbox,
+    } satisfies Command;
+  });
 }

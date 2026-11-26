@@ -21,6 +21,7 @@ const config: NextConfig = {
   experimental: {
     // Going back to a tab seen in the last 30 s reuses it instead of rendering it again; actions revalidate it.
     staleTimes: { dynamic: 30 },
+    optimizePackageImports: ["radix-ui", "lucide-react", "@armada/core"],
   },
 };
 

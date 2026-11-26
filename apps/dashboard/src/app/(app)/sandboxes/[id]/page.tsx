@@ -124,6 +124,7 @@ export default async function SandboxPage({ params }: Props) {
       }
       overview={
         <>
+          {relayEligible && <SandboxPorts sandboxId={sandbox.id} initialStatus={relayInitialStatus} />}
           <Suspense fallback={<FactsSkeleton />}>
             <CloudOverviewFacts
               sandbox={sandbox}
@@ -160,7 +161,6 @@ export default async function SandboxPage({ params }: Props) {
               <CloudAppliedConnections sandbox={sandbox} />
             </Suspense>
           </section>
-          {relayEligible && <SandboxPorts sandboxId={sandbox.id} initialStatus={relayInitialStatus} />}
           {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
@@ -488,6 +488,7 @@ function DockerSandbox({
       }
       overview={
         <>
+          {relayEligible && <SandboxPorts sandboxId={sandbox.id} initialStatus={relayInitialStatus} />}
           <Suspense fallback={<FactsSkeleton />}>
             <DockerOverviewFacts
               sandbox={sandbox}
@@ -509,7 +510,6 @@ function DockerSandbox({
           <Suspense fallback={<CostSkeleton />}>
             <SandboxCostSection sandbox={sandbox} accounts={accounts} />
           </Suspense>
-          {relayEligible && <SandboxPorts sandboxId={sandbox.id} initialStatus={relayInitialStatus} />}
           {configured && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
             <Suspense fallback={null}>
               <DockerCommandSection sandbox={sandbox} controls={controls} />
