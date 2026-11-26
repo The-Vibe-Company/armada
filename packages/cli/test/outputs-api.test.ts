@@ -82,3 +82,32 @@ test("outputs shows the retained snapshot when collection is unavailable", async
   expect(result.out).toContain("Output collection is unavailable");
   expect(result.out).toContain(name);
 });
+
+test("outputs supports --output alias, rejects conflicting -o/--output, and reports EEXIST clearly", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "armada-outputs-alias-"));
+  try {
+    const first = await invoke(
+      ["outputs", name, "--output", dir],
+      () => new Response("hi", { headers: { "content-length": "2" } }),
+    );
+    expect(first.code).toBe(0);
+    expect(JSON.parse(first.out)).toEqual({ path: join(dir, name) });
+
+    const duplicate = await invoke(
+      ["outputs", name, "--output", dir],
+      () => new Response("hi", { headers: { "content-length": "2" } }),
+    );
+    expect(duplicate.code).toBe(1);
+    expect(JSON.parse(duplicate.err).error).toMatchObject({
+      code: "conflict",
+      message: expect.stringContaining("already exists"),
+    });
+
+    const conflict = await invoke(["outputs", name, "-o", dir, "--output", dir], () => {
+      throw new Error("Unexpected request");
+    });
+    expect(conflict.code).toBe(2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

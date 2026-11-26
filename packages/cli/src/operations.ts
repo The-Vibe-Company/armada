@@ -110,7 +110,7 @@ export async function operation(
       : resolveSandboxId(id, auth.env, sandboxFile, org, list);
   if (command === "rm") {
     const [id, ...extra] = args.positionals;
-    if (extra.length || [...args.options.keys()].some((key) => !["--yes", "--org", "--json"].includes(key)))
+    if (!id || extra.length || [...args.options.keys()].some((key) => !["--yes", "--org", "--json"].includes(key)))
       throw new GoldenError("invalid_config", "Run armada rm <sandbox-id> --yes [--org UUID] [--json].");
     if (!flag(args, "--yes"))
       throw new GoldenError(
@@ -118,17 +118,11 @@ export async function operation(
         "Deletion permanently removes the disk and recovery archives. Pass --yes to confirm.",
       );
     if (org) uuid(org, "--org");
-    const resolved = await resolveId(id);
-    uuid(resolved, "sandbox id");
-    const result = await (await client()).deleteSandbox<{ id: string; status: "deleted" }>(resolved, org);
+    uuid(id, "sandbox id");
+    const result = await (await client()).deleteSandbox<{ id: string; status: "deleted" }>(id.toLowerCase(), org);
     auth.out(flag(args, "--json") ? `${JSON.stringify(result)}\n` : `Deleted sandbox ${result.id}.\n`);
     return 0;
   }
-  if (single(args, "--repo") !== undefined)
-    throw new GoldenError(
-      "invalid_config",
-      "Repository context is immutable; select --repo at launch, not on later operations.",
-    );
   const body: Record<string, unknown> = {};
   if (command === "info" && !wait) body.recorded = !flag(args, "--live");
   for (const [flag, key] of Object.entries({
@@ -248,8 +242,7 @@ export async function operation(
 
   if (command === "ls" && !flag(args, "--page-info")) {
     const page = result as { sandboxes?: unknown };
-    if (!Array.isArray(page?.sandboxes))
-      throw new GoldenError("invalid_config", "Armada returned an invalid sandbox page.");
+    if (!Array.isArray(page?.sandboxes)) throw new AuthError("Armada returned an invalid sandbox page.", "unavailable");
     if (flag(args, "--json") || flag(args, "--page-info"))
       auth.out(`${JSON.stringify(flag(args, "--page-info") ? result : { sandboxes: page.sandboxes }, null, 2)}\n`);
     else auth.out(sandboxListText(page.sandboxes, auth.now()));
