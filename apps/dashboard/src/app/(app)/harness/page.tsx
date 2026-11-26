@@ -30,7 +30,11 @@ export default async function HarnessPage() {
 
   return (
     <>
-      <PageHeader title="Models" inlineActions>
+      <PageHeader
+        title="Models"
+        description="Subscriptions and API keys that power Claude Code, Codex, and OpenCode when sandboxes launch."
+        inlineActions
+      >
         {selected && accounts.state === "ready" && (
           <AddAccountDialog orgId={selected.org.id} orgName={selected.org.name} isAdmin={selected.role === "admin"} />
         )}

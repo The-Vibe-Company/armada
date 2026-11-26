@@ -16,6 +16,8 @@ import { HARNESS_LABELS } from "@/lib/labels";
 export const metadata: Metadata = { title: "Inbound triggers" };
 export const dynamic = "force-dynamic";
 
+const DESCRIPTION = "Webhook endpoints that launch a saved template automatically when external events arrive.";
+
 export default async function InboundTriggersPage({
   searchParams,
 }: {
@@ -36,7 +38,7 @@ export default async function InboundTriggersPage({
       <ResourceBrowser
         key={org}
         title="Inbound triggers"
-        description=""
+        description={DESCRIPTION}
         label="Inbound triggers"
         blockers={[]}
         actions={<CreateTriggerDialog org={org} templates={templates} />}
@@ -90,7 +92,7 @@ export default async function InboundTriggersPage({
     if (!(error instanceof ControlError)) throw error;
     return (
       <>
-        <PageHeader title="Inbound triggers" description="" />
+        <PageHeader title="Inbound triggers" description={DESCRIPTION} />
         <p role="alert" className="text-sm text-destructive">
           Could not load inbound triggers. Reload to try again.
         </p>

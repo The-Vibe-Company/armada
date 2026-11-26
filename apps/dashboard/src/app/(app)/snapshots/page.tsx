@@ -79,6 +79,8 @@ export const dynamic = "force-dynamic";
 // LAUNCH_TIMEOUT_MS). This is the same bound as `/api/v1/*`, so the fetch times out before the function.
 export const maxDuration = 800;
 
+const DESCRIPTION = "Pre-built repositories and setup commands that sandboxes and templates start from.";
+
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 export default async function GoldensPage({ searchParams }: Props) {
@@ -330,7 +332,7 @@ export default async function GoldensPage({ searchParams }: Props) {
     ) : selected ? (
       <Empty title="No snapshots yet" icon={<LayersIcon />}>
         {create
-          ? "Use New to build the first one: the repositories an agent starts with, saved as a snapshot."
+          ? "Use New snapshot to build the first one: the repositories an agent starts with, saved as a snapshot."
           : "Connect a sandbox provider to build the first one."}
       </Empty>
     ) : (
@@ -412,7 +414,7 @@ export default async function GoldensPage({ searchParams }: Props) {
         { key: "attention", label: "Needs attention" },
       ]}
       title="Snapshots"
-      description=""
+      description={DESCRIPTION}
       label="Snapshots"
       rows={rows}
       blockers={[]}

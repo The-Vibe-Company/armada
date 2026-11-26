@@ -15,7 +15,7 @@ import { canManageRoutine, type RoutineItem, scheduleLabel } from "@/lib/routine
 
 export const metadata: Metadata = { title: "Routines" };
 export const dynamic = "force-dynamic";
-const DESCRIPTION = "";
+const DESCRIPTION = "Scheduled runs that launch a saved template with a task on a recurring cadence.";
 export default async function RoutinesPage({
   searchParams,
 }: {

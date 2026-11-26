@@ -13,6 +13,7 @@ import {
   UserIcon,
   UsersIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import {
   addVaultItem,
@@ -118,8 +119,16 @@ export function AddVaultDialog({ orgId, orgName, isAdmin }: { orgId: string; org
   return (
     <CreateDialog
       label="Add a variable"
-      title="Add a setting or a secret"
-      description="Values your agents will read from their environment."
+      title="Add a variable or secret"
+      description={
+        <>
+          App config and keys delivered to sandboxes via templates. Add model accounts and API keys in{" "}
+          <Link href="/harness" className="underline underline-offset-4">
+            Models
+          </Link>
+          .
+        </>
+      }
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -171,14 +180,14 @@ function AddVaultForm({
         <ChoiceCard
           value="variable"
           icon={<BracesIcon />}
-          title="Setting"
+          title="Variable"
           hint="Readable configuration. Anyone who can use it can see it."
         />
         <ChoiceCard
           value="secret"
           icon={<LockKeyholeIcon />}
           title="Secret"
-          hint="Never shown again. Stored encrypted; nobody can read it back."
+          hint="Write-only, stored encrypted. Never shown again; nobody can read it back."
         />
       </Choice>
       <NameField id={id} kind={kind} value={name} onChange={setName} />
@@ -205,7 +214,7 @@ function AddVaultForm({
       </Choice>
       {state && !state.ok && <ResultLine result={state} />}
       <div className="flex justify-end">
-        <SubmitButton>{kind === "secret" ? "Store secret" : "Save setting"}</SubmitButton>
+        <SubmitButton>{kind === "secret" ? "Store secret" : "Save variable"}</SubmitButton>
       </div>
     </form>
   );
@@ -385,7 +394,7 @@ export function VaultPanel({
         <>
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
             <dt className="text-muted-foreground">Kind</dt>
-            <dd>{item.kind === "secret" ? "Secret · never shown again" : "Setting · readable"}</dd>
+            <dd>{item.kind === "secret" ? "Secret · write-only, encrypted" : "Variable · readable"}</dd>
             <dt className="text-muted-foreground">Status</dt>
             <dd data-vault-status={item.status}>{active ? "Active" : "Revoked"}</dd>
             <dt className="text-muted-foreground">Who can use it</dt>
@@ -512,7 +521,7 @@ export function VaultPanel({
             action={revokeVaultItem}
             fields={fields}
             title={`Revoke ${item.name}?`}
-            description={`Its value is erased now and it can no longer be used. A revoked ${item.kind === "variable" ? "setting" : "secret"} cannot be restored or replaced: to reuse the name, delete it and add it again.`}
+            description={`Its value is erased now and it can no longer be used. A revoked ${item.kind === "variable" ? "variable" : "secret"} cannot be restored or replaced: to reuse the name, delete it and add it again.`}
             confirm="Revoke"
           />
           <ConfirmAction

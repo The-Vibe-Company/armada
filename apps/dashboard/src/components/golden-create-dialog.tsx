@@ -121,10 +121,13 @@ function followed(status: GoldenBuildStatus, stopped: boolean): { icon: ReactNod
   if (status.state === "failed" || status.state === "recovery_required")
     return {
       icon: <CircleAlertIcon aria-hidden className="size-4 text-destructive" />,
-      text: "Build failed: open New for details",
+      text: "Build failed: open New snapshot for details",
     };
   if (stopped)
-    return { icon: <CircleAlertIcon aria-hidden className="size-4" />, text: "Still building: open New to check" };
+    return {
+      icon: <CircleAlertIcon aria-hidden className="size-4" />,
+      text: "Still building: open New snapshot to check",
+    };
   return {
     icon: <Loader2Icon aria-hidden className="size-4 animate-spin" />,
     text: status.state === "queued" ? "Waiting for a builder" : "Downloading repositories, running commands",

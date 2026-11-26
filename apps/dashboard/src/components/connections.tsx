@@ -167,8 +167,8 @@ export function AddServerDialog({ orgId, orgName, isAdmin }: { orgId: string; or
   return (
     <CreateDialog
       label="Add an MCP server"
-      title="Add a tool"
-      description="A service your agents can call, or a command inside the sandbox."
+      title="Add an MCP server"
+      description="An external MCP server your agents can call inside sandboxes, or a command inside the sandbox."
       triggerAttrs={{ "data-add-server": "" }}
     >
       <AddConnectionForm orgId={orgId} orgName={orgName} isAdmin={isAdmin} />
@@ -232,7 +232,7 @@ function AddFields({ orgName, isAdmin, result }: { orgName: string; isAdmin: boo
 
       <ResultLine result={result} />
       <div className="flex flex-wrap justify-end gap-2">
-        <SubmitButton>{kind === "remote" ? "Add and connect" : "Add tool"}</SubmitButton>
+        <SubmitButton>{kind === "remote" ? "Add and connect" : "Add MCP server"}</SubmitButton>
       </div>
     </>
   );

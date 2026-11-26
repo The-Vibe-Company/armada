@@ -291,7 +291,7 @@ export function ResourceBrowser({
     <Context.Provider value={context}>
       <PageHeader
         title={title}
-        description={filters || variant === "table" ? undefined : description}
+        description={description}
         meta={meta}
         inlineActions={Boolean(tabs || variant === "table")}
       >

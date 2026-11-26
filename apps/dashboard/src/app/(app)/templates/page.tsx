@@ -44,7 +44,8 @@ export const maxDuration = 800;
 type Props = { searchParams: Promise<Record<string, string | string[] | undefined>> };
 
 const TITLE = "Templates";
-const DESCRIPTION = "Saved launch setups: one click, then write the task.";
+const DESCRIPTION =
+  "Reusable launch setups combining a snapshot, model, tools, and variables — start in one click or schedule on a routine.";
 
 export default async function TemplatesPage({ searchParams }: Props) {
   // Lookup reads do not depend on template headers or their revision fan-out. Keep their
@@ -153,7 +154,7 @@ export default async function TemplatesPage({ searchParams }: Props) {
         ...(rows.some((row) => row.catalog?.group === "opencode") ? [{ key: "opencode", label: "OpenCode" }] : []),
       ]}
       title={TITLE}
-      description=""
+      description={DESCRIPTION}
       label="Templates"
       rows={rows}
       blockers={[]}
@@ -176,7 +177,7 @@ export default async function TemplatesPage({ searchParams }: Props) {
       }
       empty={
         <Empty title="No templates yet" icon={<LayoutTemplateIcon />}>
-          Choose New to save a reusable launch setup with the snapshot and agent settings you want.
+          Choose New template to save a reusable launch setup with the snapshot and agent settings you want.
         </Empty>
       }
     />
@@ -238,7 +239,7 @@ function row(item: TemplateItem, context: RowContext): ResourceRow & { bucket: B
             )}
             {"hostId" in definition && (
               <p className="text-xs text-muted-foreground">
-                {definition.snapshotId ? "Exact snapshot on this server." : "Official Armada image."}
+                {definition.snapshotId ? "Exact snapshot on this Docker host." : "Official Armada image."}
               </p>
             )}
           </PanelSection>
