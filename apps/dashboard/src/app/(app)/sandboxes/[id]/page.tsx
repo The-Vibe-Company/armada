@@ -18,6 +18,7 @@ import { SandboxChat, SandboxThreadStateProvider, ThreadSandboxState } from "@/c
 import { SandboxCommand } from "@/components/sandbox-command";
 import { RowCost, SandboxCostCard } from "@/components/sandbox-cost";
 import { SandboxDetailsPanel } from "@/components/sandbox-details-panel";
+import { SandboxPorts } from "@/components/sandbox-ports";
 import { SandboxState } from "@/components/sandbox-state";
 import { OutcomeBadge, OutcomeDetail, PreservationNotice } from "@/components/task-outcome";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -49,6 +50,7 @@ import { formatDuration, type LifecycleView, lifecycleView, readLifecycle } from
 import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { parsePullRequests } from "@/lib/pull-requests";
+import { canUseSandboxRelay } from "@/lib/relay-client";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
 import { machineSizeLabel, type SandboxListMetadata } from "@/lib/sandbox-access";
 import { costOfRow, usageFromRow } from "@/lib/sandbox-cost";
@@ -106,9 +108,11 @@ export default async function SandboxPage({ params }: Props) {
   const owner = sandbox.owner_id === viewer.id;
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
+  const relayReady = configured && canUseSandboxRelay(sandbox);
 
   return (
     <ThreadLayout
+      terminalSandboxId={relayReady ? sandbox.id : undefined}
       bar={
         <ThreadHeader sandbox={sandbox} viewer={viewer} life={life} accounts={accounts}>
           {configured &&
@@ -156,6 +160,7 @@ export default async function SandboxPage({ params }: Props) {
               <CloudAppliedConnections sandbox={sandbox} />
             </Suspense>
           </section>
+          {relayReady && <SandboxPorts sandboxId={sandbox.id} />}
           {configured && (sandbox.status === "ready" || sandbox.status === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
@@ -387,9 +392,11 @@ function DockerSandbox({
   const lifecycle = readLifecycle(sandbox);
   const life = lifecycleView(sandbox.status, lifecycle, new Date());
   const { reasons } = controls;
+  const relayReady = configured && canUseSandboxRelay(sandbox);
   return (
     <ThreadLayout
       docker
+      terminalSandboxId={relayReady ? sandbox.id : undefined}
       bar={
         <ThreadHeader sandbox={sandbox} viewer={viewer} life={life} accounts={accounts}>
           {configured && (
@@ -440,6 +447,7 @@ function DockerSandbox({
           <Suspense fallback={<CostSkeleton />}>
             <SandboxCostSection sandbox={sandbox} accounts={accounts} />
           </Suspense>
+          {relayReady && <SandboxPorts sandboxId={sandbox.id} />}
           {configured && !reasons.exec && (sandbox.publicStatus === "ready" || sandbox.publicStatus === "running") && (
             <SandboxCommand sandboxId={sandbox.id} />
           )}
@@ -619,12 +627,14 @@ function WorkspaceNotices({ sandbox, viewer, life }: { sandbox: SandboxDetail; v
 
 function ThreadLayout({
   docker,
+  terminalSandboxId,
   bar,
   overview,
   usage,
   children,
 }: {
   docker?: boolean;
+  terminalSandboxId?: string | undefined;
   bar: ReactNode;
   overview: ReactNode;
   usage: ReactNode;
@@ -633,7 +643,7 @@ function ThreadLayout({
   return (
     <SandboxThreadStateProvider>
       <div data-fit-viewport data-docker-sandbox={docker || undefined} className="min-w-0 space-y-3">
-        <SandboxDetailsPanel bar={bar} overview={overview} usage={usage}>
+        <SandboxDetailsPanel bar={bar} overview={overview} usage={usage} terminalSandboxId={terminalSandboxId}>
           {children}
         </SandboxDetailsPanel>
       </div>

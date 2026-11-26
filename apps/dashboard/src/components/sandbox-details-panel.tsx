@@ -1,12 +1,31 @@
 "use client";
 
-import { PanelRightIcon } from "lucide-react";
+import { PanelRightIcon, TerminalIcon } from "lucide-react";
+import dynamic from "next/dynamic";
 import { Tabs } from "radix-ui";
-import { createContext, type ReactNode, useContext, useId, useRef, useState, useSyncExternalStore } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import styles from "@/components/sandbox-details-panel.module.css";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+const SandboxTerminal = dynamic(() => import("@/components/sandbox-terminal").then((m) => m.SandboxTerminal), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[272px] shrink-0 items-center justify-center rounded-xl border bg-[var(--sunken)] font-mono text-xs text-muted-foreground">
+      Loading terminal…
+    </div>
+  ),
+});
 
 const DESKTOP = "(min-width: 64rem)";
 
@@ -41,11 +60,13 @@ export function SandboxDetailsPanel({
   bar,
   overview,
   usage,
+  terminalSandboxId,
   children,
 }: {
   bar: ReactNode;
   overview: ReactNode;
   usage: ReactNode;
+  terminalSandboxId?: string | undefined;
   children: ReactNode;
 }) {
   // Responsive CSS reserves the rail on first paint; the media query only supplies the toggle state.
@@ -61,9 +82,22 @@ export function SandboxDetailsPanel({
   );
   const [phoneTarget, setPhoneTarget] = useState<HTMLDivElement | null>(null);
   const [open, setOpen] = useState<boolean>();
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [events, setEvents] = useState<HTMLDivElement | null>(null);
   const panel = useRef<HTMLElement>(null);
   const panelId = useId();
+
+  useEffect(() => {
+    if (!terminalSandboxId) return;
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey && ev.code === "Backquote") {
+        ev.preventDefault();
+        setTerminalOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [terminalSandboxId]);
 
   function toggle() {
     const next = !(open ?? desktop);
@@ -126,6 +160,21 @@ export function SandboxDetailsPanel({
     <>
       <header className="sticky top-0 z-20 flex h-12 min-w-0 items-center gap-1 border-b bg-background sm:gap-2">
         {bar}
+        {terminalSandboxId && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-expanded={terminalOpen}
+            aria-label="Toggle terminal"
+            title="Toggle terminal (Ctrl+`)"
+            onClick={() => setTerminalOpen((prev) => !prev)}
+            className={cn("max-sm:px-2", terminalOpen && "bg-accent text-accent-foreground")}
+          >
+            <TerminalIcon className="size-4" aria-hidden />
+            <span className="hidden sm:inline">Terminal</span>
+          </Button>
+        )}
         <Button
           type="button"
           variant="ghost"
@@ -146,10 +195,13 @@ export function SandboxDetailsPanel({
           open !== false && "lg:grid-cols-[minmax(0,1fr)_300px]",
         )}
       >
-        <div data-fit="column" className="min-w-0 space-y-3">
+        <div data-fit="column" className="min-h-0 min-w-0 space-y-3">
           <PhoneTarget.Provider value={setPhoneTarget}>
             <EventsTarget.Provider value={events}>{children}</EventsTarget.Provider>
           </PhoneTarget.Provider>
+          {terminalSandboxId && terminalOpen && (
+            <SandboxTerminal sandboxId={terminalSandboxId} onClose={() => setTerminalOpen(false)} />
+          )}
         </div>
         {phone && phoneTarget && open ? createPortal(inspector, phoneTarget) : inspector}
       </div>

@@ -51,6 +51,26 @@ describe("gateway", () => {
     });
   }
 
+  test("relayTicket posts to /api/v1/sandboxes/:id/relay-ticket and validates the response", async () => {
+    const valid = {
+      ticket: "armada_relay_abc",
+      wsUrl: "wss://mcp.example/api/v1/relay/ws",
+      bootstrapUrl: "https://mcp.example/api/v1/relay/preview/enter",
+      previewUrl: "https://mcp.example/api/v1/sandboxes/sandbox-1/ports/3000/",
+      expiresAt: "2026-11-26T01:00:00Z",
+    };
+    const { calls, sandbox } = restServer(() => Response.json(valid));
+    const ticket = await sandbox.relayTicket("sandbox-1", { mode: "preview", port: 3000, org: "org-1" });
+    expect(ticket).toEqual(valid);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.url).toBe("https://mcp.example/api/v1/sandboxes/sandbox-1/relay-ticket");
+    expect(calls[0]?.body).toEqual({ mode: "preview", port: 3000, org: "org-1" });
+
+    const { sandbox: bad } = restServer(() => Response.json({ ticket: "missing-urls" }));
+    await expect(bad.relayTicket("sandbox-1", { mode: "pty" })).rejects.toThrow("unreadable relay ticket");
+  });
+
   test("an unreadable REST success cannot confirm sandbox deletion or extension", async () => {
     const { sandbox } = restServer(() => new Response("unreadable"));
     for (const call of [() => sandbox.delete("sandbox-1"), () => sandbox.extend("sandbox-1", 7200)]) {

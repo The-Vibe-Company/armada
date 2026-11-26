@@ -1,4 +1,5 @@
 import { isRecord } from "@armada/core";
+import { type RelayTicketRequest, relayTicketResponse } from "@armada/core/contract";
 import { ControlError, type createControlClient } from "./control.ts";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
@@ -76,5 +77,12 @@ export function sandboxGateway(control: ReturnType<typeof createControlClient>) 
         command,
         ...(timeoutSeconds === undefined ? {} : { timeout_seconds: timeoutSeconds }),
       }),
+    async relayTicket(sandboxId: string, input: RelayTicketRequest) {
+      const parsed = relayTicketResponse.safeParse(
+        await post(`sandboxes/${encodeURIComponent(sandboxId)}/relay-ticket`, input),
+      );
+      if (!parsed.success) throw new GatewayError("The Armada server sent an unreadable relay ticket.");
+      return parsed.data;
+    },
   };
 }
