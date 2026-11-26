@@ -7,5 +7,5 @@ export async function GET(request: Request, context: Context) {
   const { id } = await context.params;
   const query = new URL(request.url).searchParams;
   const { body, status } = await readSandboxConversation(id, query.get("cursor"), "follow", query.get("pending"));
-  return NextResponse.json(body, { status });
+  return NextResponse.json(body, { status, headers: { "cache-control": "private, no-store" } });
 }
