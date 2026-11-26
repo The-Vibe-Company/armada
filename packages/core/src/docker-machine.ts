@@ -207,12 +207,15 @@ export function createDockerMachineExecutor(options: {
     return end;
   }
 
-  async function owned(request: DockerMachineRequest) {
+  async function owned(
+    request: DockerMachineRequest,
+    known?: { volume: Row; expiresAt: number } | { container: null },
+  ) {
     const ctx = context(request);
-    const container = await inspect("container", ctx.containerName);
-    const volume = await inspect("volume", ctx.volumeName);
-    let expiresAt: number | undefined;
-    if (volume) {
+    const container = known && "container" in known ? null : await inspect("container", ctx.containerName);
+    const volume = known && "volume" in known ? known.volume : await inspect("volume", ctx.volumeName);
+    let expiresAt: number | undefined = known && "volume" in known ? known.expiresAt : undefined;
+    if (volume && !(known && "volume" in known)) {
       if (
         volume.Name !== ctx.volumeName ||
         volume.Driver !== "local" ||
@@ -289,9 +292,14 @@ export function createDockerMachineExecutor(options: {
 
   async function allocate(request: DockerMachineRequest, predecessor?: DockerRetainedPredecessor) {
     const restoreIdentity = predecessor && `${predecessor.request.generation}/${predecessor.machineId}`;
-    async function target() {
-      const state = await owned(request);
-      if (state.volume && object(state.volume.Labels)[restoredFrom] !== restoreIdentity) fail("ownership_mismatch");
+    async function target(known?: Parameters<typeof owned>[1]) {
+      const state = await owned(request, known);
+      if (
+        state.volume &&
+        !(known && "volume" in known) &&
+        object(state.volume.Labels)[restoredFrom] !== restoreIdentity
+      )
+        fail("ownership_mismatch");
       if (state.container && object(object(state.container.Config).Labels)[restoredFrom] !== restoreIdentity)
         fail("ownership_mismatch");
       return state;
@@ -327,12 +335,14 @@ export function createDockerMachineExecutor(options: {
         ),
       };
       await checked(["volume", "create", "--driver", "local", ...labelArgs(labels), state.volumeName]);
-      state = await target();
+      state = await target({ container: null });
       if (!state.volume) fail("docker_failed");
     }
     if (state.expiresAt === undefined) fail("ownership_mismatch");
     if (state.expiresAt <= now()) fail("expired");
+    let createdContainer = false;
     if (!state.container) {
+      const verifiedVolume = { volume: state.volume, expiresAt: state.expiresAt };
       // An image the host does not have is fetched first, with a pull's own bound, so a failure says the image could
       // not be fetched instead of a generic Docker failure (#1507). A local image ID is never pulled: it was approved
       // above, and a missing one has no registry to come from (#1523).
@@ -380,13 +390,14 @@ export function createDockerMachineExecutor(options: {
       ];
       const mountShared = await ensureShared();
       let result = await run(createArgs(mountShared));
-      state = await target();
+      state = await target(verifiedVolume);
       if (!state.container && mountShared && result.exitCode !== 0) {
         // An engine that cannot bind the host cache (confinement, remote engine) launches without it.
         result = await run(createArgs(false));
-        state = await target();
+        state = await target(verifiedVolume);
       }
       if (!state.container) fail(result.exitCode === 0 ? "ownership_mismatch" : "docker_failed");
+      createdContainer = result.exitCode === 0;
     }
     if (state.expiresAt === undefined || state.expiresAt <= now()) fail("expired");
     const machineId = state.container.Id;
@@ -395,12 +406,14 @@ export function createDockerMachineExecutor(options: {
     const status = object(state.container.State);
     if (status.Running !== true) {
       if (status.Status !== "created") fail("ownership_mismatch");
-      await checked([
-        "container",
-        "update",
-        ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
-        machineId,
-      ]);
+      if (!createdContainer) {
+        await checked([
+          "container",
+          "update",
+          ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
+          machineId,
+        ]);
+      }
       await ensureShared();
       if (state.expiresAt <= now()) fail("expired");
       await checked(["container", "start", machineId]);
