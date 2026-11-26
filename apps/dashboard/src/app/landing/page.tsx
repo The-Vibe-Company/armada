@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 const TITLE = "Armada: run a fleet of coding agents, see every move";
 const DESCRIPTION =
-  "Armada launches Claude Code and Codex in sandboxes built from your repositories, for you or for the agent that orchestrates your work, and shows every session live. Open source.";
+  "Armada launches Claude Code, Codex, OpenCode and Antigravity in sandboxes on Boat, Modal or your Docker hosts, from snapshots, templates or routines, and shows every session live. Open source.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE),

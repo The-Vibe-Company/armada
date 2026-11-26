@@ -85,8 +85,8 @@ export function Story() {
       <Chapter id="method" title="Set up your repos once." command={STORY.golden} figure={<GoldenFigure />}>
         <p>
           A snapshot contains your repositories, cloned over your own GitHub connection and set up by your script, saved
-          on the provider you build it for, Boat or Modal. Every agent starts there, already set up, instead of from a
-          cold clone.
+          on the provider you build it for — Boat, Modal or a registered Docker host. Every agent starts there, already
+          set up, instead of from a cold clone.
         </p>
         <p>
           Armada scans the working tree and the Git history for GitHub tokens before it saves a snapshot. Share a
@@ -100,7 +100,8 @@ export function Story() {
           keys only its agent's. Run four fixes at once and none of them touches another's checkout.
         </p>
         <p>
-          Choose Claude Code or Codex, the model and the reasoning effort for each launch. Every later turn keeps them.
+          Choose Claude Code, Codex, OpenCode or Antigravity, the model and the reasoning effort for each launch — or
+          package repeatable setups as templates and run them on a schedule with routines. Every later turn keeps them.
         </p>
       </Chapter>
 
@@ -170,8 +171,8 @@ function Install() {
           </h2>
           <div className="lp-ch-body">
             <p>
-              Sign in, connect Boat or Modal to your org, store your agent's key and connect GitHub. Then build a
-              snapshot and launch.
+              Sign in, connect Boat, Modal or a Docker host to your org, store your agent's key and connect GitHub. Then
+              build a snapshot and launch, or reuse a template or routine.
             </p>
           </div>
           <div className="lp-try-actions">

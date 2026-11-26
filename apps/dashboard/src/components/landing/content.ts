@@ -20,7 +20,7 @@ export const INSTALL = "npm install -g @the-vibe-company/armada";
 
 /** The CLI line under each chapter of the story: every command and flag is one `armada --help` documents. */
 export const STORY = {
-  golden: "armada snapshot new widgets --repo https://github.com/acme/widgets --provider modal",
+  golden: "armada snapshot new widgets --repo https://github.com/acme/widgets --provider modal --wait",
   launch:
     'armada new widgets --provider modal --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
   tools: `armada api mcp/create '{"org":"ORG_UUID","name":"docs","url":"https://mcp.example.com/mcp","scope":"org","transport":"http","authType":"auto"}'`,
@@ -33,10 +33,12 @@ export const STORY = {
 export const SETUP: { command: string; note: string }[] = [
   { command: INSTALL, note: "Node 18 or later. Next: armada login" },
   { command: "armada login", note: "Sign in through the browser, or by email" },
+  { command: "armada org connect modal", note: "Connect Modal (or boat, or armada host add for a Docker host)" },
   { command: STORY.keys, note: "Your agent's key, from a file, never an argument" },
+  { command: "armada info --setup", note: "Verify login, GitHub connection, provider or hosts, and model account" },
   {
     command: STORY.golden,
-    note: "Build a Modal snapshot after connecting GitHub",
+    note: "Build and wait for your Modal snapshot",
   },
   {
     command: 'armada new widgets --provider modal --agent codex "Fix the flaky checkout test"',

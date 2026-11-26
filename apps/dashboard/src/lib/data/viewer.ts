@@ -51,15 +51,26 @@ export const listMemberships = cache(async (supabase: Supabase, userId: string):
   });
 });
 
-/** user id -> email, for everyone who shares an org with the viewer. */
-export async function memberDirectory(supabase: Supabase, orgIds: string[]): Promise<Map<string, string>> {
-  const rosters = await Promise.all(orgIds.map((id) => supabase.rpc("org_members", { target_org: id })));
+const orgMembers = cache(async (supabase: Supabase, orgId: string) => {
+  const { data } = await supabase.rpc("org_members", { target_org: orgId });
+  return data ?? [];
+});
+
+const cachedMemberDirectory = cache(async (supabase: Supabase, orgIdsKey: string) => {
+  const orgIds = orgIdsKey ? orgIdsKey.split("\0") : [];
+  const rosters = await Promise.all(orgIds.map((id) => orgMembers(supabase, id)));
   const directory = new Map<string, string>();
   for (const roster of rosters) {
-    for (const member of roster.data ?? []) directory.set(member.user_id, member.email);
+    for (const member of roster) directory.set(member.user_id, member.email);
   }
   return directory;
-}
+});
+
+/** user id -> email, for everyone who shares an org with the viewer. */
+export const memberDirectory = cache(async (supabase: Supabase, orgIds: readonly string[]) => {
+  const key = [...new Set(orgIds)].sort().join("\0");
+  return cachedMemberDirectory(supabase, key);
+});
 
 export function displayUser(directory: Map<string, string>, userId: string, viewerId: string): string {
   if (userId === viewerId) return "You";

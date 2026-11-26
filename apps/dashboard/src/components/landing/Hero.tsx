@@ -63,8 +63,8 @@ export function Hero() {
             </span>
           </h1>
           <p className="lp-lead" style={{ ["--i" as string]: 7 }}>
-            Armada launches Claude Code and Codex in sandboxes built from your repositories, and shows every session
-            live, from the first prompt to the last event.
+            Armada launches Claude Code, Codex, OpenCode and Antigravity in sandboxes built from your repositories, and
+            shows every session live, from the first prompt to the last event.
           </p>
           <div className="lp-hero-actions lp-enter" style={{ ["--i" as string]: 4 }}>
             <CopyCommand command={INSTALL} size="lg" />
@@ -74,7 +74,8 @@ export function Hero() {
             </a>
           </div>
           <p className="lp-hint lp-enter" style={{ ["--i" as string]: 5 }}>
-            Node 18 or later. Sandboxes run on Boat or Modal; the agents are Claude Code and Codex, the code GitHub.
+            Node 18 or later. Sandboxes run on Boat, Modal or Docker hosts, ad hoc or from templates and routines; the
+            agents are Claude Code, Codex, OpenCode and Antigravity, the code GitHub.
             <span className="lp-hint-sky"> Click the sky to launch a squadron.</span>
           </p>
         </div>

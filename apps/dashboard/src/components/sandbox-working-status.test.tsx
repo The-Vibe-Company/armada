@@ -381,20 +381,7 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     canManage: true,
   };
   try {
-    /* oxlint-disable landmines-testing/no-test-doubles -- Supply authenticated /sandboxes page reads without a Next request, control API, or database. */
-    spyOn(viewer, "requireViewer").mockResolvedValue({ id: "user-1", email: "user@example.com", token: "test" });
-    spyOn(viewer, "listMemberships").mockResolvedValue([membership]);
-    spyOn(viewer, "memberDirectory").mockResolvedValue(new Map([["user-1", "user@example.com"]]));
-    spyOn(selectedOrg, "selectedOrganization").mockResolvedValue(membership);
-    spyOn(supabase, "createClient").mockResolvedValue({} as supabase.Supabase);
-    spyOn(env, "mcpUrl").mockReturnValue(null);
-    spyOn(providerSetup, "readProviderSetup").mockResolvedValue({
-      state: "ready",
-      status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
-    });
-    spyOn(dockerHosts, "readSelectedDockerHosts").mockResolvedValue({ state: "disabled" });
-    spyOn(sandboxInventory, "listSandboxMetadata").mockResolvedValue({ inventory: [row], skipped: 0 });
-    spyOn(sandboxInventory, "loadSandboxInventory").mockResolvedValue({
+    let nextInventory: Awaited<ReturnType<typeof sandboxInventory.loadSandboxInventory>> = {
       rows: [row],
       total: 1,
       inventoryTotal: 1,
@@ -413,23 +400,40 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
       workingIds: new Set([row.id]),
       waitingIds: new Set(),
       now: new Date(createdAt),
+    };
+    /* oxlint-disable landmines-testing/no-test-doubles -- Supply authenticated /sandboxes page reads without a Next request, control API, or database. */
+    spyOn(viewer, "requireViewer").mockResolvedValue({ id: "user-1", email: "user@example.com", token: "test" });
+    spyOn(viewer, "memberDirectory").mockResolvedValue(new Map([["user-1", "user@example.com"]]));
+    spyOn(selectedOrg, "selectedOrganization").mockResolvedValue(membership);
+    spyOn(supabase, "createClient").mockResolvedValue({} as supabase.Supabase);
+    spyOn(env, "mcpUrl").mockReturnValue(null);
+    const setupSpy = spyOn(providerSetup, "readProviderSetup").mockResolvedValue({
+      state: "ready",
+      status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
     });
+    const hostsSpy = spyOn(dockerHosts, "readSelectedDockerHosts").mockResolvedValue({ state: "disabled" });
+    spyOn(sandboxInventory, "listSandboxMetadata").mockResolvedValue({ inventory: [row], skipped: 0 });
+    spyOn(sandboxInventory, "loadSandboxInventory").mockImplementation(async () => nextInventory);
     spyOn(sandboxesData, "listSandboxEnrichment").mockResolvedValue(new Map());
     /* oxlint-enable landmines-testing/no-test-doubles */
 
-    const stream = await renderToReadableStream(
-      <TooltipProvider>
-        <AppRouterContext.Provider value={router}>
-          <PathnameContext.Provider value="/sandboxes">
-            <SearchParamsContext.Provider value={new URLSearchParams()}>
-              <SandboxesPage searchParams={Promise.resolve({})} />
-            </SearchParamsContext.Provider>
-          </PathnameContext.Provider>
-        </AppRouterContext.Provider>
-      </TooltipProvider>,
-    );
-    await stream.allReady;
-    const html = await new Response(stream).text();
+    const renderPage = async () => {
+      const stream = await renderToReadableStream(
+        <TooltipProvider>
+          <AppRouterContext.Provider value={router}>
+            <PathnameContext.Provider value="/sandboxes">
+              <SearchParamsContext.Provider value={new URLSearchParams()}>
+                <SandboxesPage searchParams={Promise.resolve({})} />
+              </SearchParamsContext.Provider>
+            </PathnameContext.Provider>
+          </AppRouterContext.Provider>
+        </TooltipProvider>,
+      );
+      await stream.allReady;
+      return new Response(stream).text();
+    };
+
+    const html = await renderPage();
     const articleMatch = html.match(/<article\b[\s\S]*?<\/article>/);
     expect(articleMatch).not.toBeNull();
     const articleHtml = articleMatch![0];
@@ -452,6 +456,48 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     expect(articleHtml).not.toContain("Not recorded");
     expect(html).toContain("1 working");
     expect(html).not.toContain('aria-label="Sandbox scope"');
+    expect(setupSpy).toHaveBeenCalledTimes(0);
+    expect(hostsSpy).toHaveBeenCalledTimes(0);
+
+    nextInventory = {
+      ...nextInventory,
+      rows: [],
+      total: 0,
+      inventoryTotal: 0,
+      facets: {
+        status: new Map(),
+        provider: new Map(),
+        harness: new Map(),
+        model: new Map(),
+        owner: new Map(),
+        size: new Map(),
+      },
+      counts: { all: 0, active: 0, need: 0, stopped: 0, failed: 0 },
+      workingIds: new Set(),
+    };
+    await renderPage();
+    expect(setupSpy).toHaveBeenCalledTimes(1);
+    expect(hostsSpy).toHaveBeenCalledTimes(0);
+
+    const dockerRow: SandboxListMetadata = { ...row, provider: "docker" };
+    nextInventory = {
+      ...nextInventory,
+      rows: [dockerRow],
+      total: 1,
+      inventoryTotal: 1,
+      facets: {
+        status: new Map([["ready", 1]]),
+        provider: new Map([["docker", 1]]),
+        harness: new Map([["codex", 1]]),
+        model: new Map([["gpt-5", 1]]),
+        owner: new Map([["user-1", 1]]),
+        size: new Map([["medium", 1]]),
+      },
+      counts: { all: 1, active: 1, need: 0, stopped: 0, failed: 0 },
+    };
+    await renderPage();
+    expect(setupSpy).toHaveBeenCalledTimes(1);
+    expect(hostsSpy).toHaveBeenCalledTimes(1);
   } finally {
     mock.restore();
   }
