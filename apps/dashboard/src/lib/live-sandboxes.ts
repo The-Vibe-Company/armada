@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { type ControlClient, createControlClient } from "./control";
-import { listSandboxMetadata } from "./data/sandbox-inventory";
+import { listSandboxMetadata, readRecordedTurns } from "./data/sandbox-inventory";
 import { readViewer } from "./data/viewer";
 import { mcpUrl } from "./env";
 import { INLINE_LIVE_LIMIT, LIVE_STATUSES, type LiveSandboxes } from "./live-sandbox-view";
@@ -23,22 +23,6 @@ async function resolveControl(control: ControlClient | null | undefined) {
   const serverUrl = mcpUrl();
   const viewer = serverUrl ? await readViewer() : null;
   return serverUrl && viewer?.token ? createControlClient({ serverUrl, token: viewer.token }) : null;
-}
-
-async function readRecordedTurns(organizationId: string, control: ControlClient | null) {
-  const turns: Record<string, RecordedTurn> = {};
-  if (!control) return turns;
-  try {
-    const result = await control.post<unknown>("sandbox/list-turns", { org: organizationId });
-    if (result && typeof result === "object" && !Array.isArray(result)) {
-      for (const [id, state] of Object.entries(result)) {
-        if (state === "queued" || state === "running" || state === "finished") turns[id] = state;
-      }
-    }
-  } catch {
-    console.error("Recorded sandbox activity is unavailable.");
-  }
-  return turns;
 }
 
 function liveMetadataQuery(supabase: Supabase, organizationId: string, count?: "exact") {

@@ -15,12 +15,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import {
-  createContext,
-  type Dispatch,
   type FormEvent,
   type KeyboardEvent,
-  type ReactNode,
-  type SetStateAction,
   useCallback,
   useContext,
   useEffect,
@@ -37,6 +33,7 @@ import { SubmitShortcut } from "@/components/mod-key";
 import { type ModelCatalog, ModelFields } from "@/components/model-fields";
 import { SandboxInspectorEvents, SandboxInspectorPhoneSlot } from "@/components/sandbox-details-panel";
 import { SandboxState } from "@/components/sandbox-state";
+import { SandboxThreadStateProvider, ThreadStateContext } from "@/components/sandbox-thread-state";
 import { StatusDot } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -179,24 +176,7 @@ function accessEndedMessage(status: number): string {
   return "This sandbox is no longer available. Reload the page, then retry.";
 }
 
-type LiveThreadState = {
-  status: SandboxStatus;
-  idlePaused: boolean;
-  statusMessage: string | null;
-  hasLiveStatus: boolean;
-  turnRunning: boolean;
-};
-
-const ThreadStateContext = createContext<{
-  live: LiveThreadState | null;
-  setLive: Dispatch<SetStateAction<LiveThreadState | null>>;
-} | null>(null);
-
-export function SandboxThreadStateProvider({ children }: { children: ReactNode }) {
-  const [live, setLive] = useState<LiveThreadState | null>(null);
-  const value = useMemo(() => ({ live, setLive }), [live]);
-  return <ThreadStateContext.Provider value={value}>{children}</ThreadStateContext.Provider>;
-}
+export { SandboxThreadStateProvider };
 
 export function ThreadSandboxState(props: Parameters<typeof SandboxState>[0]) {
   const live = useContext(ThreadStateContext)?.live ?? null;

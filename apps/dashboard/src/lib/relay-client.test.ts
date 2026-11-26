@@ -3,6 +3,8 @@ import * as r from "@armada/core/relay";
 import {
   canUseSandboxRelay,
   createRelayClient,
+  isRelayActiveStatus,
+  isSandboxRelayEligible,
   parseRelayPort,
   portForwardCommand,
   type RelayClientState,
@@ -214,10 +216,14 @@ describe("relay-client", () => {
       canUseSandboxRelay({ ...base, provider: "docker", runtime_transport: null }),
       canUseSandboxRelay({ ...base, application_secret_tainted: true }),
       canUseSandboxRelay({ ...base, publicStatus: "stopped" }),
-    ]).toEqual([true, true, false, false]);
+      isSandboxRelayEligible(base),
+      isSandboxRelayEligible({ ...base, deleted_at: "2026-11-26T00:00:00Z" }),
+      isRelayActiveStatus("starting"),
+      isRelayActiveStatus("running"),
+    ]).toEqual([true, true, false, false, true, false, false, true]);
 
-    const submitted: Record<string, string>[] = [];
-    let removed = false;
+    const submitted: Record<string, string | undefined>[] = [];
+    let removed = 0;
     const fakeDoc = {
       createElement: (tag: string) =>
         tag === "form"
@@ -238,16 +244,24 @@ describe("relay-client", () => {
                 });
               },
               remove() {
-                removed = true;
+                removed += 1;
               },
             } as any)
           : ({} as any),
       body: { appendChild() {} },
     } as unknown as Document;
 
-    expect(submitPreviewBootstrap("https://relay.example/enter?ticket=leak", "t", fakeDoc)).toBe(false);
-    expect(submitPreviewBootstrap("https://relay.example/api/v1/relay/preview/enter", "t-1", fakeDoc)).toBe(true);
-    expect(removed).toBe(true);
+    expect(submitPreviewBootstrap("https://relay.example/enter?ticket=leak", "t", { doc: fakeDoc })).toBe(false);
+    expect(submitPreviewBootstrap("https://relay.example/api/v1/relay/preview/enter", "t-1", { doc: fakeDoc })).toBe(
+      true,
+    );
+    expect(
+      submitPreviewBootstrap("https://relay.example/api/v1/relay/preview/enter", "t-2", {
+        target: "armada-preview-1",
+        doc: fakeDoc,
+      }),
+    ).toBe(true);
+    expect(removed).toBe(2);
     expect(submitted).toEqual([
       {
         action: "https://relay.example/api/v1/relay/preview/enter",
@@ -256,6 +270,14 @@ describe("relay-client", () => {
         rel: "noopener",
         name: "ticket",
         value: "t-1",
+      },
+      {
+        action: "https://relay.example/api/v1/relay/preview/enter",
+        method: "POST",
+        target: "armada-preview-1",
+        rel: undefined,
+        name: "ticket",
+        value: "t-2",
       },
     ]);
   });
