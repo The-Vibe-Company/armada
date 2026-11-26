@@ -1,4 +1,4 @@
-import type { RunnerRequest } from "@armada/agent-runtime";
+import { PROTOCOL_VERSION, type RunnerRequest } from "@armada/agent-runtime";
 import { PROMPT_STATUSES, type Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { UUID } from "./control-input.ts";
@@ -322,17 +322,25 @@ export function createRuntimeCommands(
       return use({ epoch: scope.epoch, command: null });
     });
   }
-  async function hasPending(sandboxId: string, epoch: string) {
-    const { rows } = await authority.query(
-      `select 1 from public.runtime_commands c
-       where c.sandbox_id=$1 and c.epoch=$2 and c.result_enc is null
-         and not ${expiredOutputRead("c.request_id", "$3")}
-       limit 1`,
-      [sandboxId, epoch, String(time.now())],
-    );
-    return rows.length > 0;
+  async function pendingHead(sandboxId: string, epoch: string) {
+    const row = (
+      await authority.query<{ request_id: string }>(
+        `select c.request_id from public.runtime_commands c
+         where c.sandbox_id=$1 and c.epoch=$2 and c.result_enc is null
+           and not ${expiredOutputRead("c.request_id", "$3")}
+           and not (starts_with(c.request_id,'outputs_') and exists(select 1 from public.sandboxes s
+             where s.id=c.sandbox_id and s.application_secret_tainted))
+           and not (starts_with(c.request_id,'outputs_') and exists(select 1 from public.runtime_commands later
+             where later.sandbox_id=c.sandbox_id and later.epoch=c.epoch and later.sequence>c.sequence
+             and later.result_enc is not null))
+           and ${dispatchableRuntimeCommand("c.sandbox_id", "c.epoch", "c.request_id")}
+         order by c.sequence limit 1`,
+        [sandboxId, epoch, String(time.now())],
+      )
+    ).rows[0];
+    return row?.request_id ?? null;
   }
-  async function isResultPending(sandboxId: string, id: string, expectedEpoch: string) {
+  async function isResultPending(ownerId: string, sandboxId: string, id: string, expectedEpoch: string) {
     const row = (
       await authority.query<{
         command_epoch: string;
@@ -344,16 +352,37 @@ export function createRuntimeCommands(
                 c.result_enc is not null as has_result,
                 r.epoch::text as current_epoch,
                 (r.runtime_hash is not null
+                 and r.runtime_protocol_version > 0
+                 and r.runtime_protocol_version in ($4, $5)
+                 and s.owner_id = $3::uuid
+                 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout'))
                  and s.status in ('starting','ready','running')
                  and s.stop_requested_at is null
                  and s.deleted_at is null
-                 and s.expires_at > now()) as live
+                 and s.expires_at > now()
+                 and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+                 and (
+                   (s.provider <> 'docker' and r.docker_issuer_fence is null)
+                   or (s.provider = 'docker' and exists(
+                     select 1
+                     from public.docker_hosts h
+                     join public.members hm on hm.org_id=h.org_id and hm.user_id=h.owner_id
+                     join public.mcp_actor_epochs e on e.org_id=h.org_id and e.user_id=h.owner_id
+                     where h.id=s.docker_host_id
+                       and h.org_id=s.org_id
+                       and h.installation_id=s.docker_installation_id
+                       and h.hash is not null
+                       and h.registration_hash is null
+                       and h.revoked_at is null
+                       and r.docker_issuer_fence is not distinct from (h.owner_id::text || ':' || e.epoch::text)
+                   ))
+                 )) as live
          from public.runtime_commands c
          join public.sandboxes s on s.id = c.sandbox_id
          left join public.runtime_enrolments r on r.sandbox_id = c.sandbox_id
            and r.lifecycle_generation = s.lifecycle_generation
          where c.sandbox_id = $1 and c.request_id = $2`,
-        [sandboxId, id],
+        [sandboxId, id, ownerId, PROTOCOL_VERSION, PROTOCOL_VERSION - 1],
       )
     ).rows[0];
     return Boolean(
@@ -642,7 +671,7 @@ export function createRuntimeCommands(
               signal.throwIfAborted();
             }
             const readAt = time.now();
-            if (await isResultPending(request.sandboxId, request.requestId, admitted.epoch)) {
+            if (await isResultPending(ownerId, request.sandboxId, request.requestId, admitted.epoch)) {
               resultReadMs += time.now() - readAt;
               signal.throwIfAborted();
               noteAdmission();
@@ -745,5 +774,5 @@ export function createRuntimeCommands(
       return runtimeHttpFailure(status, status === 409 ? "runtime_command_conflict" : undefined);
     }
   };
-  return { enqueue, hasPending, next, withNext, complete, result, call, callPrepared, callAuthorityExtension, route };
+  return { enqueue, pendingHead, next, withNext, complete, result, call, callPrepared, callAuthorityExtension, route };
 }

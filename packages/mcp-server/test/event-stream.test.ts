@@ -334,3 +334,62 @@ test("notify listener tracks health across backoff reconnects and SSE widens rec
     expect([listener.isHealthy(), bus.isNotifyHealthy()]).toEqual([false, false]);
   }
 });
+
+test("notify listener detects dead listen connections via periodic ping and reconnects", async () => {
+  const bus = createWakeBus();
+  const waits: number[] = [];
+  const gates: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+  const errors: string[] = [];
+  let closed = 0;
+  let pings = 0;
+  let attempts = 0;
+  const listener = startEventNotifyListener(
+    () => ({
+      async listen() {
+        attempts++;
+        return { unlisten: async () => {} };
+      },
+      async ping() {
+        pings++;
+        if (pings === 2) throw new Error("connection lost");
+      },
+      async close() {
+        closed++;
+      },
+    }),
+    bus,
+    (line) => errors.push(line),
+    {
+      initialBackoffMs: 1_000,
+      healthCheckMs: 30_000,
+      wait: async (ms, signal) => {
+        waits.push(ms);
+        const gate = Promise.withResolvers<void>();
+        gates.push(gate);
+        signal.addEventListener("abort", () => gate.resolve(), { once: true });
+        await gate.promise;
+      },
+    },
+  );
+  try {
+    await listener.ready;
+    expect([listener.isHealthy(), bus.isNotifyHealthy(), waits]).toEqual([true, true, [30_000]]);
+    gates[0]!.resolve();
+    await new Promise<void>((r) => setImmediate(r));
+    expect([listener.isHealthy(), pings, waits]).toEqual([true, 1, [30_000, 30_000]]);
+    gates[1]!.resolve();
+    await new Promise<void>((r) => setImmediate(r));
+    expect([listener.isHealthy(), bus.isNotifyHealthy(), closed, errors.length, waits]).toEqual([
+      false,
+      false,
+      1,
+      1,
+      [30_000, 30_000, 1_000],
+    ]);
+    gates[2]!.resolve();
+    await new Promise<void>((r) => setImmediate(r));
+    expect([listener.isHealthy(), attempts]).toEqual([true, 2]);
+  } finally {
+    await listener.close();
+  }
+});

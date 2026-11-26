@@ -152,6 +152,26 @@ export function createPgNotifyClient(url: string) {
   };
   return {
     listen: (channel, onNotify) => client.listen(channel, onNotify),
+    async ping(signal: AbortSignal) {
+      if (signal.aborted) throw signal.reason ?? new Error("notify_probe_aborted");
+      const probe = (async () => {
+        const handle = await client.listen("armada_events_probe", () => {});
+        await handle.unlisten();
+      })();
+      let onAbort: (() => void) | undefined;
+      try {
+        await Promise.race([
+          probe,
+          new Promise<never>((_resolve, reject) => {
+            onAbort = () => reject(signal.reason ?? new Error("notify_probe_aborted"));
+            signal.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]);
+      } finally {
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+        void probe.catch(() => {});
+      }
+    },
     close: () => client.close(),
   } satisfies PgNotifyClient;
 }

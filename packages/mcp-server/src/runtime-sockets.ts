@@ -102,19 +102,29 @@ export function createRuntimeSockets(
       return;
     }
     if (!checkDeadlines(socket, state)) return;
-    if (!woken && state.waiting !== undefined) return;
     state.busy = true;
     try {
       let needsFullCheck = woken;
       do {
         state.woken = false;
         state.lastPoll = time.now();
-        if (!needsFullCheck && !(await commands.hasPending(socket.data.sandboxId, socket.data.epoch))) {
-          if (state.woken) {
-            needsFullCheck = true;
-            continue;
+        if (!needsFullCheck) {
+          const head = await commands.pendingHead(socket.data.sandboxId, socket.data.epoch);
+          if (head === null) {
+            state.waiting = undefined;
+            if (state.woken) {
+              needsFullCheck = true;
+              continue;
+            }
+            break;
           }
-          break;
+          if (head === state.waiting) {
+            if (state.woken) {
+              needsFullCheck = true;
+              continue;
+            }
+            break;
+          }
         }
         needsFullCheck = true;
         await commands.withNext(socket.data.token, socket.data.epoch, async (value) => deliver(socket, state, value));
@@ -129,7 +139,7 @@ export function createRuntimeSockets(
     const state = connections.get(socket);
     if (!state || state.closed || stopping) return;
     if (!checkDeadlines(socket, state)) return;
-    if (state.waiting !== undefined || state.busy) return;
+    if (state.busy) return;
     if (time.now() - state.lastPoll < IDLE_POLL_MS) return;
     return track(pump(socket, false));
   }

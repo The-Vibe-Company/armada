@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { bunSql, pgArray, sqlOver } from "../src/sql.ts";
+import { bunSql, createPgNotifyClient, pgArray, sqlOver } from "../src/sql.ts";
 
 describe("transaction wiring", () => {
   test("sqlOver exposes .transaction only when the driver can begin one", async () => {
@@ -30,6 +30,13 @@ describe("transaction wiring", () => {
     // never touches the network, so this needs no live database.
     const sql = bunSql("postgres://armada:armada@127.0.0.1:1/armada_test_unreachable");
     expect(typeof sql.transaction).toBe("function");
+  });
+
+  test("createPgNotifyClient exposes a cancellable ping probe", async () => {
+    const notify = createPgNotifyClient("postgres://armada:armada@127.0.0.1:1/armada_test_unreachable");
+    expect(typeof notify.ping).toBe("function");
+    await expect(notify.ping(AbortSignal.abort(new Error("aborted")))).rejects.toThrow("aborted");
+    await notify.close();
   });
 });
 

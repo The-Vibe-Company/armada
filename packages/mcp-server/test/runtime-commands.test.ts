@@ -10,7 +10,7 @@ import { continueRequest, observeRequest } from "../src/request-observability.ts
 import { createRuntimeAgent } from "../src/runtime-agent.ts";
 import { authorityExtensionRequestId } from "../src/runtime-authority-extension.ts";
 import { createRuntimeCommands, RuntimeCommandConflict, RuntimeCommandRefused } from "../src/runtime-commands.ts";
-import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "../src/runtime-idle-evidence.ts";
 import { createRuntimeProgress } from "../src/runtime-progress.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -1962,4 +1962,34 @@ test("callCommand watches before enqueue, polls non-lockingly, and startup wakes
   await enteredWait.promise;
   const enrolled = await f.authority.enrol(token!);
   expect(await pending).toEqual({ runtime: "armada", epoch: enrolled.epoch });
+});
+
+test("call fails fast with RuntimeEnrolmentDenied when org membership is revoked mid-wait", async () => {
+  const f = await fixture(250);
+  const active = await f.enrol();
+  const orgId = (await f.db.query<{ org_id: string }>("select org_id from public.sandboxes where id=$1", [f.id]))
+    .rows[0]!.org_id;
+  let now = 0;
+  let waits = 0;
+  const bridge = createRuntimeCommands(f.authority, ENCRYPTION_KEY, {
+    now: () => now,
+    async wait() {
+      waits++;
+      now += 250;
+      if (waits === 1) {
+        await f.db.query("delete from public.members where org_id=$1 and user_id=$2", [orgId, f.people.owner]);
+      }
+    },
+  });
+  try {
+    await expect(
+      bridge.call(f.people.owner, f.command("revoked-mid-wait"), { expectedEpoch: active.epoch, timeoutMs: 30_000 }),
+    ).rejects.toBeInstanceOf(RuntimeEnrolmentDenied);
+    expect(waits).toBe(1);
+  } finally {
+    await f.db.query(
+      "insert into public.members(org_id,user_id,role) values($1,$2,'member') on conflict (org_id,user_id) do nothing",
+      [orgId, f.people.owner],
+    );
+  }
 });

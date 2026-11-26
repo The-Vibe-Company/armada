@@ -315,8 +315,28 @@ test("idle and waiting sockets skip FOR UPDATE polling and avoid duplicate withS
     expect(await sent.promise).toBe("busy");
     sessions = 0;
     queries = 0;
-    await f.tick(15_000);
+    for (let i = 0; i < 14; i++) await f.tick(1000);
     expect([sessions, queries]).toEqual([0, 0]);
+    await f.tick(1000);
+    expect([sessions, queries]).toEqual([0, 1]);
+    await socket.message({ type: "ping", epoch: active.epoch });
+    const nextRequest = { version: 1, sandboxId: f.id, requestId: "busy-next", op: "health" } as const;
+    await f.db.query("update runtime_commands set result_enc=$1 where sandbox_id=$2 and request_id=$3", [
+      await encryptSecret(
+        JSON.stringify({ epoch: active.epoch, requestId: "busy", status: 200, body: {} }),
+        ENCRYPTION_KEY,
+      ),
+      f.id,
+      "busy",
+    ]);
+    await f.db.query("insert into runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,$3,$4)", [
+      f.id,
+      nextRequest.requestId,
+      active.epoch,
+      await encryptSecret(JSON.stringify(nextRequest), ENCRYPTION_KEY),
+    ]);
+    await f.tick(15_000);
+    expect(socket.sent.at(-1)).toMatchObject({ type: "command", request: { requestId: "busy-next" } });
     await f.tick(15_000);
     expect(socket.code()).toBe(1001);
   } finally {

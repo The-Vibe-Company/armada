@@ -96,6 +96,7 @@ export interface PgNotifyClient {
     channel: string,
     onNotify: (payload: string) => void,
   ): Promise<{ unlisten(): Promise<void>; closed?: Promise<void> } | (() => Promise<void>)>;
+  ping?(signal: AbortSignal): Promise<void>;
   close?(): Promise<void>;
 }
 const NOTIFY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -107,11 +108,15 @@ export function startEventNotifyListener(
   options: {
     initialBackoffMs?: number;
     maxBackoffMs?: number;
+    healthCheckMs?: number;
+    healthTimeoutMs?: number;
     wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   } = {},
 ) {
   const initialBackoffMs = options.initialBackoffMs ?? 1_000;
   const maxBackoffMs = options.maxBackoffMs ?? 30_000;
+  const healthCheckMs = options.healthCheckMs ?? 30_000;
+  const healthTimeoutMs = options.healthTimeoutMs ?? 5_000;
   const wait = options.wait ?? ((ms, signal) => waitForTimeout(ms, signal, true));
   const stop = new AbortController();
   const closedClients = new WeakSet<PgNotifyClient>();
@@ -158,8 +163,39 @@ export function startEventNotifyListener(
         setHealthy(true);
         markReady();
         const disconnected = typeof handle === "object" ? handle.closed : undefined;
-        if (!disconnected) return;
-        await Promise.race([disconnected.catch(() => {}), waitForAbort(0, stop.signal)]);
+        if (!disconnected && !current.ping) return;
+        if (disconnected && !current.ping) {
+          await Promise.race([disconnected.catch(() => {}), waitForAbort(0, stop.signal)]);
+        } else {
+          let dropped = false;
+          const drop = disconnected
+            ?.catch(() => {})
+            .then(() => {
+              dropped = true;
+            });
+          while (!stop.signal.aborted && !dropped) {
+            const waitDone = wait(healthCheckMs, stop.signal);
+            await (drop ? Promise.race([waitDone, drop]) : waitDone);
+            if (stop.signal.aborted || dropped) break;
+            const probeAbort = new AbortController();
+            const probeSignal = AbortSignal.any([stop.signal, probeAbort.signal]);
+            const cancelTimeout = options.wait
+              ? undefined
+              : (() => {
+                  const timer = setTimeout(() => probeAbort.abort(new Error("notify_probe_timeout")), healthTimeoutMs);
+                  timer.unref?.();
+                  return () => clearTimeout(timer);
+                })();
+            try {
+              await current.ping!(probeSignal);
+            } catch {
+              dropped = true;
+            } finally {
+              cancelTimeout?.();
+              probeAbort.abort();
+            }
+          }
+        }
         if (stop.signal.aborted) return;
         unsubscribe = undefined;
         markUnavailable();
