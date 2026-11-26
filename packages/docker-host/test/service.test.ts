@@ -60,6 +60,12 @@ test.each([
     { fail: "enable-linger" },
   ],
   [
+    "missing uid",
+    /Failed to verify systemd user lingering: Linux user ID unavailable.*loginctl enable-linger/,
+    /flock|docker/i,
+    { uid: undefined },
+  ],
+  [
     "show-user",
     /Failed to verify systemd user lingering.*loginctl enable-linger/,
     /flock|docker/i,
@@ -79,14 +85,15 @@ test.each([
       home: "/nonexistent-home",
       platform: "linux",
       execPath: "/nonexistent-home/.local/bin/armada-docker-host",
-      uid: 1000,
+      uid: "uid" in cfg ? cfg.uid : 1000,
       docker: async () => {
         if ("dockerThrow" in cfg) throw leak();
         return { exitCode: "dockerExit" in cfg ? cfg.dockerExit : 0 };
       },
       service: async (args) => {
         if ("fail" in cfg && args.includes(cfg.fail)) throw leak();
-        return args[1] === "show-user" ? ("linger" in cfg ? cfg.linger : "yes") : "";
+        if (args[1] === "show-user") return "linger" in cfg ? cfg.linger : "yes";
+        return "";
       },
     };
     const caught = await servicePreflight(undefined, io).catch((error: unknown) => error);

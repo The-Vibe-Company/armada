@@ -67,7 +67,11 @@ async function runPreflight(service: ServiceIo["service"], args: string[], failu
 }
 export async function servicePreflight(instance?: string, io: ServicePreflightIo = localPreflight()) {
   if (io.platform !== "linux") throw new Error("Linux with systemd user services is required.");
-  if ((await io.docker(["info"]).catch(() => ({ exitCode: 1 }))).exitCode !== 0)
+  let dockerReady = false;
+  try {
+    dockerReady = (await io.docker(["info"])).exitCode === 0;
+  } catch {}
+  if (!dockerReady)
     throw new Error(
       "Docker preflight failed: ensure Docker is installed, the Docker daemon is running and accessible, or ask an administrator for Docker access.",
     );
