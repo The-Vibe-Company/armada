@@ -1,5 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { createClient } from "@supabase/supabase-js";
+import { Suspense } from "react";
 import SandboxPage from "@/app/(app)/sandboxes/[id]/page";
 import { disconnectGitHub } from "@/app/actions/github";
 import { execSandbox, interruptSandbox, sendToSandbox, steerSandbox, stopSandbox } from "@/app/actions/sandboxes";
@@ -190,20 +191,24 @@ test("account listing starts the model read while the credential response is pen
 });
 
 function findElementsByTypeName(root: unknown, name: string) {
-  const matches: Array<{ type: (props: unknown) => unknown; props: unknown }> = [];
-  const stack: unknown[] = [root];
+  const matches: Array<{ type: (props: unknown) => unknown; props: unknown; inSuspense: boolean }> = [];
+  const stack: Array<{ node: unknown; inSuspense: boolean }> = [{ node: root, inSuspense: false }];
   while (stack.length > 0) {
-    const node = stack.pop();
+    const entry = stack.pop()!;
+    const { node, inSuspense } = entry;
     if (!node || typeof node !== "object") continue;
     if (Array.isArray(node)) {
-      stack.push(...node);
+      for (const item of node) stack.push({ node: item, inSuspense });
       continue;
     }
     const record = node as { type?: unknown; props?: Record<string, unknown> };
+    const nextInSuspense = inSuspense || record.type === Suspense;
     if (typeof record.type === "function" && record.type.name === name) {
-      matches.push({ type: record.type as (props: unknown) => unknown, props: record.props });
+      matches.push({ type: record.type as (props: unknown) => unknown, props: record.props, inSuspense });
     }
-    if (record.props && typeof record.props === "object") stack.push(...Object.values(record.props));
+    if (record.props && typeof record.props === "object") {
+      for (const value of Object.values(record.props)) stack.push({ node: value, inSuspense: nextInSuspense });
+    }
   }
   return matches;
 }
@@ -291,11 +296,19 @@ test("Docker sandbox detail streams launch/options inside Suspense without block
   const docker = findElementsByTypeName(tree, "DockerSandbox");
   expect(docker).toHaveLength(1);
   const dockerTree = docker[0]!.type(docker[0]!.props);
-  const headerActions = findElementsByTypeName(dockerTree, "DockerHeaderActions");
-  const conversation = findElementsByTypeName(dockerTree, "DockerConversationSection");
-  expect(headerActions).toHaveLength(1);
-  expect(conversation).toHaveLength(1);
-  await Promise.all([headerActions[0]!.type(headerActions[0]!.props), conversation[0]!.type(conversation[0]!.props)]);
+  const sectionNames = [
+    "DockerHeaderActions",
+    "DockerUnavailableCard",
+    "DockerCommandSection",
+    "DockerConversationSection",
+  ] as const;
+  const sections = sectionNames.map((name) => {
+    const found = findElementsByTypeName(dockerTree, name);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.inSuspense).toBe(true);
+    return found[0]!;
+  });
+  await Promise.all(sections.map((section) => section.type(section.props)));
   expect(requests.mock.calls.map(([input]) => new URL(String(input)).pathname)).toEqual([
     "/rest/v1/sandboxes",
     "/rest/v1/rpc/sandbox_detail_status",

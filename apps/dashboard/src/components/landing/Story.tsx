@@ -100,8 +100,9 @@ export function Story() {
           keys only its agent's. Run four fixes at once and none of them touches another's checkout.
         </p>
         <p>
-          Choose Claude Code, Codex, OpenCode or Antigravity, the model and the reasoning effort for each launch — or
-          package repeatable setups as templates and run them on a schedule with routines. Every later turn keeps them.
+          Choose Claude Code, Codex, OpenCode or Antigravity, the model and the reasoning effort for each launch; every
+          later turn keeps your model and effort. Package repeatable setups as templates and run them on a schedule with
+          routines.
         </p>
       </Chapter>
 

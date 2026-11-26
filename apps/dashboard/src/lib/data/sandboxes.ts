@@ -80,6 +80,8 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
   return { ...data, harness: data.harness, publicStatus: readiness.data };
 }
 
+const CREDENTIALS_PAGE_SIZE = 1000;
+
 /**
  * The kind of each readable account for the signed-in viewer, by id. Row level security returns an org account to its
  * members and a personal one to its owner: an account the viewer cannot read is absent, and its sandbox's cost is
@@ -88,9 +90,16 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
 const readReadableCredentialKinds = cache(async (supabase: Supabase) => {
   const kinds = new Map<string, CredentialKind>();
   try {
-    const { data, error } = await supabase.from("credentials").select("id,kind");
-    if (error) throw error;
-    for (const row of data ?? []) kinds.set(row.id, row.kind);
+    for (let from = 0; ; from += CREDENTIALS_PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("credentials")
+        .select("id,kind")
+        .order("id")
+        .range(from, from + CREDENTIALS_PAGE_SIZE - 1);
+      if (error) throw error;
+      for (const row of data ?? []) kinds.set(row.id, row.kind);
+      if (!data || data.length < CREDENTIALS_PAGE_SIZE) break;
+    }
   } catch {
     console.error("Dashboard enrichment failed: credentialKinds");
   }

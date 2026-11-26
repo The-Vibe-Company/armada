@@ -401,23 +401,25 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
       waitingIds: new Set(),
       now: new Date(createdAt),
     };
+    let nextSetup: Awaited<ReturnType<typeof providerSetup.readProviderSetup>> = {
+      state: "ready",
+      status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
+    };
+    let nextHosts: Awaited<ReturnType<typeof dockerHosts.readSelectedDockerHosts>> = { state: "disabled" };
     /* oxlint-disable landmines-testing/no-test-doubles -- Supply authenticated /sandboxes page reads without a Next request, control API, or database. */
     spyOn(viewer, "requireViewer").mockResolvedValue({ id: "user-1", email: "user@example.com", token: "test" });
     spyOn(viewer, "memberDirectory").mockResolvedValue(new Map([["user-1", "user@example.com"]]));
     spyOn(selectedOrg, "selectedOrganization").mockResolvedValue(membership);
     spyOn(supabase, "createClient").mockResolvedValue({} as supabase.Supabase);
     spyOn(env, "mcpUrl").mockReturnValue(null);
-    const setupSpy = spyOn(providerSetup, "readProviderSetup").mockResolvedValue({
-      state: "ready",
-      status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
-    });
-    const hostsSpy = spyOn(dockerHosts, "readSelectedDockerHosts").mockResolvedValue({ state: "disabled" });
+    const setupSpy = spyOn(providerSetup, "readProviderSetup").mockImplementation(async () => nextSetup);
+    const hostsSpy = spyOn(dockerHosts, "readSelectedDockerHosts").mockImplementation(async () => nextHosts);
     spyOn(sandboxInventory, "listSandboxMetadata").mockResolvedValue({ inventory: [row], skipped: 0 });
     spyOn(sandboxInventory, "loadSandboxInventory").mockImplementation(async () => nextInventory);
     spyOn(sandboxesData, "listSandboxEnrichment").mockResolvedValue(new Map());
     /* oxlint-enable landmines-testing/no-test-doubles */
 
-    const renderPage = async () => {
+    const renderPage = async (onError?: (error: unknown) => void) => {
       const stream = await renderToReadableStream(
         <TooltipProvider>
           <AppRouterContext.Provider value={router}>
@@ -428,6 +430,7 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
             </PathnameContext.Provider>
           </AppRouterContext.Provider>
         </TooltipProvider>,
+        onError ? { onError } : undefined,
       );
       await stream.allReady;
       return new Response(stream).text();
@@ -479,6 +482,51 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
     expect(setupSpy).toHaveBeenCalledTimes(1);
     expect(hostsSpy).toHaveBeenCalledTimes(0);
 
+    nextSetup = {
+      state: "pending",
+      status: { org: { ...org, role: "admin" }, ready: false, providers: [] },
+    };
+    nextHosts = {
+      state: "ready",
+      list: {
+        placement: true,
+        skipped: 0,
+        hosts: [
+          {
+            id: "host-1",
+            name: "workstation",
+            state: "online",
+            createdAt,
+            lastSeenAt: createdAt,
+            revokedAt: null,
+            version: null,
+            protocol: 1,
+            upgradeRequired: false,
+            sandboxes: 0,
+          },
+        ],
+      },
+    };
+    const dockerEmptyHtml = await renderPage();
+    expect(dockerEmptyHtml).toContain("No sandboxes yet");
+    expect(setupSpy).toHaveBeenCalledTimes(2);
+    expect(hostsSpy).toHaveBeenCalledTimes(1);
+
+    nextHosts = { state: "disabled" };
+    const redirectErrors: unknown[] = [];
+    await renderPage((error) => {
+      redirectErrors.push(error);
+    });
+    expect(redirectErrors).toEqual([
+      expect.objectContaining({ digest: expect.stringContaining("NEXT_REDIRECT;replace;/providers/cloud;") }),
+    ]);
+    expect(setupSpy).toHaveBeenCalledTimes(3);
+    expect(hostsSpy).toHaveBeenCalledTimes(2);
+
+    nextSetup = {
+      state: "ready",
+      status: { org: { ...org, role: "admin" }, ready: true, providers: [{ provider: "modal", configured: true }] },
+    };
     const dockerRow: SandboxListMetadata = { ...row, provider: "docker" };
     nextInventory = {
       ...nextInventory,
@@ -496,8 +544,8 @@ test("/sandboxes status cell keeps the pulsing Working halo unclipped while trun
       counts: { all: 1, active: 1, need: 0, stopped: 0, failed: 0 },
     };
     await renderPage();
-    expect(setupSpy).toHaveBeenCalledTimes(1);
-    expect(hostsSpy).toHaveBeenCalledTimes(1);
+    expect(setupSpy).toHaveBeenCalledTimes(3);
+    expect(hostsSpy).toHaveBeenCalledTimes(3);
   } finally {
     mock.restore();
   }
