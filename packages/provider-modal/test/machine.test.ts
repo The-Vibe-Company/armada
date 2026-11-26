@@ -504,8 +504,11 @@ test("Modal machine create and bootstrap overlap lookups, reuse verified app and
   await happy.machine.bootstrap({ ...created, bindingRef: "runtime-binding" });
   expect(happy.counts).toMatchObject({ appFromName: 1, sandboxFromId: 0, getTags: 0, exec: 1 });
 
+  await happy.machine.bootstrap({ ...created, bindingRef: "runtime-binding" });
+  expect(happy.counts).toMatchObject({ appFromName: 1, sandboxFromId: 1, getTags: 1, exec: 2 });
+
   await happy.machine.delete({ ...created, scope: "physical-only" });
-  expect(happy.counts).toMatchObject({ appFromName: 1, sandboxFromId: 1, getTags: 1 });
+  expect(happy.counts).toMatchObject({ appFromName: 1, sandboxFromId: 2, getTags: 2 });
   expect(await happy.machine.observe(created)).toEqual({ kind: "absent", receipt: { operation: "delete" } });
   expect(happy.counts.appFromName).toBe(2);
 

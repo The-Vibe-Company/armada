@@ -205,10 +205,11 @@ export function createModalMachine(options: ModalMachineOptions) {
   let verifiedApp: Promise<App> | undefined;
   const bound = () => {
     if (!verifiedApp) {
-      verifiedApp = boundModalApp(client, appName, binding).catch((error) => {
-        verifiedApp = undefined;
+      const pending = boundModalApp(client, appName, binding).catch((error) => {
+        if (verifiedApp === pending) verifiedApp = undefined;
         throw error;
       });
+      verifiedApp = pending;
     }
     return verifiedApp;
   };
@@ -343,6 +344,7 @@ export function createModalMachine(options: ModalMachineOptions) {
         await bound();
         request.signal?.throwIfAborted();
         const cached = createdSandboxes.get(cacheKey);
+        createdSandboxes.delete(cacheKey);
         const sb = cached?.sandboxId === request.machineId ? cached : await exact(request, request.signal);
         const ticket = await resolveRuntimeTicket(request);
         request.signal?.throwIfAborted();
