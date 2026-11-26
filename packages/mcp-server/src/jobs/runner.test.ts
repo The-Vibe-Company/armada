@@ -7,6 +7,7 @@ import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runne
 
 function fixture(kind = "stop", dispatchBudgetMs?: number) {
   let now = 0;
+  let claims = 0;
   let successfulRenewals = 0;
   let renewalUnavailable = false;
   const timers = new Map<() => void, number>();
@@ -34,6 +35,7 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
   let renewalGate: Promise<void> | undefined;
   const store: JobStore = {
     async claim(kind, owner, seconds, concurrency) {
+      claims++;
       const candidates = rows.filter((row) => row.kind === kind && !row.terminal);
       if (candidates.filter((row) => row.expires > now).length >= concurrency) return;
       const row = candidates.find((row) => row.expires <= now && row.due <= now);
@@ -99,6 +101,9 @@ function fixture(kind = "stop", dispatchBudgetMs?: number) {
       return settled.promise;
     },
     completed,
+    get claims() {
+      return claims;
+    },
     get successfulRenewals() {
       return successfulRenewals;
     },
@@ -369,4 +374,18 @@ test("hung golden recovery yields its lease to the next build and stays tracked 
     released.resolve();
     await runner.drain();
   }
+});
+
+test("reconcileOne skips store.claim while a kind holds its local leased concurrency", async () => {
+  const f = fixture();
+  const finish = Promise.withResolvers<void>();
+  const runner = f.runner(async () => {
+    await finish.promise;
+    return { status: "done" };
+  });
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  expect(await runner.reconcileOne(tick)).toBe(false);
+  expect(f.claims).toBe(1);
+  finish.resolve();
+  await runner.drain();
 });

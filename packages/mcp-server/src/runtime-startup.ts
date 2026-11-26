@@ -1,9 +1,9 @@
-import { setTimeout as delay } from "node:timers/promises";
 import { isHarness, ProviderError } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeTicketGuard } from "./runtime-enrolment.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
+import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 interface BootstrapInput {
   sandboxId: string;
@@ -18,13 +18,15 @@ interface Ports {
   /** Agent bridge bound to this same persisted owner/logical sandbox. */
   health(signal: AbortSignal, epoch: string): Promise<{ runtime: "armada"; epoch: string }>;
 }
+const ENROL_FALLBACK_MS = 1_000;
+
 interface StartupClock {
   now(): number;
   wait(signal: AbortSignal): Promise<void>;
 }
 const clock: StartupClock = {
   now: () => performance.now(),
-  wait: (signal: AbortSignal) => delay(250, undefined, { signal }),
+  wait: (signal: AbortSignal) => waitForTimeout(ENROL_FALLBACK_MS, signal),
 };
 
 /** Fresh/quiescent sandbox only, under the existing exclusive launch/lifecycle lease.
@@ -86,6 +88,7 @@ export function createRuntimeStartup(
         );
       } catch {}
     };
+    let wake: ReturnType<typeof runtimeWakes.watch> | undefined;
     try {
       signal?.throwIfAborted();
       entering("ticket", startedAt);
@@ -106,6 +109,7 @@ export function createRuntimeStartup(
       entering("bootstrap", bootstrapAt);
       await input.assertClaim?.();
       signal?.throwIfAborted();
+      wake = runtimeWakes.watch(`enrol:${sandboxId}`);
       await ports.bootstrap({
         sandboxId: providerSandboxId,
         serverUrl,
@@ -123,6 +127,17 @@ export function createRuntimeStartup(
       while (true) {
         admission.throwIfAborted();
         if (time.now() >= deadline) throw Error("runtime_startup_deadline");
+        const enrolled = (
+          await authority.query(
+            `select 1 from public.runtime_enrolments
+             where sandbox_id=$1 and lifecycle_generation=$2 and runtime_hash is not null`,
+            [sandboxId, ticket.lifecycleGeneration],
+          )
+        ).rows.length;
+        if (!enrolled) {
+          await wake.wait(admission, ENROL_FALLBACK_MS, (_ms, waitSignal) => time.wait(waitSignal));
+          continue;
+        }
         let epoch: string;
         try {
           epoch = await authority.withOwner(
@@ -135,7 +150,7 @@ export function createRuntimeStartup(
           // A freshly issued ticket deliberately has no live runtime grant yet.
           // All other failures are errors, not a reason to retry host startup.
           if (!(error instanceof RuntimeEnrolmentDenied)) throw error;
-          await time.wait(admission);
+          await wake.wait(admission, ENROL_FALLBACK_MS, (_ms, waitSignal) => time.wait(waitSignal));
           continue;
         }
         if (epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
@@ -187,6 +202,8 @@ export function createRuntimeStartup(
         message: `Armada runtime startup failed (${phase}).`,
         retryable: false,
       });
+    } finally {
+      wake?.close();
     }
   };
 }

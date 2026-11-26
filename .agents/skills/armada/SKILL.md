@@ -1,26 +1,26 @@
 ---
 name: armada
-description: Use Armada from a terminal to sign in, select an organization, choose a golden or template, schedule owner-scoped routines, launch Claude Code or Codex in Boat or Modal sandboxes, pin private skills, send or steer work, wait, inspect failures and preserve work. Use whenever someone asks to launch, monitor, troubleshoot or control Armada sandboxes, including several sandboxes from another sandbox. This is tool knowledge, not a project coordination, code review or merge policy.
+description: Use Armada from a terminal to sign in, select an organization, choose a snapshot or template, schedule owner-scoped routines, launch Claude Code, Codex, OpenCode or Antigravity in Boat, Modal or Docker host sandboxes, pin private skills, send or steer work, wait, inspect failures and preserve work. Use whenever someone asks to launch, monitor, troubleshoot or control Armada sandboxes, including several sandboxes from another sandbox. This is tool knowledge, not a project coordination, code review or merge policy.
 ---
 
 # Armada terminal guide
-
-The REST sandbox status route is `POST /api/v1/sandbox/status`.
 
 Armada launches agents; you decide task ownership, acceptance criteria and budget.
 Requires the Armada CLI and access to an Armada server. This skill ships with the
 CLI source; check `armada --version` and `armada --help` before using a differently
 versioned installation. Read the installed command's help rather than inventing
-flags. Examples use placeholders such as GOLDEN, SANDBOX and ORG; substitute real
+flags. Examples use placeholders such as SNAPSHOT, SANDBOX and ORG; substitute real
 IDs, and quote prompts as single arguments.
 
-Sandbox commands emit JSON when stdout is piped or redirected. On failure,
+Most CLI commands (sandbox, snapshot, template, host, account, org, `whoami`, and
+`logout`) emit JSON automatically when stdout is piped or redirected; pass `--json`
+explicitly in interactive terminals (and on `armada login` or `armada port-forward`). On failure,
 parse the final stderr line for `error.code`, `error.message`, and `error.hint`.
 An explicit sandbox ID overrides `ARMADA_SANDBOX` and the local
 `.armada/sandbox` file written by a successful `armada new` in that directory. Prefer explicit IDs in
 coordinator scripts that manage several sandboxes from one directory. In JSON,
 read `providerSandboxId` for provider display metadata and `providerSnapshotId`
-for a golden's provider snapshot. Use the Armada `id` for sandbox commands.
+for a snapshot's provider image ID. Use the Armada `id` for sandbox commands.
 
 ## 1. Establish identity and scope
 
@@ -36,7 +36,7 @@ use explicit organization arguments in multi-org automation to avoid ambiguity.
 access needs an authorized admin, not a retry loop.
 
 Read [setup and configuration](references/setup.md) when connecting GitHub,
-selecting model accounts, creating goldens/templates, or configuring variables.
+selecting model accounts, creating snapshots/templates, or configuring variables.
 Manage snapshots, templates, default skill pins, variables and application secrets through
 the dashboard or the authenticated REST API. For template and vault administration through
 `armada api`, see [setup](references/setup.md#templates-readable-variables-and-secrets).
@@ -61,38 +61,22 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 
 - Inspect `armada snapshot ls --json` and `armada template list --json`.
   To refresh a shared snapshot, update its build configuration with the owner authorization.
-  A golden is a provider-specific saved environment; a template is an immutable
-  revision specifying a golden, harness and configuration. Use IDs if names clash.
+  A snapshot is a provider-specific saved environment (API paths use `golden`, and MCP launch takes a `golden` field); a template is an immutable
+  revision specifying a snapshot, harness and configuration. Use IDs if names clash.
   Use `armada api golden/capabilities` for provider capacity and the
-  authenticated REST adoption endpoint for canonical Boat golden adoption.
+  authenticated REST adoption endpoint for canonical Boat snapshot adoption.
 - Call MCP `launch_options` with `{}` for the server’s harnesses, models, sizes and TTL limits.
 - Call MCP `outputs_list` with `id` to list the stored output snapshot. Call `output_read` with `id` and `name` for base64 contents up to 32 KiB. Use the REST output download for larger files.
-  MCP `launch` takes a Boat or Modal golden. Choose `provider: "boat"` or `provider: "modal"`,
+  MCP `launch` takes a Boat or Modal snapshot in its `golden` field. Choose `provider: "boat"` or `provider: "modal"`,
   specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
   For scoped tokens, omit `org` or use the scoped org UUID.
-- Choose the provider that owns the golden. A golden built on one provider
+- Choose the provider that owns the snapshot. A snapshot built on one provider
   is not automatically available on the other. Check
   `armada api golden/capabilities '{"provider":"boat"}'` (or substitute modal).
-- All launches through `POST /api/v1/sandbox/launch` require an explicit provider
-  and harness. The server resolves model credentials during launch. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
-  A malformed request returns HTTP 400 with error code `invalid`.
-  For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
-  A fresh ordinary Boat REST launch returns HTTP 202. A keyed replay returns HTTP 200 with the same sandbox ID and its current status.
-  The TypeScript SDK infers its request, response and error types from the API contract. Use `outputs.list` and `outputs.get` to read stored sandbox outputs.
-  Modal REST and MCP launches and ordinary Docker REST launches return a sandbox ID and `starting` before allocation.
-  Follow that ID with status or logs to find the first prompt after enrolment. Use status to check queued prompt admission.
-  Docker snapshot launches report their source `snapshotId`, `hostId` and `image` in `sandbox/status`.
-  For template launches, check `"requestId" in result`
-  before reading the receipt. Boat, Modal, and Docker templates return `starting` before allocation.
-  Use its sandbox ID with status or logs to follow startup. Use the shared `SendInput` for follow-up prompts.
-  Ordinary Docker REST launches require `idempotencyKey`.
-  Save the key and replay the identical request after an uncertain launch.
-  With `armada new --provider docker`, pass the saved key as `--idempotency-key`.
-  For a pinned Modal template on `sandbox/launch`, supply `idempotencyKey` and
-  read `sandbox.id`. With `templates/launch` or `armada template launch`, use
-  `requestKey` or `--request-key` and read the template receipt.
-- Ordinary Boat and Modal launches return `sandbox.id` and `starting`. Use that ID to read status while the runtime enrols. Check provider availability in
-  the authenticated response to `POST /api/v1/launch/options`.
+- `POST /api/v1/sandbox/launch` requires an explicit `provider` and `harness`; the server resolves model credentials at launch and returns HTTP 400 (`invalid`) on malformed requests. Personal sessions accept an org slug or UUID; scoped tokens omit `org` or send their org UUID. Check provider availability via `POST /api/v1/launch/options`.
+- `POST /api/v1/sandbox/launch` returns `sandbox.id` and status `starting` before allocation (fresh ordinary Boat REST launches return HTTP 202; keyed replays and Modal/Docker launches return HTTP 200). `POST /api/v1/templates/launch` returns HTTP 200 with a template receipt (`requestId`, top-level `id`, and `status: "starting"`). Follow the sandbox ID via `POST /api/v1/sandbox/status` (which also reports queued prompt admission and Docker `snapshotId`/`hostId`/`image`) or logs while the runtime enrols.
+- Idempotency keys: ordinary Docker launches and pinned Modal templates on `sandbox/launch` require `idempotencyKey` (`armada new --provider docker --idempotency-key KEY`); replay the exact request after an uncertain outcome. Template launches via `POST /api/v1/templates/launch` or `armada template launch` use `requestKey` / `--request-key` — check `"requestId" in result` before reading the receipt.
+- The TypeScript SDK infers request, response, and error types from the API contract; use `SendInput` for follow-up prompts and `outputs.list` / `outputs.get` for stored outputs.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
 - If a runtime launch returns `credential_binding_required`, add the model account
@@ -106,7 +90,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 Example (replace the skill pin with an accessible, exact version):
 
 ```sh
-armada new GOLDEN --agent codex "Implement the agreed change; push the branch and report tests" --provider boat --ttl 30m --skill review-helper@1.2.3 --json
+armada new SNAPSHOT --agent codex "Implement the agreed change; push the branch and report tests" --provider boat --ttl 30m --skill review-helper@1.2.3 --json
 ```
 
 Launch without a prompt creates an idle sandbox. Capture its returned sandbox
@@ -116,7 +100,7 @@ duplicates. Skill pins are repeatable, exact launch-time references, not floatin
 latest versions. Private pins use bare slug@exact-version in the credential’s workspace; qualified
 org/slug@exact-version pins always use the anonymous public catalog, even when
 a key exists. Private pins require a configured Skillpack credential and
-access to the package; do not put that credential in a golden or prompt. Check
+access to the package; do not put that credential in a snapshot or prompt. Check
 `armada info SANDBOX --json` for recorded skill references/checksums. Do not
 claim a skill is active merely because its package exists locally.
 
@@ -131,8 +115,10 @@ armada template launch TEMPLATE --request-key UNIQUE_KEY --revision 1 --prompt "
 
 Persist the resolved template ID, request key and exact request. If the outcome
 is unknown, retry that SAME ID, key and body; never generate another key just
-because the terminal timed out. Only prompt, TTL, size and repository override
-launch defaults; configuration changes require a new published revision.
+because the terminal timed out. Only `--prompt`, `--ttl`, `--size`, `--repo`,
+`--model-account` with `--model-account-version` (when the template version
+does not pin a model account), and `--keep-after-merge` override launch
+defaults; other configuration changes require a new published revision.
 
 ## Scheduled routines
 
@@ -184,13 +170,23 @@ an observation, not proof tests passed or work was pushed; inspect outcome and
 logs. If a send times out ambiguously, use `armada info SANDBOX --live` and
 `armada events SANDBOX --tail 50` before considering another send; do not replay a possibly accepted instruction. Use
 `armada events SANDBOX -f` to follow until settled, or `armada events SANDBOX --tail N`
-for bounded diagnostics. Piped output is JSON
-Lines, with one event per line. Use `armada exec SANDBOX -- "git status --short"`
-to run a shell command inside the sandbox. For an interactive PTY shell over the relay,
-run `armada shell SANDBOX --cwd /home/user` (or omit `SANDBOX` to use `ARMADA_SANDBOX` / `.armada/sandbox`).
-To tunnel a sandbox TCP port to loopback `127.0.0.1`, run `armada port-forward SANDBOX 3000 8080`
-(local port defaults to remote port). Use `armada outputs --id SANDBOX` to
-list stored outputs and `armada outputs NAME --id SANDBOX -o DIR` to download one.
+for bounded diagnostics. Piped output is JSON Lines, with one event per line.
+
+- **Report turn outcome**: after waiting for a finished turn, record an explicit
+  outcome with `armada report SANDBOX ready --prompt-id PROMPT_ID` (optional
+  `--pr-number`, `--pr-url`, `--head-sha`) or
+  `armada report SANDBOX blocked --prompt-id PROMPT_ID` (with `--reason`);
+  see `armada report --help`. Output is always JSON; a new send clears the outcome.
+- **Run a command**: `armada exec SANDBOX -- "git status --short"` runs a
+  non-interactive shell command inside the sandbox.
+- **Interactive shell**: `armada shell SANDBOX --cwd /home/user` opens an
+  interactive PTY shell over the relay (omit `SANDBOX` to use `ARMADA_SANDBOX`
+  or `.armada/sandbox`; exits with the remote shell exit code).
+- **Port forwarding**: `armada port-forward SANDBOX 3000 8080` tunnels a
+  sandbox TCP port to `127.0.0.1:<local-port>` (`local-port` defaults to
+  `remote-port`; pass `--json` for `{host,localPort,sandboxId,remotePort}`).
+- **Stored outputs**: `armada outputs --id SANDBOX` lists stored outputs and
+  `armada outputs NAME --id SANDBOX -o DIR` downloads one.
 
 For a viewer grant, subscribe to `GET /api/v1/events?sandbox=<UUID>` with
 the viewer bearer. Resume with the last processed SSE ID in `Last-Event-ID`.
@@ -264,7 +260,7 @@ merge, deploy, delete resources or alter org-wide settings without authorization
 
 ### Give an agent API access
 
-From a personal login, open Dashboard **Settings → API keys** or run
+From a personal login, open Dashboard **Your connections → Armada API keys** or run
 `armada api token/create '{"label":"worker","org":"ORG_UUID","expires":"30d"}'`.
 Capture the response's `token` once and supply it through the agent's secret store as `ARMADA_TOKEN`
 with `ARMADA_URL` set to the API origin. Verify with `armada whoami --json`. From a personal login,

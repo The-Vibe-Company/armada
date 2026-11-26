@@ -12,6 +12,18 @@ import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
 import { admitCheckpointedIdleStop, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 
+const BATCH_LIMIT = 20;
+
+type IdleCheck =
+  | { idle: true; mergeStop: boolean }
+  | { idle: false; reason: "target_changed" | "unsupported" | "command_pending" | "not_idle" | "active_relay" };
+
+class RuntimeNotIdleError extends Error {
+  constructor(readonly reason: Exclude<IdleCheck, { idle: true }>["reason"]) {
+    super(`Runtime is not idle (${reason}).`);
+  }
+}
+
 /** The checkpoint transaction owns the sandbox row before rechecking idle. Its durable
  * intent fences sends before any RPC; uncertainty never dispatches a compute stop. */
 export function createRuntimeIdle(
@@ -31,7 +43,9 @@ export function createRuntimeIdle(
   let next = 0;
   let cursor: string | null = null;
   const pending = new Set<Promise<unknown>>();
-  async function guard(tx: Sql, id: string, generation: string, requestId: string | null) {
+  const supportsIdleStop = (provider: string, harness: Harness) =>
+    HARNESS_CAPABILITIES[harness].resume && isSandboxPlacementProvider(provider) && capabilities(provider).idleStop;
+  async function checkIdle(tx: Sql, id: string, generation: string, requestId: string | null) {
     const target = (
       await tx.query<{
         provider: string;
@@ -49,18 +63,13 @@ export function createRuntimeIdle(
         [id, generation],
       )
     ).rows[0];
-    if (!target?.task_prompt_id || target.request_id !== requestId) throw Error("Runtime checkpoint target changed.");
+    if (!target?.task_prompt_id || target.request_id !== requestId)
+      return { idle: false, reason: "target_changed" } satisfies IdleCheck;
     // A committed checkpoint can leave the guest quiesced and mutations fenced.
     // The machine default controls fresh admission; the exact intent can still settle.
     const mergeStop = requestId === null ? target.merge_proof : target.merge_stop === true;
-    if (
-      requestId === null &&
-      !mergeStop &&
-      (!HARNESS_CAPABILITIES[target.harness].resume ||
-        !isSandboxPlacementProvider(target.provider) ||
-        !capabilities(target.provider).idleStop)
-    )
-      throw Error("Machine does not stop for inactivity.");
+    if (requestId === null && !mergeStop && !supportsIdleStop(target.provider, target.harness))
+      return { idle: false, reason: "unsupported" } satisfies IdleCheck;
     const busy = await tx.query(
       `select 1 from public.runtime_commands c join public.runtime_enrolments r
        on r.sandbox_id=c.sandbox_id and r.epoch=c.epoch
@@ -68,7 +77,7 @@ export function createRuntimeIdle(
          and ${dispatchableRuntimeCommand("c.sandbox_id", "c.epoch", "c.request_id")} limit 1`,
       [id, String(now())],
     );
-    if (busy.rows.length) throw Error("Runtime command pending.");
+    if (busy.rows.length) return { idle: false, reason: "command_pending" } satisfies IdleCheck;
     const evidence = (
       await tx.query<{ last_activity: number; eligible: boolean }>(
         `select e.last_activity,
@@ -81,9 +90,14 @@ export function createRuntimeIdle(
       )
     ).rows[0];
     if (!evidence?.eligible || evidence.last_activity <= 0 || (!mergeStop && now() - evidence.last_activity < delay))
-      throw Error("Runtime is not idle.");
-    if (!mergeStop && options.hasActiveRelay?.(id)) throw Error("Runtime relay is active.");
-    return mergeStop;
+      return { idle: false, reason: "not_idle" } satisfies IdleCheck;
+    if (!mergeStop && options.hasActiveRelay?.(id)) return { idle: false, reason: "active_relay" } satisfies IdleCheck;
+    return { idle: true, mergeStop } satisfies IdleCheck;
+  }
+  async function guard(tx: Sql, id: string, generation: string, requestId: string | null) {
+    const result = await checkIdle(tx, id, generation, requestId);
+    if (!result.idle) throw new RuntimeNotIdleError(result.reason);
+    return result.mergeStop;
   }
   return {
     async drain() {
@@ -92,6 +106,7 @@ export function createRuntimeIdle(
     async reconcileOne(signal: AbortSignal) {
       if (now() < next || pending.size) return false;
       next = now() + 60_000;
+      let more = false;
       const work = (async () => {
         const rows = (
           await sql.query<{
@@ -99,13 +114,29 @@ export function createRuntimeIdle(
             owner_id: string;
             org_id: string;
             provider: string;
+            status: string;
+            harness: Harness;
+            task_prompt_id: string | null;
+            merge_proof: boolean;
+            has_merge_proof: boolean;
+            merge_stop: boolean | null;
             daemon_protocol: number | null;
             request_id: string | null;
+            last_activity: number | null;
+            has_evidence: boolean;
+            has_events: boolean;
           }>(
-            `select s.id,s.owner_id,s.org_id,s.provider::text,h.daemon_protocol,p.request_id::text from public.sandboxes s
+            `select s.id,s.owner_id,s.org_id,s.provider::text,s.status::text as status,s.harness::text as harness,
+             s.task_prompt_id,${mergedWorkProof("s")} as merge_proof,
+             (s.stop_when_work_merged and s.pull_request_merge_proof is not null) as has_merge_proof,
+             p.merge_stop,h.daemon_protocol,p.request_id::text,
+             e.last_activity,e.sandbox_id is not null as has_evidence,
+             exists(select 1 from public.runtime_events ev where ev.sandbox_id=s.id) as has_events
+             from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
            join public.runtime_enrolments r on r.sandbox_id=s.id
            left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
+           left join public.runtime_idle_evidence e on e.sandbox_id=s.id
            left join public.docker_hosts h on h.id=s.docker_host_id and h.installation_id=s.docker_installation_id
              and h.hash is not null and h.revoked_at is null and h.registration_hash is null and not ${hostDrainingSql("h")}
              and exists(select 1 from public.members hm where hm.org_id=h.org_id and hm.user_id=h.owner_id)
@@ -116,7 +147,8 @@ export function createRuntimeIdle(
              and j.generation=s.lifecycle_generation and j.kind='stop' and j.state in ('queued','leased'))
            and s.expires_at>now() and not s.application_secret_tainted
            and s.activity_lease_id is null and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
-           order by case when $1::uuid is null or s.id>$1::uuid then 0 else 1 end,s.id limit 20`,
+           and ($1::uuid is null or s.id>$1::uuid)
+           order by s.id limit ${BATCH_LIMIT}`,
             [cursor, options.dockerStop !== undefined],
           )
         ).rows;
@@ -124,6 +156,26 @@ export function createRuntimeIdle(
           signal.throwIfAborted();
           cursor = row.id;
           if (usesHostLaunch(row.provider) && !supportsDockerHostProtocol(row.daemon_protocol)) continue;
+          const mergeStop = row.request_id === null ? row.merge_proof : row.merge_stop === true;
+          const needsLegacyUpgrade = !row.has_evidence && row.has_events;
+          const canStop =
+            row.request_id !== null ||
+            mergeStop ||
+            (needsLegacyUpgrade && row.has_merge_proof) ||
+            supportsIdleStop(row.provider, row.harness);
+          const needsSettle = row.status === "running";
+          if (!canStop && !needsSettle) continue;
+          if (
+            !needsSettle &&
+            !needsLegacyUpgrade &&
+            (!row.task_prompt_id ||
+              (!mergeStop &&
+                (row.last_activity === null ||
+                  row.last_activity <= 0 ||
+                  now() - row.last_activity < delay ||
+                  options.hasActiveRelay?.(row.id))))
+          )
+            continue;
           try {
             // Avoid creating an intent unless idle; the authoritative check repeats
             // under checkpoint's admission lock, closing the send/exec race.
@@ -148,10 +200,11 @@ export function createRuntimeIdle(
               if (generation !== undefined) await settleRuntimeTurn(tx, row.id, generation, key);
               return generation;
             });
-            if (generation === undefined) continue;
+            if (generation === undefined || !canStop) continue;
             // A legacy/manual checkpoint has no merge-stop intent. It still
             // must pass the ordinary idle timer before this worker can stop it.
-            await guard(sql, row.id, generation, row.request_id);
+            const check = await checkIdle(sql, row.id, generation, row.request_id);
+            if (!check.idle) continue;
             const requestId = row.request_id ?? crypto.randomUUID();
             await checkpoint(
               { userId: row.owner_id, orgs: [{ orgId: row.org_id, role: "member" }], via: "service" },
@@ -169,6 +222,12 @@ export function createRuntimeIdle(
           } catch {
             // Pending checkpoints retain their request ID and retry next sweep.
           }
+        }
+        if (rows.length === BATCH_LIMIT) {
+          more = true;
+          next = 0;
+        } else {
+          cursor = null;
         }
       })();
       pending.add(work);
@@ -189,7 +248,7 @@ export function createRuntimeIdle(
       } finally {
         signal.removeEventListener("abort", abort);
       }
-      return false;
+      return more;
     },
   };
 }

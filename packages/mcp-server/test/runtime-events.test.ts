@@ -1633,3 +1633,77 @@ test("workspace execution timestamps are logged only for freshly committed event
     await f.close();
   }
 });
+
+test("runtime-idle skips non-idleStop and non-idle sandboxes before FOR UPDATE and advances past 20-item batches", async () => {
+  const f = await fixture();
+  const base = await f.db.query<{ golden_id: string }>("select golden_id from sandboxes where id=$1", [f.id]);
+  const goldenId = base.rows[0]!.golden_id;
+  const hostId = crypto.randomUUID();
+  const installId = crypto.randomUUID();
+  await f.db.query(
+    `insert into docker_hosts(id,org_id,owner_id,name,installation_id,hash,daemon_protocol,registration_expires_at)
+     values($1,$2,$3,'idle-host',$4,$5,1,now())`,
+    [hostId, f.people.org, f.people.owner, installId, "0".repeat(64)],
+  );
+  const dockerId = "00000000-0000-4000-8000-000000000000";
+  const dockerName = `armada-${installId}-${hostId}-${dockerId}-${installId}`;
+  await f.db.query(
+    `insert into sandboxes(id,org_id,owner_id,provider_sandbox_id,provider,harness,status,boat_runtime,docker_host_id,docker_installation_id,docker_generation,docker_image,task_prompt_id,expires_at)
+     values($1,$2,$3,$4,'docker','codex','ready',false,$5,$6,$6,$7,'p0',now()+interval '1 hour')`,
+    [dockerId, f.people.org, f.people.owner, dockerName, hostId, installId, `sha256:${"0".repeat(64)}`],
+  );
+  await f.db.query(
+    `insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash,runtime_protocol_version)
+     values($1,1,1,$2,2)`,
+    [dockerId, "0".repeat(64)],
+  );
+  await f.db.query(`insert into runtime_idle_evidence(sandbox_id,sequence,last_activity) values($1,0,1)`, [dockerId]);
+  const ids: string[] = [];
+  for (let i = 1; i <= 20; i++) {
+    const sid = `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    ids.push(sid);
+    await f.db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime,task_prompt_id,expires_at)
+       values($1,$2,$3,$4,$5,'codex','ready',true,$6,now()+interval '1 hour')`,
+      [sid, goldenId, f.people.org, f.people.owner, `idle-batch-${i}`, `p${i}`],
+    );
+    await f.db.query(
+      `insert into runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash,runtime_protocol_version)
+       values($1,1,1,$2,2)`,
+      [sid, String(i).padStart(64, "0")],
+    );
+    await f.db.query(`insert into runtime_idle_evidence(sandbox_id,sequence,last_activity) values($1,0,$2)`, [
+      sid,
+      i === 20 ? 1 : 999,
+    ]);
+    if (i === 20)
+      await f.db.query(`insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)`, [
+        sid,
+        `p${i}`,
+      ]);
+  }
+  let transactions = 0;
+  const countedSql = {
+    query: f.sql.query.bind(f.sql),
+    transaction: <T>(work: (tx: typeof f.sql) => Promise<T>) => {
+      transactions++;
+      return f.sql.transaction!(work);
+    },
+  };
+  const checkpointed: string[] = [];
+  const idle = createRuntimeIdle(
+    countedSql,
+    ENCRYPTION_KEY,
+    async (_actor, input, guard) => {
+      await guard!(countedSql);
+      checkpointed.push(input.id);
+      throw Error("stop before provider");
+    },
+    { delayMs: 100, now: () => 1000, dockerStop: async () => {} },
+  );
+  const firstMore = await idle.reconcileOne(new AbortController().signal);
+  const secondMore = await idle.reconcileOne(new AbortController().signal);
+  expect([firstMore, secondMore]).toEqual([true, false]);
+  expect(transactions).toBe(1);
+  expect(checkpointed).toEqual([ids[19]!]);
+});
