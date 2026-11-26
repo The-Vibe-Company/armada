@@ -29,13 +29,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     ],
     ["--armada-access", "--keep-after-merge"],
   );
-  if (
-    single(args, "--org") &&
-    single(args, "--credential-id") &&
-    single(args, "--agent") &&
-    single(args, "--provider") &&
-    (args.positionals.length || single(args, "--host") || single(args, "--golden"))
-  )
+  if (single(args, "--provider") && (args.positionals.length || single(args, "--host") || single(args, "--golden")))
     return argv;
   const result = [...argv];
   const origin = await resolveArmadaOrigin(auth);

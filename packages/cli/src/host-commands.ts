@@ -1,3 +1,4 @@
+import { AuthError } from "@armada/auth";
 import {
   API_FAILURE_HELP,
   DOCKER_HOST_DRAINING_MESSAGE,
@@ -26,11 +27,14 @@ const HELP = "Usage: armada host add|ls|limits|rm. Run armada host --help for op
 const invalid = (message: string): never => {
   throw new GoldenError("invalid_config", message);
 };
+const unavailable = (message: string): never => {
+  throw new AuthError(message, "unavailable");
+};
 
 export async function listHosts(client: ArmadaCommandClient, org: string): Promise<DockerHostListResponse> {
   const value = await client.dockerHost<unknown>("list", { org });
   if (!record(value) || typeof value.placement !== "boolean" || !Array.isArray(value.hosts))
-    return invalid("The server returned an invalid host list.");
+    return unavailable("The server returned an invalid host list.");
   const ids = new Set<string>();
   for (const host of value.hosts) {
     if (
@@ -59,7 +63,7 @@ export async function listHosts(client: ArmadaCommandClient, org: string): Promi
       !Number.isSafeInteger(host.sandboxes) ||
       Number(host.sandboxes) < 0
     )
-      return invalid("The server returned an invalid host list.");
+      return unavailable("The server returned an invalid host list.");
     ids.add(host.id);
   }
   return value as unknown as DockerHostListResponse;
@@ -194,7 +198,7 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
   }
   if (operation === "rm") {
     const result = await client.dockerHost<{ revoked: boolean }>("revoke", { org, hostId });
-    if (result?.revoked !== true) return invalid("The server did not confirm host revocation.");
+    if (result?.revoked !== true) return unavailable("The server did not confirm host revocation.");
     auth.out(
       flag(args, "--json") ? `${JSON.stringify({ hostId, revoked: true })}\n` : `Revoked Docker host ${hostId}.\n`,
     );
@@ -216,7 +220,9 @@ Next cleanup: ${host.nextCleanupAt ?? "none reported"} (last check-in: ${host.la
     typeof ticket.expiresAt !== "string" ||
     !Number.isFinite(Date.parse(ticket.expiresAt))
   )
-    return invalid("The server returned an invalid host registration. Do not reissue until its outcome is reconciled.");
+    return unavailable(
+      "The server returned an invalid host registration. Do not reissue until its outcome is reconciled.",
+    );
   if (flag(args, "--json")) {
     auth.out(`${JSON.stringify(ticket)}\n`);
     return 0;

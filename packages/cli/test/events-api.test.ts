@@ -134,13 +134,13 @@ describe("events through the Armada API", () => {
   test("rejects a draining response that has more events without a new cursor", async () => {
     let err = "";
     const code = await run(
-      ["events", id, "-f"],
+      ["events", id, "--follow"],
       { out: () => undefined, err: (text) => (err += text) },
       {
         auth: auth(async () => Response.json({ events: [], cursor: null, hasMore: true, settled: true })),
       },
     );
-    expect(code).toBe(2);
+    expect(code).toBe(1);
     expect(err).toContain("did not advance its cursor");
   });
 

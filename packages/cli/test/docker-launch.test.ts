@@ -391,3 +391,40 @@ test("Docker launch omits an unspecified account for server default resolution w
     }),
   ).toMatchObject({ code: 2 });
 });
+
+test("Docker launch and snapshot protocol mismatches exit 1 as typed operational errors", async () => {
+  const badLaunch = await capture(args, async () => Response.json({ sandbox: { id: requestId } }));
+  expect(badLaunch.code).toBe(1);
+  expect(badLaunch.err).toContain(idempotencyKey);
+
+  const badList = await capture(["snapshot", "ls", "--provider", "docker", "--org", org], async () =>
+    Response.json({ snapshots: "not-an-array" }),
+  );
+  expect(badList.code).toBe(1);
+  expect(badList.err).toContain("invalid snapshot response");
+
+  const snap = {
+    id: credential,
+    orgId: org,
+    ownerId: org,
+    hostId: host,
+    installationId: host,
+    hostName: "office",
+    hostAvailable: true,
+    provider: "docker",
+    name: "snap",
+    visibility: "org",
+    status: "building",
+    definitionHash: "a".repeat(64),
+    builtOnVersion: null,
+    image: null,
+    config: { repos: [{ url: "https://github.com/acme/web.git", dir: "web" }], init: [] },
+    createdAt: "2026-11-20T00:00:00Z",
+  };
+  const rebuilt = await capture(
+    ["snapshot", "rebuild", host, "--provider", "docker", "--org", org, "--request-id", requestId],
+    async () => Response.json({ snapshot: snap }),
+  );
+  expect(rebuilt.code).toBe(1);
+  expect(rebuilt.err).toContain("Rebuild outcome unknown");
+});

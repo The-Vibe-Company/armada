@@ -96,3 +96,26 @@ test("safe sandbox list renders metadata-only access without interior lookups an
     }
   }
 });
+
+test("invalid sandbox list pages and metadata exit 1 as operational failures", async () => {
+  for (const body of [{ sandboxes: null }, { sandboxes: [{ id: 123 }] }]) {
+    let err = "";
+    const code = await run(
+      ["ls"],
+      { out: () => {}, err: (text) => (err += text) },
+      {
+        auth: {
+          out: () => {},
+          err: (text) => (err += text),
+          env: { ARMADA_TOKEN: "fixture-session" },
+          fetch: async () => Response.json(body),
+          now: () => new Date(0),
+          open: () => {},
+          session: memorySessionStore(),
+        },
+      },
+    );
+    expect(code).toBe(1);
+    expect(err).toMatch(/invalid/i);
+  }
+});

@@ -11,6 +11,7 @@ async function invoke(
   respond: (request: Request) => Response | Promise<Response>,
   readStdin?: () => Promise<string>,
   expiresAt = "2099-01-01T00:00:00.000Z",
+  opts: { stdoutIsTTY?: boolean; env?: Record<string, string> } = {},
 ) {
   let stdout = "";
   let stderr = "";
@@ -20,9 +21,10 @@ async function invoke(
   };
   const code = await run(["api", ...args], io, {
     ...(readStdin ? { readStdin } : {}),
+    ...(opts.stdoutIsTTY === undefined ? {} : { stdoutIsTTY: opts.stdoutIsTTY }),
     auth: {
       ...io,
-      env: {},
+      env: opts.env ?? {},
       now: unused,
       open: unused,
       session: memorySessionStore({ accessToken, refreshToken, expiresAt, armadaUrl: origin }),
@@ -56,17 +58,44 @@ test.each([
   expect(await request?.text()).toBe(body);
 });
 
-test("api maps HTTP failures without echoing response text, codes or request secrets", async () => {
-  const secret = "private-value";
-  const output = await invoke(
-    ["secrets/set", "-"],
-    () => Response.json({ error: { code: "private_value", message: `${accessToken} ${secret}` } }, { status: 403 }),
-    async () => JSON.stringify({ value: secret }),
-  );
-  expect(output.code).toBe(1);
-  expect(output.stdout).toBe("");
-  expect(output.stderr).toContain("Armada API request failed (HTTP 403).");
-  for (const value of [accessToken, secret, "private_value"]) expect(output.stderr).not.toContain(value);
+test("api surfaces parsed server error code and message, maps 401 to unauthorized, and falls back on non-JSON", async () => {
+  const cases = [
+    [
+      () => Response.json({ error: { code: "forbidden", message: "Admin required." } }, { status: 403 }),
+      1,
+      "forbidden",
+      "Admin required. (HTTP 403)",
+      {},
+    ],
+    [
+      () => Response.json({ error: { code: "invalid_request", message: "Bad field." } }, { status: 400 }),
+      2,
+      "invalid_request",
+      "Bad field. (HTTP 400)",
+      {},
+    ],
+    [
+      () => Response.json({ error: { code: "token_revoked", message: "Key revoked." } }, { status: 401 }),
+      3,
+      "unauthorized",
+      "Key revoked. (HTTP 401)",
+      { ARMADA_TOKEN: "key" },
+    ],
+    [
+      () => new Response("<html>proxy</html>", { status: 502 }),
+      1,
+      "api_error",
+      "Armada API request failed (HTTP 502).",
+      {},
+    ],
+  ] as const;
+  for (const [respond, exit, code, message, env] of cases) {
+    const out = await invoke(["org/list"], respond, undefined, undefined, { stdoutIsTTY: false, env });
+    expect(out.code).toBe(exit);
+    expect(out.stdout).toBe("");
+    expect(JSON.parse(out.stderr).error).toMatchObject({ code, message });
+    expect(out.stderr).not.toContain("<html>");
+  }
 });
 
 test("api rejects malformed UTF-8 from stdin before sending a JSON body", async () => {
