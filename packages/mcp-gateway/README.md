@@ -25,7 +25,10 @@ https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
   - `connect({actorId, connectionId, resource, client?, scope?, resourceMetadataUrl?})`
     → `{authorizationUrl}`. `client` is issuer-bound preregistration, including
     optional client secret. Otherwise CIMD when advertised/configured, then legacy
-    DCR. Resource challenge scope takes priority over configured/PRM scopes.
+    DCR. Probes `resource` with `GET`, falling back to a `POST` `initialize` probe
+    on `405`, unless both `resourceMetadataUrl` and `scope` (or a service binding)
+    are already supplied. When probed, resource challenge scope takes priority over
+    configured/PRM scopes.
   - `callback({actorId, state, code, issuer?}): Promise<void>`
   - `access(actorId, connectionId, resource): Promise<string>`: control-server-only
     access token; **never** send this return value to a sandbox/dashboard.
@@ -181,9 +184,10 @@ mandatory when advertised; scope and canonical resource are bound to the flow.
 Opaque upstream tokens cannot be independently introspected for audience; the
 broker supplies RFC8707 resource in authorization, code and refresh exchanges,
 and binds stored tokens to that resource/issuer. JWT signature validation or
-provider-specific introspection is not claimed. Missing token expiry, missing
-S256, unavailable registration, non-bearer tokens and endpoint incompatibilities
-produce actionable states, not connected stubs. No refresh token means reconnect
+provider-specific introspection is not claimed. Omitted `expires_in` is accepted
+for valid bearer access tokens per RFC 6749 §5.1; non-positive or non-finite
+`expires_in`, missing S256, unavailable registration, non-bearer tokens and
+endpoint incompatibilities produce actionable states, not connected stubs. No refresh token means reconnect
 on expiry. DPoP, custom client assertions, device grants and proprietary flows are
 not automated. No third-party grant was created during development.
 
