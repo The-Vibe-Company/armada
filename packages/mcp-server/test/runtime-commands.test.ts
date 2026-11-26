@@ -1866,7 +1866,7 @@ test("workspace health diagnostics distinguish delivery, acknowledgement, and re
       .map(([line]) => JSON.parse(line))
       .filter((entry) => entry.event === "runtime_workspace_command" && entry.commandId === requestId);
     expect(lines.map(({ stage }) => stage)).toEqual(["admitted", "sent_poll", "result_acknowledged", "observed"]);
-    expect(lines.at(-1)).toMatchObject({ sandboxId: f.id, epoch: active.epoch, observedAtMs: 54_000, resultReads: 2 });
+    expect(lines.at(-1)).toMatchObject({ sandboxId: f.id, epoch: active.epoch, observedAtMs: 54_000, resultReads: 1 });
     expect(JSON.stringify(lines)).not.toContain("not-for-logs");
     info.mockClear();
     await bridge.call(f.people.owner, f.command(requestId), { expectedEpoch: active.epoch });
@@ -1874,4 +1874,92 @@ test("workspace health diagnostics distinguish delivery, acknowledgement, and re
   } finally {
     info.mockRestore();
   }
+});
+
+test("callCommand watches before enqueue, polls non-lockingly, and startup wakes on enrolment", async () => {
+  const f = await fixture(250);
+  const active = await f.enrol();
+  let ownerLocks = 0;
+  let waitCalls = 0;
+  const origWithOwner = f.authority.withOwner;
+  const authority = {
+    ...f.authority,
+    withOwner: ((...args: Parameters<typeof origWithOwner>) => {
+      ownerLocks++;
+      return origWithOwner(...args);
+    }) as typeof origWithOwner,
+  };
+  let now = 0;
+  const bridge = createRuntimeCommands(authority, ENCRYPTION_KEY, {
+    now: () => now,
+    async wait() {
+      waitCalls++;
+      now += 250;
+      if (waitCalls !== 2) return;
+      const { command } = await bridge.next(active.runtimeToken, active.epoch);
+      await bridge.complete(active.runtimeToken, active.epoch, {
+        epoch: active.epoch,
+        requestId: command!.requestId,
+        status: 200,
+        body: { version: 1, requestId: command!.requestId, result: { ok: true } },
+      });
+    },
+  });
+  expect((await bridge.call(f.people.owner, f.command("wake-first"), { expectedEpoch: active.epoch })).status).toBe(
+    200,
+  );
+  expect([waitCalls, ownerLocks]).toEqual([2, 2]);
+  ownerLocks = 0;
+  const { runtimeWakes } = await import("../src/wake-bus.ts");
+  const unsub = runtimeWakes.subscribe(`socket:${f.id}`, () => {
+    void bridge.complete(active.runtimeToken, active.epoch, {
+      epoch: active.epoch,
+      requestId: "instant-reply",
+      status: 200,
+      body: { version: 1, requestId: "instant-reply", result: { ok: true } },
+    });
+  });
+  try {
+    const fast = createRuntimeCommands(authority, ENCRYPTION_KEY, {
+      now: () => now,
+      wait: () => new Promise<void>(() => {}),
+    });
+    expect((await fast.call(f.people.owner, f.command("instant-reply"), { expectedEpoch: active.epoch })).status).toBe(
+      200,
+    );
+    expect(ownerLocks).toBe(2);
+  } finally {
+    unsub();
+  }
+  const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+  let token: string | undefined;
+  const enteredWait = Promise.withResolvers<void>();
+  const start = createRuntimeStartup(
+    f.authority,
+    {
+      async bootstrap(input) {
+        token = input.enrolmentToken;
+      },
+      health: async (_signal, epoch) => ({ runtime: "armada", epoch }),
+    },
+    {
+      now: () => 0,
+      wait() {
+        enteredWait.resolve();
+        return new Promise<void>(() => {});
+      },
+    },
+  );
+  const pending = start({
+    ownerId: f.people.owner,
+    sandboxId: f.id,
+    providerSandboxId: "command-native",
+    serverUrl: "https://armada.invalid",
+    cacheDir: "/cache",
+    artifact: { sha256: "a".repeat(64), bytes: 10 },
+    configuration: { selectedHarness: "codex" },
+  });
+  await enteredWait.promise;
+  const enrolled = await f.authority.enrol(token!);
+  expect(await pending).toEqual({ runtime: "armada", epoch: enrolled.epoch });
 });

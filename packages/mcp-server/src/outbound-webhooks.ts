@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { Resolver } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
+import { BodyTooLargeError, readBoundedText } from "@armada/auth";
 import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { CallerResult } from "./caller.ts";
 import type { Route } from "./http.ts";
@@ -103,23 +104,47 @@ export function createOutboundWebhooks(
   dashboardUrl: string,
   { now = Date.now, send = deliver } = {},
 ) {
-  async function publicPayload(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (typeof payload.promptId !== "string") return payload;
+  async function publicPayloads(payloads: readonly Record<string, unknown>[]) {
+    const sandboxIds = [
+      ...new Set(
+        payloads.flatMap((p) =>
+          typeof p.promptId === "string" && typeof p.sandboxId === "string" ? [p.sandboxId] : [],
+        ),
+      ),
+    ];
+    if (!sandboxIds.length) return [...payloads];
     const receipts = await sql.query<{
+      sandbox_id: string;
       request_id: string;
       native_prompt_id: string | null;
       result_enc: Uint8Array<ArrayBuffer> | null;
     }>(
-      `select request_id,native_prompt_id,result_enc from public.account_turn_queue
-       where sandbox_id=$1 and (native_prompt_id is not null or result_enc is not null) order by sequence`,
-      [payload.sandboxId],
+      `select sandbox_id::text as sandbox_id,request_id,native_prompt_id,result_enc from public.account_turn_queue
+       where sandbox_id = any($1::uuid[]) and (native_prompt_id is not null or result_enc is not null) order by sequence`,
+      [sandboxIds],
     );
-    const aliases = await queuedPromptAliases(receipts.rows, key);
-    for (const receipt of receipts.rows) {
-      if (receipt.native_prompt_id) aliases.set(receipt.native_prompt_id, receipt.request_id);
+    const bySandbox = new Map<string, typeof receipts.rows>();
+    for (const r of receipts.rows) {
+      const group = bySandbox.get(r.sandbox_id) ?? [];
+      group.push(r);
+      bySandbox.set(r.sandbox_id, group);
     }
-    return { ...payload, promptId: aliases.get(payload.promptId) ?? payload.promptId };
+    const aliasesBySandbox = new Map<string, Map<string, string>>();
+    for (const [sandboxId, group] of bySandbox) {
+      const aliases = await queuedPromptAliases(
+        group.filter((r) => !r.native_prompt_id && r.result_enc !== null),
+        key,
+      );
+      for (const r of group) if (r.native_prompt_id) aliases.set(r.native_prompt_id, r.request_id);
+      aliasesBySandbox.set(sandboxId, aliases);
+    }
+    return payloads.map((p) =>
+      typeof p.promptId === "string" && typeof p.sandboxId === "string"
+        ? { ...p, promptId: aliasesBySandbox.get(p.sandboxId)?.get(p.promptId) ?? p.promptId }
+        : p,
+    );
   }
+  const publicPayload = async (payload: Record<string, unknown>) => (await publicPayloads([payload]))[0]!;
   return {
     route(authenticate: (request: Request) => Promise<CallerResult>): Route {
       return async (request) => {
@@ -143,10 +168,9 @@ export function createOutboundWebhooks(
               where e.org_id=$1 and ($2::uuid is null or e.id=$2::uuid) order by d.created_at desc,d.id desc limit 100`,
               [org, endpoint],
             );
+            const payloads = await publicPayloads(rows.rows.map((row) => row.payload));
             return Response.json({
-              deliveries: await Promise.all(
-                rows.rows.map(async (row) => ({ ...row, payload: await publicPayload(row.payload) })),
-              ),
+              deliveries: rows.rows.map((row, index) => ({ ...row, payload: payloads[index]! })),
             });
           }
           if (path === "/api/v1/webhooks" && request.method === "GET") {
@@ -157,8 +181,14 @@ export function createOutboundWebhooks(
             return Response.json({ endpoints: rows.rows });
           }
           if (path === "/api/v1/webhooks" && request.method === "POST") {
-            const raw = await request.text();
-            if (raw.length > 4096) return Response.json({ error: "body too large" }, { status: 413 });
+            let raw: string;
+            try {
+              raw = await readBoundedText(request, 4096);
+            } catch (error) {
+              if (error instanceof BodyTooLargeError)
+                return Response.json({ error: "body too large" }, { status: 413 });
+              throw error;
+            }
             let target: URL;
             try {
               target = endpointUrl((JSON.parse(raw) as { url?: unknown }).url);

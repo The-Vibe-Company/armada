@@ -266,6 +266,8 @@ test("socket and reply polls deliver writes from another process without wakes",
     expect(await sleeping.promise).toBe(250);
     expect(socket.sent).toHaveLength(0);
     await f.tick();
+    expect(socket.sent).toHaveLength(0);
+    await f.tick(15_000);
     expect(socket.sent).toMatchObject([{ type: "command", request: { requestId: request.requestId } }]);
     const result = { epoch: active.epoch, requestId: request.requestId, status: 200, body: {} };
     await f.db.query("update runtime_commands set result_enc=$1 where sandbox_id=$2 and request_id=$3", [
@@ -277,6 +279,47 @@ test("socket and reply polls deliver writes from another process without wakes",
     expect(await reply).toEqual(result);
   } finally {
     abort.abort();
+    await f.sockets.stop();
+  }
+});
+
+test("idle and waiting sockets skip FOR UPDATE polling and avoid duplicate withSession on ready and ping", async () => {
+  const f = await fixture();
+  let sessions = 0;
+  let queries = 0;
+  const origWithSession = f.authority.withSession;
+  const origQuery = f.authority.query;
+  f.authority.withSession = ((...args: Parameters<typeof origWithSession>) => {
+    sessions++;
+    return origWithSession(...args);
+  }) as typeof origWithSession;
+  f.authority.query = ((...args: Parameters<typeof origQuery>) => {
+    queries++;
+    return origQuery(...args);
+  }) as typeof origQuery;
+  try {
+    const active = await f.enrol();
+    const sent = Promise.withResolvers<string>();
+    const socket = await f.connect(active, sent.resolve);
+    sessions = 0;
+    queries = 0;
+    await socket.message({ type: "ready", epoch: active.epoch });
+    expect(sessions).toBe(1);
+    for (let i = 0; i < 14; i++) await f.tick(1000);
+    expect([sessions, queries]).toEqual([1, 0]);
+    await f.tick(1000);
+    expect([sessions, queries]).toEqual([1, 1]);
+    await socket.message({ type: "ping", epoch: active.epoch });
+    expect(sessions).toBe(2);
+    await f.commands.enqueue(f.people.owner, { version: 1, sandboxId: f.id, requestId: "busy", op: "health" });
+    expect(await sent.promise).toBe("busy");
+    sessions = 0;
+    queries = 0;
+    await f.tick(15_000);
+    expect([sessions, queries]).toEqual([0, 0]);
+    await f.tick(15_000);
+    expect(socket.code()).toBe(1001);
+  } finally {
     await f.sockets.stop();
   }
 });

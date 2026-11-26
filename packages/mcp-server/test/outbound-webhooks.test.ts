@@ -98,7 +98,7 @@ test("delivery logs translate queued native receipts to the public send identity
   const sql: Sql = {
     query: async <T>(query: string) => ({
       rows: (query.includes("account_turn_queue")
-        ? [{ request_id: "public_request", result_enc: encrypted }]
+        ? [{ sandbox_id: "sandbox_id", request_id: "public_request", native_prompt_id: null, result_enc: encrypted }]
         : [{ payload: { sandboxId: "sandbox_id", promptId: "native_prompt", type: "turn.finished" } }]) as T[],
     }),
   };
@@ -144,4 +144,55 @@ test("HTTPS delivery to a hostname connects to the pinned address through the re
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+});
+
+test("deliveries batch account_turn_queue in one query and POST rejects streams over 4096 bytes", async () => {
+  const [s1, s2] = ["00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000022"];
+  const encrypted = await encryptSecret(JSON.stringify({ promptId: "native_2" }), key);
+  const queueParams: unknown[][] = [];
+  const sql: Sql = {
+    query: async <T>(query: string, params?: unknown[]) => {
+      if (!query.includes("account_turn_queue"))
+        return {
+          rows: [
+            { payload: { sandboxId: s1, promptId: "native_1" } },
+            { payload: { sandboxId: s1, promptId: "native_1" } },
+            { payload: { sandboxId: s2, promptId: "native_2" } },
+          ] as T[],
+        };
+      expect(query).toContain("sandbox_id = any($1::uuid[])");
+      queueParams.push(params ?? []);
+      return {
+        rows: [
+          { sandbox_id: s1, request_id: "pub_1", native_prompt_id: "native_1", result_enc: new Uint8Array([1]) },
+          { sandbox_id: s2, request_id: "pub_2", native_prompt_id: null, result_enc: encrypted },
+        ] as T[],
+      };
+    },
+  };
+  const route = createOutboundWebhooks(sql, key, "https://armada.example").route(async () => ({
+    ok: true,
+    caller: { userId: "user", via: "service", orgs: [{ orgId: org, role: "admin" }] },
+  }));
+  const list = await route(new Request(`https://armada.example/api/v1/webhooks/deliveries?org=${org}`));
+  expect([list?.status, queueParams]).toEqual([200, [[[s1, s2]]]]);
+  expect(await list?.json()).toEqual({
+    deliveries: [
+      { payload: { sandboxId: s1, promptId: "pub_1" } },
+      { payload: { sandboxId: s1, promptId: "pub_1" } },
+      { payload: { sandboxId: s2, promptId: "pub_2" } },
+    ],
+  });
+  let pulled = 0;
+  const oversized = new ReadableStream<Uint8Array>({
+    pull(c) {
+      pulled++;
+      c.enqueue(new Uint8Array(2049).fill(97));
+    },
+  });
+  const created = await route(
+    new Request(`https://armada.example/api/v1/webhooks?org=${org}`, { method: "POST", body: oversized }),
+  );
+  expect(created?.status).toBe(413);
+  expect(pulled).toBeLessThanOrEqual(3);
 });

@@ -22,6 +22,8 @@ const clock: Clock = {
   },
 };
 type Socket = ServerWebSocket<RuntimeSocketData>;
+const IDLE_POLL_MS = 15_000;
+
 interface Connection {
   ready: boolean;
   closed: boolean;
@@ -30,6 +32,7 @@ interface Connection {
   messageBusy: boolean;
   waiting: string | undefined;
   lastSeen: number;
+  lastPoll: number;
   cancel(): void;
 }
 
@@ -63,6 +66,34 @@ export function createRuntimeSockets(
   function failure(socket: Socket, error: unknown) {
     end(socket, error instanceof RuntimeEnrolmentDenied ? 4401 : 1012);
   }
+  function deliver(socket: Socket, state: Connection, value: { epoch: string; command: { requestId: string } | null }) {
+    if (stopping || state.closed) return;
+    if (!value.command) {
+      state.waiting = undefined;
+      return;
+    }
+    if (value.command.requestId === state.waiting) return; // Never flood a pending native RPC.
+    const frame = JSON.stringify({ type: "command", epoch: value.epoch, request: value.command });
+    if (Buffer.byteLength(frame) > 1048576) throw Error("runtime_frame_too_large");
+    if (socket.send(frame) === 0) {
+      end(socket, 1012);
+      return;
+    }
+    state.waiting = value.command.requestId;
+    logWorkspaceCommand(socket.data, state.waiting, "sent_socket", time.now());
+  }
+  function checkDeadlines(socket: Socket, state: Connection) {
+    const elapsed = time.now() - state.lastSeen;
+    if (!state.ready) {
+      if (elapsed >= 8000) end(socket, 1002);
+      return false;
+    }
+    if (elapsed >= 30000) {
+      end(socket, 1001);
+      return false;
+    }
+    return true;
+  }
   async function pump(socket: Socket, woken = false) {
     const state = connections.get(socket);
     if (!state || state.closed || stopping) return;
@@ -70,40 +101,37 @@ export function createRuntimeSockets(
       state.woken ||= woken;
       return;
     }
-    if (!state.ready) {
-      if (time.now() - state.lastSeen >= 8000) end(socket, 1002);
-      return;
-    }
-    if (time.now() - state.lastSeen >= 30000) {
-      end(socket, 1001);
-      return;
-    }
+    if (!checkDeadlines(socket, state)) return;
+    if (!woken && state.waiting !== undefined) return;
     state.busy = true;
     try {
+      let needsFullCheck = woken;
       do {
         state.woken = false;
-        await commands.withNext(socket.data.token, socket.data.epoch, async (value) => {
-          if (stopping || state.closed) return;
-          if (!value.command) {
-            state.waiting = undefined;
-            return;
+        state.lastPoll = time.now();
+        if (!needsFullCheck && !(await commands.hasPending(socket.data.sandboxId, socket.data.epoch))) {
+          if (state.woken) {
+            needsFullCheck = true;
+            continue;
           }
-          if (value.command.requestId === state.waiting) return; // Never flood a pending native RPC.
-          const frame = JSON.stringify({ type: "command", epoch: value.epoch, request: value.command });
-          if (Buffer.byteLength(frame) > 1048576) throw Error("runtime_frame_too_large");
-          if (socket.send(frame) === 0) {
-            end(socket, 1012);
-            return;
-          }
-          state.waiting = value.command.requestId;
-          logWorkspaceCommand(socket.data, state.waiting, "sent_socket", time.now());
-        });
+          break;
+        }
+        needsFullCheck = true;
+        await commands.withNext(socket.data.token, socket.data.epoch, async (value) => deliver(socket, state, value));
       } while (state.woken && !state.closed && !stopping);
     } catch (error) {
       failure(socket, error);
     } finally {
       state.busy = false;
     }
+  }
+  function tick(socket: Socket) {
+    const state = connections.get(socket);
+    if (!state || state.closed || stopping) return;
+    if (!checkDeadlines(socket, state)) return;
+    if (state.waiting !== undefined || state.busy) return;
+    if (time.now() - state.lastPoll < IDLE_POLL_MS) return;
+    return track(pump(socket, false));
   }
   async function message(socket: Socket, raw: string | Buffer) {
     const state = connections.get(socket);
@@ -142,32 +170,48 @@ export function createRuntimeSockets(
         end(socket, 1002);
         return;
       }
-      await authority.withSession(socket.data.token, socket.data.epoch, async () => {
-        if (state.closed || stopping) return;
-        if (value.type === "ready") {
-          if (state.ready) {
-            end(socket, 1002);
-            return;
+      if (value.type === "ready") {
+        if (state.ready) {
+          end(socket, 1002);
+          return;
+        }
+        state.busy = true;
+        try {
+          state.woken = false;
+          await commands.withNext(socket.data.token, socket.data.epoch, async (next) => {
+            if (state.closed || stopping) return;
+            state.ready = true;
+            state.lastSeen = time.now();
+            state.lastPoll = state.lastSeen;
+            deliver(socket, state, next);
+          });
+          while (state.woken && !state.closed && !stopping) {
+            state.woken = false;
+            state.lastPoll = time.now();
+            await commands.withNext(socket.data.token, socket.data.epoch, async (next) => deliver(socket, state, next));
           }
-          state.ready = true;
-        } else {
-          if (!state.ready) {
-            end(socket, 1002);
-            return;
-          }
+        } finally {
+          state.busy = false;
+        }
+      } else {
+        if (!state.ready) {
+          end(socket, 1002);
+          return;
+        }
+        await authority.withSession(socket.data.token, socket.data.epoch, async () => {
+          if (state.closed || stopping) return;
           if (socket.send(JSON.stringify({ type: "pong", epoch: socket.data.epoch })) === 0) {
             end(socket, 1012);
             return;
           }
-        }
-        state.lastSeen = time.now();
-      });
+          state.lastSeen = time.now();
+        });
+      }
     } catch (error) {
       failure(socket, error);
     } finally {
       state.messageBusy = false;
     }
-    await pump(socket);
   }
   const websocket: WebSocketHandler<RuntimeSocketData> = {
     maxPayloadLength: 1024,
@@ -180,6 +224,7 @@ export function createRuntimeSockets(
         socket.close(1012);
         return;
       }
+      const openedAt = time.now();
       const state: Connection = {
         ready: false,
         closed: false,
@@ -187,11 +232,12 @@ export function createRuntimeSockets(
         woken: false,
         messageBusy: false,
         waiting: undefined,
-        lastSeen: time.now(),
+        lastSeen: openedAt,
+        lastPoll: openedAt,
         cancel: () => {},
       };
       connections.set(socket, state);
-      const cancelTimer = time.every(1000, () => track(pump(socket)));
+      const cancelTimer = time.every(1000, () => tick(socket));
       const unsubscribe = runtimeWakes.subscribe(`socket:${socket.data.sandboxId}`, () => {
         track(pump(socket, true));
       });

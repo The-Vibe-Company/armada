@@ -256,7 +256,81 @@ test("cursor=tail starts at frontier, caches auth for AUTH_REVALIDATE_MS, and wi
   );
   await failing.ready;
   expect(errors).toHaveLength(1);
+  expect(failing.isHealthy()).toBe(false);
   expect(failClosed).toBe(1);
   await Promise.all([failing.close(), failing.close()]);
   expect(failClosed).toBe(1);
+});
+
+test("notify listener tracks health across backoff reconnects and SSE widens recheck to 15s while healthy", async () => {
+  const bus = createWakeBus();
+  const waits: number[] = [];
+  const gates: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+  const disconnect = Promise.withResolvers<void>();
+  let attempts = 0;
+  const listener = startEventNotifyListener(
+    () => ({
+      async listen() {
+        attempts++;
+        if (attempts <= 2) throw new Error("down");
+        if (attempts === 3) return { unlisten: async () => {}, closed: disconnect.promise };
+        return { unlisten: async () => {} };
+      },
+      async close() {},
+    }),
+    bus,
+    () => {},
+    {
+      initialBackoffMs: 1_000,
+      maxBackoffMs: 4_000,
+      wait: async (ms, signal) => {
+        waits.push(ms);
+        const gate = Promise.withResolvers<void>();
+        gates.push(gate);
+        signal.addEventListener("abort", () => gate.resolve(), { once: true });
+        await gate.promise;
+      },
+    },
+  );
+  await listener.ready;
+  expect([listener.isHealthy(), bus.isNotifyHealthy(), waits]).toEqual([false, false, [1_000]]);
+  gates[0]!.resolve();
+  await new Promise<void>((r) => setImmediate(r));
+  expect([listener.isHealthy(), waits]).toEqual([false, [1_000, 2_000]]);
+  gates[1]!.resolve();
+  await new Promise<void>((r) => setImmediate(r));
+  expect([listener.isHealthy(), bus.isNotifyHealthy()]).toEqual([true, true]);
+
+  const f = await fixture();
+  let now = 0;
+  const sseWaits: number[] = [];
+  const response = await createEventStream(
+    {
+      now: () => now,
+      wait: async (ms) => {
+        sseWaits.push(ms);
+        now += ms;
+      },
+    },
+    () => listener.isHealthy(),
+  )(f.request(), f.options);
+  const reader = response.body!.getReader();
+  try {
+    expect(decoder.decode((await reader.read()).value)).toBe(": connected\n\n");
+    expect(decoder.decode((await reader.read()).value)).toBe(": heartbeat\n\n");
+    expect(sseWaits).toEqual([15_000]);
+    disconnect.resolve();
+    await new Promise<void>((r) => setImmediate(r));
+    expect([listener.isHealthy(), bus.isNotifyHealthy(), waits]).toEqual([false, false, [1_000, 2_000, 1_000]]);
+    sseWaits.length = 0;
+    expect(decoder.decode((await reader.read()).value)).toBe(": heartbeat\n\n");
+    expect(sseWaits).toEqual(Array(15).fill(1_000));
+    gates[2]!.resolve();
+    await new Promise<void>((r) => setImmediate(r));
+    expect(listener.isHealthy()).toBe(true);
+  } finally {
+    await reader.cancel();
+    await listener.close();
+    expect([listener.isHealthy(), bus.isNotifyHealthy()]).toEqual([false, false]);
+  }
 });

@@ -2,6 +2,7 @@ import type { Sql } from "@armada/core";
 
 export function createWakeBus() {
   const listeners = new Map<string, Set<() => void>>();
+  let notifyHealthy = false;
   function subscribe(key: string, wake: () => void) {
     let group = listeners.get(key);
     if (!group) {
@@ -39,14 +40,33 @@ export function createWakeBus() {
     return {
       close,
       async wait(signal: AbortSignal, ms = 0, delay = waitForAbort) {
-        if (!wake.signal.aborted) await delay(ms, AbortSignal.any([signal, wake.signal]));
+        if (!wake.signal.aborted && !signal.aborted) {
+          const waiting = AbortSignal.any([signal, wake.signal]);
+          const { promise, resolve } = Promise.withResolvers<void>();
+          const onAbort = () => resolve();
+          waiting.addEventListener("abort", onAbort, { once: true });
+          try {
+            await Promise.race([promise, delay(ms, waiting)]);
+          } finally {
+            waiting.removeEventListener("abort", onAbort);
+          }
+        }
         const notified = wake.signal.aborted;
         if (notified) wake = new AbortController();
         return notified;
       },
     };
   }
-  return { subscribe, notify, wait, watch };
+  return {
+    subscribe,
+    notify,
+    wait,
+    watch,
+    isNotifyHealthy: () => notifyHealthy,
+    setNotifyHealthy(healthy: boolean) {
+      notifyHealthy = healthy;
+    },
+  };
 }
 
 function waitForAbort(_ms: number, signal: AbortSignal) {
@@ -54,7 +74,7 @@ function waitForAbort(_ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 }
 
-export async function waitForTimeout(ms: number, signal: AbortSignal) {
+export async function waitForTimeout(ms: number, signal: AbortSignal, unref = false) {
   if (signal.aborted) return;
   await new Promise<void>((resolve) => {
     const finish = () => {
@@ -63,6 +83,7 @@ export async function waitForTimeout(ms: number, signal: AbortSignal) {
       resolve();
     };
     const timer = setTimeout(finish, ms);
+    if (unref) timer.unref?.();
     signal.addEventListener("abort", finish, { once: true });
   });
 }
@@ -74,48 +95,99 @@ export interface PgNotifyClient {
   listen(
     channel: string,
     onNotify: (payload: string) => void,
-  ): Promise<{ unlisten(): Promise<void> } | (() => Promise<void>)>;
+  ): Promise<{ unlisten(): Promise<void>; closed?: Promise<void> } | (() => Promise<void>)>;
   close?(): Promise<void>;
 }
 const NOTIFY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function startEventNotifyListener(
-  client: PgNotifyClient,
+  clientOrFactory: PgNotifyClient | (() => PgNotifyClient),
   wakes = runtimeWakes,
   logError: (line: string) => void = console.error,
+  options: {
+    initialBackoffMs?: number;
+    maxBackoffMs?: number;
+    wait?: (ms: number, signal: AbortSignal) => Promise<void>;
+  } = {},
 ) {
-  let closed = false;
-  let clientClosed = false;
+  const initialBackoffMs = options.initialBackoffMs ?? 1_000;
+  const maxBackoffMs = options.maxBackoffMs ?? 30_000;
+  const wait = options.wait ?? ((ms, signal) => waitForTimeout(ms, signal, true));
+  const stop = new AbortController();
+  const closedClients = new WeakSet<PgNotifyClient>();
+  let healthy = false;
   let closing: Promise<void> | undefined;
+  let activeClient: PgNotifyClient | undefined;
   let unsubscribe: (() => Promise<void>) | undefined;
-  const closeClient = async () => {
-    if (clientClosed) return;
-    clientClosed = true;
-    await client.close?.().catch(() => {});
+  const setHealthy = (value: boolean) => {
+    healthy = value;
+    wakes.setNotifyHealthy(value);
   };
-  const ready = Promise.resolve()
-    .then(async () => {
-      if (closed) return;
-      const handle = await client.listen(EVENT_NOTIFY_CHANNEL, (p) => {
-        if (NOTIFY_UUID.test(p)) wakes.notify(eventFeedWakeKey(p));
-      });
-      const unlisten = typeof handle === "function" ? handle : () => handle.unlisten();
-      if (closed) await unlisten().catch(() => {});
-      else unsubscribe = unlisten;
-    })
-    .catch(async () => {
-      if (!closed) logError("armada: postgres event notify listener unavailable; using recheck timer.");
-      await closeClient();
-    });
+  const closeClient = async (target: PgNotifyClient | undefined) => {
+    if (!target || closedClients.has(target)) return;
+    closedClients.add(target);
+    await target.close?.().catch(() => {});
+  };
+  const { promise: ready, resolve: markReady } = Promise.withResolvers<void>();
+  const loop = Promise.resolve().then(async () => {
+    let backoff = initialBackoffMs;
+    let logged = false;
+    const markUnavailable = () => {
+      setHealthy(false);
+      if (stop.signal.aborted || logged) return;
+      logged = true;
+      logError("armada: postgres event notify listener unavailable; using recheck timer.");
+    };
+    while (!stop.signal.aborted) {
+      const current = typeof clientOrFactory === "function" ? clientOrFactory() : clientOrFactory;
+      activeClient = current;
+      try {
+        const handle = await current.listen(EVENT_NOTIFY_CHANNEL, (p) => {
+          if (NOTIFY_UUID.test(p)) wakes.notify(eventFeedWakeKey(p));
+        });
+        closedClients.delete(current);
+        const unlisten = typeof handle === "function" ? handle : () => handle.unlisten();
+        if (stop.signal.aborted) {
+          await unlisten().catch(() => {});
+          await closeClient(current);
+          break;
+        }
+        unsubscribe = unlisten;
+        backoff = initialBackoffMs;
+        logged = false;
+        setHealthy(true);
+        markReady();
+        const disconnected = typeof handle === "object" ? handle.closed : undefined;
+        if (!disconnected) return;
+        await Promise.race([disconnected.catch(() => {}), waitForAbort(0, stop.signal)]);
+        if (stop.signal.aborted) return;
+        unsubscribe = undefined;
+        markUnavailable();
+        await closeClient(current);
+      } catch {
+        markUnavailable();
+        await closeClient(current);
+        markReady();
+      }
+      if (stop.signal.aborted) break;
+      await wait(backoff, stop.signal);
+      backoff = Math.min(maxBackoffMs, backoff * 2);
+    }
+    markReady();
+  });
   return {
     ready,
+    isHealthy: () => healthy,
     close() {
       if (closing) return closing;
-      closed = true;
+      setHealthy(false);
+      stop.abort();
       closing = (async () => {
-        await ready;
-        await unsubscribe?.().catch(() => {});
-        await closeClient();
+        await loop;
+        const off = unsubscribe;
+        unsubscribe = undefined;
+        await off?.().catch(() => {});
+        await closeClient(activeClient);
       })();
       return closing;
     },
