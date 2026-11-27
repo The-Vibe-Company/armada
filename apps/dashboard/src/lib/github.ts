@@ -15,6 +15,11 @@ import {
 export const GITHUB_STATE_COOKIE = "armada_github_state";
 export const GITHUB_CALLBACK_PATH = "/github/callback";
 const GITHUB_STATE_MAX_AGE = 600;
+const GITHUB_SLUG_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function isGitHubSlug(value: string) {
+  return value.length > 0 && value.length <= 100 && GITHUB_SLUG_PATTERN.test(value);
+}
 
 /** The state cookie: httpOnly, short lived, and sent only back to the callback. */
 export function githubStateCookieOptions(origin: string): {
@@ -58,7 +63,7 @@ export function githubAuthorizeUrl(app: GitHubApp, input: { redirectUri: string;
  */
 export function githubInstallUrl(slug: string | undefined, state?: string): string | null {
   const trimmed = slug?.trim();
-  if (!trimmed || !/^[A-Za-z0-9-]+$/.test(trimmed)) return null;
+  if (!trimmed || !isGitHubSlug(trimmed)) return null;
   const url = new URL(`https://github.com/apps/${trimmed}/installations/new`);
   if (state && /^[0-9a-f]{48}$/.test(state)) url.searchParams.set("state", state);
   return url.toString();
@@ -71,7 +76,7 @@ export function githubInstallationManageUrl(installation: {
   accountType: "User" | "Organization";
 }): string | null {
   if (!Number.isSafeInteger(installation.id) || installation.id <= 0) return null;
-  if (!/^[A-Za-z0-9-]+$/.test(installation.account)) return null;
+  if (!isGitHubSlug(installation.account)) return null;
   if (installation.accountType === "Organization") {
     return `https://github.com/organizations/${installation.account}/settings/installations/${installation.id}`;
   }
@@ -88,7 +93,7 @@ export function githubAppIdentityFromEnv(env: Record<string, string | undefined>
   const slug = env.GITHUB_APP_SLUG?.trim();
   const rawId = env.GITHUB_APP_ID?.trim();
   const identity: GitHubAppIdentity = {};
-  if (slug && /^[A-Za-z0-9-]+$/.test(slug)) identity.slug = slug;
+  if (slug && isGitHubSlug(slug)) identity.slug = slug;
   if (rawId && /^[1-9][0-9]{0,15}$/.test(rawId)) {
     const appId = Number(rawId);
     if (Number.isSafeInteger(appId)) identity.appId = appId;
@@ -114,7 +119,7 @@ export function installationsForApp(
 }
 
 /** What Settings stores and shows. Not a secret. */
-interface GitHubInstallationRecord {
+export interface GitHubInstallationRecord {
   id: number;
   account: string;
   account_type: "User" | "Organization";
@@ -152,25 +157,126 @@ function storedInstallation(value: unknown): GitHubInstallationRecord | null {
   const accountType = item.account_type;
   const selection = item.repository_selection;
   if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return null;
-  if (typeof account !== "string" || !/^[A-Za-z0-9-]+$/.test(account)) return null;
+  if (typeof account !== "string" || !isGitHubSlug(account)) return null;
   if (accountType !== "User" && accountType !== "Organization") return null;
   if (selection !== "all" && selection !== "selected") return null;
   return { id, account, account_type: accountType, repository_selection: selection };
 }
 
-type GitHubCallbackDecision =
+export type LiveGitHubStatus = {
+  status: "connected" | "not_connected" | "needs_reconnect" | "unavailable";
+  installations: GitHubInstallationRecord[];
+  installUrl: string | null;
+};
+
+type GitHubStatusClient = { post<T>(route: string, body: Record<string, unknown>): Promise<T> };
+
+function parseGitHubInstallUrl(value: unknown) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (url.origin !== "https://github.com" || url.username || url.password || url.hash || url.search) return null;
+    return /^\/apps\/[A-Za-z0-9_-]{1,100}\/installations\/new$/.test(url.pathname) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parseGitHubStatusResponse(value: unknown) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const conn = (value as Record<string, unknown>).connection;
+  if (typeof conn !== "object" || conn === null || Array.isArray(conn)) return null;
+  const row = conn as Record<string, unknown>;
+  const status = row.status;
+  if (status !== "connected" && status !== "not_connected" && status !== "needs_reconnect" && status !== "unavailable")
+    return null;
+  return {
+    status,
+    installations: storedGitHubInstallations(row.installations),
+    installUrl: parseGitHubInstallUrl(row.installUrl),
+  } satisfies LiveGitHubStatus;
+}
+
+export async function syncGitHubStatus(control: GitHubStatusClient) {
+  try {
+    return parseGitHubStatusResponse(await control.post<unknown>("github/status", {}));
+  } catch {
+    return null;
+  }
+}
+
+export type SettingsGitHubView = {
+  state: "connected" | "revoked" | "not-connected";
+  installations: GitHubInstallationRecord[];
+  installUrl: string | null;
+  liveSync: "live" | "fallback" | "unconfigured";
+};
+
+export function resolveSettingsGitHubView(input: {
+  dbConnection: { revoked_at: string | null; installations: unknown } | null;
+  liveStatus: LiveGitHubStatus | null;
+  serverConfigured: boolean;
+  envInstallUrl: string | null;
+}) {
+  const installUrl = input.envInstallUrl ?? input.liveStatus?.installUrl ?? null;
+  let liveSync: SettingsGitHubView["liveSync"] = "unconfigured";
+  if (input.serverConfigured)
+    liveSync = input.liveStatus && input.liveStatus.status !== "unavailable" ? "live" : "fallback";
+  if (!input.dbConnection || input.dbConnection.revoked_at !== null) {
+    return {
+      state: input.dbConnection ? "revoked" : "not-connected",
+      installations: [],
+      installUrl,
+      liveSync,
+    } satisfies SettingsGitHubView;
+  }
+  const status = input.liveStatus?.status;
+  if (status === "connected") {
+    return {
+      state: "connected",
+      installations: input.liveStatus?.installations ?? [],
+      installUrl,
+      liveSync: "live",
+    } satisfies SettingsGitHubView;
+  }
+  if (status === "needs_reconnect" || status === "not_connected") {
+    return {
+      state: status === "needs_reconnect" ? "revoked" : "not-connected",
+      installations: [],
+      installUrl,
+      liveSync: "live",
+    } satisfies SettingsGitHubView;
+  }
+  return {
+    state: "connected",
+    installations: storedGitHubInstallations(input.dbConnection.installations),
+    installUrl,
+    liveSync,
+  } satisfies SettingsGitHubView;
+}
+
+export function githubInstallationsSummary(installations: readonly GitHubInstallationRecord[]) {
+  if (installations.length === 0) return "No GitHub organizations or accounts connected yet.";
+  const orgs = installations.filter((item) => item.account_type === "Organization").length;
+  const users = installations.length - orgs;
+  const orgLabel = `${orgs} GitHub ${orgs === 1 ? "organization" : "organizations"}`;
+  const userLabel = `${users} personal ${users === 1 ? "account" : "accounts"}`;
+  if (orgs > 0 && users > 0) return `Connected to ${orgLabel} and ${userLabel}.`;
+  return `Connected to ${orgs > 0 ? orgLabel : userLabel}.`;
+}
+
+export type GitHubCallbackDecision =
   | { kind: "result"; result: GitHubConnectResult }
+  | { kind: "sync"; installationId: number | null }
   | { kind: "exchange"; mode: "oauth" | "install"; installationId: number | null };
 
 /**
  * What the callback should do.
  *
- * A plain OAuth return requires the state cookie. An install return (`setup_action` install or
- * update, with `installation_id` and `code`) is GitHub's redirect after the person installs the
- * App, which often has no cookie because it started on GitHub or in another browser. That return
- * continues only when this browser has an Armada session and we can check the installation belongs
- * to the App; otherwise it asks the person to sign in. It does not use the "state" failure, and it
- * does not relax the plain OAuth path.
+ * A plain OAuth return requires the state cookie. `setup_action=request` reports pending org-admin approval.
+ * An install/update return without `code` syncs live installations via `github/status` without modifying
+ * credentials. An install/update return with `installation_id` and `code` continues only when this browser has
+ * an Armada session and we can verify the installation belongs to the App.
  */
 export function decideGitHubCallback(input: {
   error: string | null;
@@ -185,12 +291,19 @@ export function decideGitHubCallback(input: {
   const error = input.error?.trim();
   if (error) return { kind: "result", result: error === "access_denied" ? "denied" : "misconfigured" };
 
+  if (input.setupAction === "request") {
+    return { kind: "result", result: input.hasSession ? "requested" : "sign_in" };
+  }
+
   const installationId = parseInstallationId(input.installationId);
+  const isInstallAction = input.setupAction === "install" || input.setupAction === "update";
+  if (isInstallAction && !input.code) {
+    if (!input.hasSession) return { kind: "result", result: "sign_in" };
+    return { kind: "sync", installationId };
+  }
+
   const installReturn =
-    input.canVerifyInstallation &&
-    (input.setupAction === "install" || input.setupAction === "update") &&
-    installationId !== null &&
-    Boolean(input.code);
+    input.canVerifyInstallation && isInstallAction && installationId !== null && Boolean(input.code);
   if (installReturn) {
     if (!input.hasSession) return { kind: "result", result: "sign_in" };
     return { kind: "exchange", mode: "install", installationId };
@@ -240,6 +353,9 @@ export function sameState(expected: string | undefined, actual: string | null): 
 /** What the settings page says after the callback. `needs_install` is not one of these: the callback redirects. */
 export type GitHubConnectResult =
   | "connected"
+  | "synced"
+  | "requested"
+  | "reconnect_required"
   | "denied"
   | "state"
   | "sign_in"
@@ -256,6 +372,18 @@ type GitHubConnectFinish = GitHubConnectResult | "needs_install";
 
 export const GITHUB_RESULT_MESSAGES: Record<GitHubConnectResult, { ok: boolean; text: string }> = {
   connected: { ok: true, text: "GitHub connected. Sandboxes you launch now run git and gh as you." },
+  synced: {
+    ok: true,
+    text: "GitHub organizations synced. Running sandboxes keep their existing GitHub session.",
+  },
+  requested: {
+    ok: true,
+    text: "Organization approval requested. An organization admin needs to approve the Armada GitHub App on GitHub before its repositories appear here.",
+  },
+  reconnect_required: {
+    ok: false,
+    text: "The GitHub App installation was updated, but your GitHub account is not connected to Armada. Choose Connect GitHub below.",
+  },
   denied: { ok: false, text: "GitHub was not connected: the authorization was declined." },
   state: { ok: false, text: "GitHub was not connected: the sign-in expired or came from another browser. Try again." },
   sign_in: {
@@ -298,35 +426,64 @@ export interface ConnectDeps {
     refreshExpiresAt: Date | null;
     installations: GitHubInstallationRecord[] | null;
   }): Promise<boolean>;
+  existingConnection?: { githubId: number; revoked: boolean } | null;
+  syncInstallations?: () => Promise<LiveGitHubStatus | null>;
   /** OAuth `error` and `error_description` only, already safe to print. */
   log?(fields: { error: string | null; error_description: string | null }): void;
   fetch?: typeof fetch;
 }
 
-/**
- * Finishes "Connect GitHub": trades the callback's code for tokens, asks GitHub who the person is,
- * and, when the App's slug or id is known, lists installations of that App.
- *
- * No installation and a slug to send them to is `needs_install`: nothing is saved, so the install
- * flow can authorize again and come back with its own code. An install return names an
- * `installationId` that must be one of those installations. Only the refresh token is kept; the
- * access token is dropped here. Nothing in the result carries a token.
- */
+export async function completeGitHubSync(syncInstallations: (() => Promise<LiveGitHubStatus | null>) | undefined) {
+  if (!syncInstallations) return "unavailable" satisfies GitHubConnectResult;
+  const live = await syncInstallations();
+  if (!live || live.status === "unavailable") return "unavailable" satisfies GitHubConnectResult;
+  return (live.status === "connected" ? "synced" : "reconnect_required") satisfies GitHubConnectResult;
+}
+
+/** Finishes "Connect GitHub", preserving `connection_epoch` via live sync when already connected on an install return. */
 export async function completeGitHubConnection(
   deps: ConnectDeps,
   input: {
     code: string;
     redirectUri: string;
+    mode?: "oauth" | "install";
+    stateVerified?: boolean;
     appIdentity?: GitHubAppIdentity;
     installationId?: number | null;
   },
 ): Promise<GitHubConnectFinish> {
+  const syncInstallations = deps.syncInstallations;
+  const existingConnection = deps.existingConnection;
+  const canPreserveEpoch =
+    input.mode === "install" && existingConnection != null && !existingConnection.revoked && syncInstallations != null;
+  let preservedSyncConnected = false;
+  if (canPreserveEpoch) {
+    const live = await syncInstallations();
+    if (!live || live.status === "unavailable") return "unavailable";
+    if (live.status === "connected") {
+      if (input.installationId == null || live.installations.some((item) => item.id === input.installationId)) {
+        return "synced";
+      }
+      preservedSyncConnected = true;
+    }
+  }
+
   const request = deps.fetch ? { fetch: deps.fetch } : {};
   try {
     const tokens = await exchangeGitHubCode(deps.app, input, request);
     const user = await fetchGitHubUser(tokens.accessToken, request);
     const installations = await installationsToSave(deps, tokens.accessToken, input.appIdentity, input.installationId);
     if (typeof installations === "string") return installations;
+    if (canPreserveEpoch && preservedSyncConnected && existingConnection.githubId === user.id) {
+      const retried = await syncInstallations();
+      return retried?.status === "connected" ? "synced" : "unavailable";
+    }
+    const crossIdentity =
+      input.mode === "install" &&
+      existingConnection &&
+      !existingConnection.revoked &&
+      existingConnection.githubId !== user.id;
+    if (crossIdentity && !input.stateVerified) return "state";
     const refreshTokenEnc = await deps.encrypt(tokens.refreshToken);
     const saved = await deps.save({
       user,
