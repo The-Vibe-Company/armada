@@ -10,6 +10,7 @@ import {
   type GitHubApp,
   GitHubAuthError,
   type GitHubConnectionStore,
+  type GitHubInstallation,
   type GitHubResolveDeps,
   githubAppFromEnv,
   gitIdentity,
@@ -17,6 +18,7 @@ import {
   resolveGitHubAccess,
   type StoredGitHubConnection,
 } from "../src/index.ts";
+import { fetchGitHubInstallationRepositories, isGitHubSlug } from "../src/server.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const USER = "22222222-2222-4222-8222-222222222222";
@@ -691,3 +693,81 @@ async function setup(options: { refresh?: string; login?: string; githubId?: num
 function equal(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
+
+test("accepts EMU underscore slugs and aggregates paginated all/selected installation repos", async () => {
+  expect(isGitHubSlug("alice_acme")).toBe(true);
+  for (const bad of ["", "a/b", "a.b", "a b", "a".repeat(101)]) expect(isGitHubSlug(bad)).toBe(false);
+  const a: GitHubInstallation = {
+    id: 101,
+    appId: 4242,
+    appSlug: "armada_tvc",
+    accountLogin: "acme_emu",
+    accountType: "Organization",
+    repositorySelection: "all",
+  };
+  const b: GitHubInstallation = { ...a, id: 202, accountLogin: "beta-org", repositorySelection: "selected" };
+  const mk = (id: number, login: string, name: string, p = true, branch = "main") => ({
+    id,
+    name,
+    private: p,
+    default_branch: branch,
+    owner: { login },
+  });
+  const urls: string[] = [];
+  const api = (async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    urls.push(url);
+    if (url.includes("/user/installations?"))
+      return Response.json({
+        installations: [a, a, b].map((i) => ({
+          id: i.id,
+          app_id: i.appId,
+          app_slug: i.appSlug,
+          account: { login: i.accountLogin, type: i.accountType },
+          repository_selection: i.repositorySelection,
+        })),
+      });
+    if (url.endsWith("/101/repositories?per_page=100&page=1"))
+      return Response.json({
+        repositories: [
+          mk(1, "acme_emu", "web"),
+          ...Array.from({ length: 99 }, (_, i) => mk(1000 + i, "acme_emu", `s-${i}`)),
+        ],
+      });
+    if (url.endsWith("/101/repositories?per_page=100&page=2"))
+      return Response.json({ repositories: [mk(2, "acme_emu", "api"), mk(1, "acme_emu", "web")] });
+    if (url.endsWith("/202/repositories?per_page=100&page=1"))
+      return Response.json({
+        repositories: [
+          mk(3, "beta-org", "alpha", false),
+          mk(5, "beta-org", "long-br", false, "b".repeat(256)),
+          { id: 4, name: "x", disabled: true },
+        ],
+      });
+    throw new Error(`unexpected ${url}`);
+  }) as typeof fetch;
+  const run = (o: Parameters<typeof fetchGitHubInstallationRepositories>[1]) =>
+    fetchGitHubInstallationRepositories(ACCESS_1, o);
+
+  const all = await run({ fetch: api, appId: 4242 });
+  expect([all.truncated, all.installations.length, all.repositories.length]).toEqual([false, 2, 102]);
+  expect([all.repositories[0]?.fullName, all.repositories.at(-1)?.fullName]).toEqual([
+    "acme_emu/api",
+    "beta-org/alpha",
+  ]);
+  expect(all.repositories.at(-1)).toMatchObject({
+    installationId: 202,
+    repositorySelection: "selected",
+    private: false,
+  });
+
+  urls.length = 0;
+  const f = await run({ installations: [a, b], account: "BETA-ORG", query: "alp", fetch: api });
+  expect(urls).toEqual(["https://api.github.com/user/installations/202/repositories?per_page=100&page=1"]);
+  expect(f.repositories.map((r) => r.fullName)).toEqual(["beta-org/alpha"]);
+  const c = await run({ installations: [a, a], maxPagesPerInstallation: 0, limit: 0, fetch: api });
+  expect([c.truncated, c.installations.length, c.repositories.length]).toEqual([true, 1, 1]);
+  expect((await run({ installations: [] })).repositories).toEqual([]);
+  const bad = (async () => Response.json({ message: "boom" }, { status: 502 })) as unknown as typeof fetch;
+  await expect(run({ installations: [a], fetch: bad })).rejects.toMatchObject({ code: "unavailable" });
+});

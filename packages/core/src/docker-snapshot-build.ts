@@ -7,9 +7,11 @@ import { DOCKER_LOCAL_IMAGE_LABELS } from "./docker-image.ts";
 import type { DockerMachineCli } from "./docker-machine.ts";
 import { type DockerSandboxLimits, dockerHostResources, dockerResourceLimits } from "./docker-resources.ts";
 import { SNAPSHOT_INIT_SUPERVISOR } from "./docker-snapshot-init.ts";
-import { normalizeGitHubGoldenConfig } from "./golden-config.ts";
+import { isGitHubSlug } from "./github.ts";
+import { type GitHubGoldenConfig, normalizeGitHubGoldenConfig } from "./golden-config.ts";
 import { goldenCheckoutScript } from "./golden-create-service.ts";
 import { goldenScanScript } from "./golden-scan.ts";
+import { isRecord } from "./record.ts";
 import {
   SNAPSHOT_BASELINE_VERSION,
   type SnapshotBaselineTool,
@@ -132,7 +134,7 @@ export async function buildDockerSnapshot(
     const config = normalizeGitHubGoldenConfig(job.build.config);
     await writeFile(
       join(directory, "public", "checkout.sh"),
-      `set +x\nset -euo pipefail\nexport ARMADA_GIT_TOKEN="$(cat /run/secrets/github)"\n${goldenCheckoutScript(config.repos, { shallow: true })}\n`,
+      buildCheckoutScript(config.repos, parseDockerSnapshotTokens(job.build.token)),
       { mode: 0o600, flag: "wx" },
     );
     for (const [index, command] of config.init.entries())
@@ -232,4 +234,95 @@ RUN ${snapshotBaselineVerify}
     await options.cli.run(["buildx", "rm", "--force", builder]).catch(() => {});
     if (directory) await rm(directory, { recursive: true, force: true });
   }
+}
+
+const MULTI_TOKEN_PREFIX = "armada-tokens-v1:";
+const ASCII_TOKEN = /^[\x21-\x7e]{1,4096}$/;
+const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+export type DockerSnapshotTokenEntry = { scope: string; token: string };
+export type ParsedDockerSnapshotTokens =
+  | { mode: "single"; token: string }
+  | { mode: "scoped"; tokens: string[]; scopes: Record<string, number> };
+
+function normalizeTokenScope(scope: string) {
+  const [owner, repo, extra] = scope.trim().split("/");
+  if (extra === undefined && owner && isGitHubSlug(owner)) {
+    if (repo === undefined) return owner.toLowerCase();
+    if (REPO_SEGMENT.test(repo)) return `${owner}/${repo}`.toLowerCase();
+  }
+  throw new Error("Invalid Docker snapshot token scope.");
+}
+
+export function encodeDockerSnapshotTokens(entries: readonly DockerSnapshotTokenEntry[]) {
+  if (!entries.length) throw new Error("At least one Docker snapshot token is required.");
+  const tokens: string[] = [];
+  const tokenSlot = new Map<string, number>();
+  const scopes: Record<string, number> = Object.create(null);
+  for (const { scope: rawScope, token } of entries) {
+    const scope = normalizeTokenScope(rawScope);
+    if (!ASCII_TOKEN.test(token)) throw new Error("Invalid Docker snapshot token.");
+    const slot = tokenSlot.get(token) ?? tokens.push(token) - 1;
+    tokenSlot.set(token, slot);
+    if (scopes[scope] !== undefined && scopes[scope] !== slot)
+      throw new Error(`Conflicting Docker snapshot tokens for scope '${scope}'.`);
+    scopes[scope] = slot;
+  }
+  const encoded = `${MULTI_TOKEN_PREFIX}${Buffer.from(JSON.stringify({ tokens, scopes }), "utf8").toString("base64url")}`;
+  if (encoded.length > 8192) throw new Error("Encoded Docker snapshot tokens exceed wire limit.");
+  return encoded;
+}
+
+export function parseDockerSnapshotTokens(raw: string) {
+  if (!raw.startsWith(MULTI_TOKEN_PREFIX)) {
+    if (!/^[\x21-\x7e]{1,8192}$/.test(raw)) throw new Error("Invalid Docker snapshot token.");
+    return { mode: "single", token: raw } satisfies ParsedDockerSnapshotTokens;
+  }
+  const payload = raw.slice(MULTI_TOKEN_PREFIX.length);
+  let parsed: unknown;
+  if (raw.length <= 8192 && payload.length % 4 !== 1 && /^[A-Za-z0-9_-]+$/.test(payload)) {
+    try {
+      parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    } catch {}
+  }
+  const bad = () => new Error("Invalid Docker snapshot token bundle.");
+  if (
+    !isRecord(parsed) ||
+    Object.keys(parsed).length !== 2 ||
+    !Array.isArray(parsed.tokens) ||
+    !isRecord(parsed.scopes)
+  )
+    throw bad();
+  if (!parsed.tokens.length || parsed.tokens.some((t) => typeof t !== "string" || !ASCII_TOKEN.test(t))) throw bad();
+  const tokens = parsed.tokens as string[];
+  const scopes: Record<string, number> = Object.create(null);
+  const entries = Object.entries(parsed.scopes);
+  if (!entries.length) throw bad();
+  for (const [s, slot] of entries) {
+    const valid = typeof slot === "number" && Number.isInteger(slot) && slot >= 0 && slot < tokens.length;
+    if (!valid || normalizeTokenScope(s) !== s) throw bad();
+    scopes[s] = slot;
+  }
+  return { mode: "scoped", tokens, scopes } satisfies ParsedDockerSnapshotTokens;
+}
+
+function buildCheckoutScript(repos: GitHubGoldenConfig["repos"], parsed: ParsedDockerSnapshotTokens) {
+  if (parsed.mode === "single")
+    return `set +x\nset -euo pipefail\nARMADA_GIT_TOKEN="$(cat /run/secrets/github)"\nexport ARMADA_GIT_TOKEN\n${goldenCheckoutScript(repos, { shallow: true })}\n`;
+  const slots = repos.map((r) => {
+    const slot = parsed.scopes[`${r.owner}/${r.repo}`.toLowerCase()] ?? parsed.scopes[r.owner.toLowerCase()];
+    if (slot === undefined) throw Error("Snapshot build denied.");
+    return slot;
+  });
+  return [
+    "set +x",
+    "set -euo pipefail",
+    `armada_read_secret() { python3 -I -S -c 'import base64,json,sys; raw=open("/run/secrets/github","r",encoding="utf-8").read().strip(); p="${MULTI_TOKEN_PREFIX}"; assert raw.startswith(p); payload=raw[len(p):]; data=json.loads(base64.urlsafe_b64decode(payload+"="*((-len(payload))%4))); token=data["tokens"][int(sys.argv[1])]; assert isinstance(token,str) and token; sys.stdout.write(token)' "$1"; }`,
+    ...repos.flatMap((repo, i) => [
+      `ARMADA_GIT_TOKEN="$(armada_read_secret ${slots[i]})"`,
+      "export ARMADA_GIT_TOKEN",
+      goldenCheckoutScript([repo], { shallow: true }).replace(/^armada_clone 1 /m, `armada_clone ${i + 1} `),
+    ]),
+    "",
+  ].join("\n");
 }

@@ -9,7 +9,13 @@ import {
 } from "./credentials.ts";
 import { decryptSecret, encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
-import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
+import {
+  type GitHubConnectionStore,
+  type GitHubInstallation,
+  type GitHubUser,
+  type StoredGitHubConnection,
+  serializeGitHubInstallations,
+} from "./github.ts";
 import type { Sql } from "./golden-store.ts";
 import { harnessesForCredential, harnessForCredential, MODEL_CREDENTIAL_KINDS } from "./harnesses.ts";
 import { MODEL_CATALOG } from "./models.ts";
@@ -54,7 +60,9 @@ const githubRefreshQueues = new WeakMap<Sql, Map<string, Promise<void>>>();
  * `auth.users` to find a person by email. Use the Supabase `postgres` role or `service_role`,
  * never a user JWT. Authorization is in `vault.ts`, not in this file.
  */
-export function createSqlVaultStore(sql: Sql): VaultStore {
+export function createSqlVaultStore(
+  sql: Sql,
+): VaultStore & Required<Pick<GitHubConnectionStore, "updateGitHubInstallations">> {
   return {
     async agentDefaults(userId) {
       return (
@@ -509,15 +517,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
       return result.rows.length > 0;
     },
 
-    async markGitHubRevoked(userId, expected) {
-      const result = await sql.query(
-        `update public.github_connections set revoked_at = now(), updated_at = now()
-         where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null
-         returning user_id`,
-        [userId, expected],
-      );
-      return result.rows.length > 0;
-    },
+    markGitHubRevoked: (userId, expected) => markGitHubRevoked(sql, userId, expected),
 
     async updateGitHubProfile(userId, profile: GitHubUser) {
       await sql.query(
@@ -526,6 +526,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         [userId, profile.id, profile.login, profile.name],
       );
     },
+
+    updateGitHubInstallations: (userId, installations) => updateGitHubInstallations(sql, userId, installations),
 
     async orgBoatKey(orgId) {
       const result = await sql.query<{ key: Uint8Array | null }>(
@@ -626,15 +628,7 @@ function refreshStore(sql: Sql, expectedRefresh: Uint8Array | undefined): GitHub
       if (result.rows.length) expectedRefresh = next.refreshTokenEnc;
       return result.rows.length > 0;
     },
-    async markGitHubRevoked(userId, expected) {
-      const result = await sql.query(
-        `update public.github_connections set revoked_at = now(), updated_at = now()
-         where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null
-         returning user_id`,
-        [userId, expected],
-      );
-      return result.rows.length > 0;
-    },
+    markGitHubRevoked: (userId, expected) => markGitHubRevoked(sql, userId, expected),
     async updateGitHubProfile(userId, profile) {
       // A reconnect may publish during HTTP. Never overwrite its newer identity.
       await sql.query(
@@ -643,7 +637,30 @@ function refreshStore(sql: Sql, expectedRefresh: Uint8Array | undefined): GitHub
         [userId, profile.id, profile.login, profile.name, expectedRefresh],
       );
     },
+    updateGitHubInstallations: (userId, installations) =>
+      updateGitHubInstallations(sql, userId, installations, expectedRefresh ?? new Uint8Array(0)),
   };
+}
+
+async function markGitHubRevoked(sql: Sql, userId: string, expected: Uint8Array) {
+  const { rows } = await sql.query(
+    "update public.github_connections set revoked_at = now(), updated_at = now() where user_id = $1 and refresh_token_enc = $2::bytea and revoked_at is null returning user_id",
+    [userId, expected],
+  );
+  return rows.length > 0;
+}
+
+async function updateGitHubInstallations(
+  sql: Sql,
+  userId: string,
+  installations: readonly GitHubInstallation[],
+  expected?: Uint8Array,
+) {
+  const { rows } = await sql.query(
+    "update public.github_connections set installations = $2::jsonb where user_id = $1 and revoked_at is null and ($3::bytea is null or refresh_token_enc = $3::bytea) returning user_id",
+    [userId, JSON.stringify(serializeGitHubInstallations(installations)), expected ?? null],
+  );
+  return rows.length > 0;
 }
 
 /** Autocommit before remote HTTP. If HTTP or rotation publication is uncertain,

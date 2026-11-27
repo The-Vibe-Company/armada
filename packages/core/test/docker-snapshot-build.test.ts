@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DockerHostJob } from "../src/docker-host-job.ts";
 import { createDockerMachineExecutor } from "../src/docker-machine.ts";
+import { encodeDockerSnapshotTokens, parseDockerSnapshotTokens } from "../src/docker-snapshot-build.ts";
 
 test("snapshot builds mount credentials privately, publish automatic ownership labels and recover without rebuilding", async () => {
   const installationId = "11111111-1111-1111-1111-111111111111",
@@ -165,4 +167,83 @@ test("snapshot builds mount credentials privately, publish automatic ownership l
     message: "Snapshot checkout ref was not found.",
     index: 1,
   });
+});
+
+test("multi-org snapshot builds isolate per-installation BuildKit secrets without leaking tokens", async () => {
+  const id = "55555555-5555-4555-8555-555555555555";
+  const tA = `ghs_${"a".repeat(40)}`;
+  const tB = `ghs_${"b".repeat(40)}`;
+  const encode = encodeDockerSnapshotTokens;
+  const parse = parseDockerSnapshotTokens;
+  const enc = encode([
+    { scope: "acme_emu/r1", token: tA },
+    { scope: "beta-org", token: tB },
+  ]);
+  expect(parse(enc)).toEqual({ mode: "scoped", tokens: [tA, tB], scopes: { "acme_emu/r1": 0, "beta-org": 1 } });
+  const conflict = [
+    { scope: "b", token: tA },
+    { scope: "B", token: tB },
+  ];
+  expect(() => encode(conflict)).toThrow(/Conflicting/);
+  for (const bad of ["armada-tokens-v1:a", "armada-tokens-v1:bad", `armada-tokens-v1:${"A".repeat(8192)}`])
+    expect(() => parse(bad)).toThrow(/Invalid/);
+
+  const repos = [
+    { url: "https://github.com/acme_emu/r1.git", branch: "main", dir: "r1" },
+    { url: "https://github.com/beta-org/r2.git", branch: "dev", dir: "r2" },
+  ];
+  const img = `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repeat(64)}`;
+  const job: Extract<DockerHostJob, { operation: "buildSnapshot" }> = {
+    requestId: id,
+    operation: "buildSnapshot",
+    request: { sandboxId: id, generation: id, image: img, ttlSeconds: 3600, expiresAt: 61000 },
+    build: { armadaVersion: "2.28.0", id, ownerId: id, visibility: "private", token: enc, config: { repos, init: [] } },
+  };
+  let checkout = "";
+  let errOut: string | undefined;
+  const images = new Map<string, { Id: string; Config: { Labels: Record<string, string> } }>();
+  const exec = createDockerMachineExecutor({
+    installationId: "11111111-1111-1111-1111-111111111111",
+    hostId: "22222222-2222-4222-8222-222222222222",
+    now: () => 1000,
+    cli: {
+      async run(argv, _stdin, opts) {
+        if (argv[0] === "image" && argv[1] === "inspect")
+          return { exitCode: images.has(argv[2]!) ? 0 : 1, stdout: JSON.stringify([images.get(argv[2]!)]) };
+        if (argv[0] !== "build") return { exitCode: 0, stdout: "" };
+        if (errOut) return { exitCode: 1, stdout: "", stderr: errOut };
+        expect(opts).toEqual({ timeoutMs: 60000, githubBuildToken: enc });
+        const script = join(argv.at(-1)!, "public/checkout.sh");
+        checkout = await readFile(script, "utf8");
+        expect(`${argv.join(" ")}\n${checkout}`).not.toMatch(new RegExp(`${tA}|${tB}`));
+        for (const s of ["python3 -I -S -c", "armada_read_secret 0", "armada_read_secret 1", "armada_clone 2 "])
+          expect(checkout).toContain(s);
+        expect(Bun.spawnSync(["bash", "-n", script]).exitCode).toBe(0);
+        const labels = Object.fromEntries(
+          argv.flatMap((a, i) => (a === "--label" ? [argv[i + 1]!.split(/=(.*)/s).slice(0, 2)] : [])),
+        );
+        images.set(argv[argv.indexOf("--tag") + 1]!, { Id: `sha256:${"c".repeat(64)}`, Config: { Labels: labels } });
+        return { exitCode: 0, stdout: "" };
+      },
+    },
+  });
+  expect(await exec.buildSnapshot(job)).toEqual({ imageId: `sha256:${"c".repeat(64)}`, baselineVersion: 1 });
+  const dir = await mkdtemp(join(tmpdir(), "armada-sec-"));
+  try {
+    const file = join(dir, "github");
+    await writeFile(file, enc, { mode: 0o600 });
+    await mkdir(join(dir, "json"));
+    await writeFile(join(dir, "json/__init__.py"), "raise SystemExit(9)\n");
+    const rd = checkout.split("\n").slice(0, 3).join("\n").replaceAll("/run/secrets/github", file);
+    const read = (i: number) =>
+      Bun.spawnSync(["bash", "-c", `${rd}\narmada_read_secret ${i}`], { cwd: dir }).stdout.toString();
+    expect([read(0), read(1)]).toEqual([tA, tB]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  errOut = "#21 0.02 ARMADA_GIT_FAILURE 2 branch_missing\n";
+  await expect(exec.buildSnapshot(job)).rejects.toMatchObject({ index: 2 });
+  errOut = undefined;
+  const badJob = { ...job, build: { ...job.build, token: encode([{ scope: "acme_emu", token: tA }]) } };
+  await expect(exec.buildSnapshot(badJob)).rejects.toThrow("Docker snapshot build failed or outcome unknown.");
 });
