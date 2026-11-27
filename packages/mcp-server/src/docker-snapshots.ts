@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { normalizeGitHubGoldenConfig, officialSandboxImage, parseSnapshotConfig, VERSION } from "@armada/core";
 import {
+  encodeDockerSnapshotTokens,
+  GitHubAuthError,
   type GitHubInstallationApp,
   type GitHubResolveDeps,
   goldenGitHubAdapter,
@@ -159,6 +161,9 @@ export function createDockerSnapshots(
       visibility,
       normalized.repos.map((r) => `${r.owner}/${r.repo}`),
     );
+    if (authorized.repos.length !== normalized.repos.length || !authorized.repos.length) {
+      throw new VaultError("invalid", "Authorized repositories did not match the snapshot request.");
+    }
     const config = {
       ...requestedConfig,
       repos: requestedConfig.repos.map((repo, index) => ({
@@ -166,22 +171,25 @@ export function createDockerSnapshots(
         branch: repo.branch ?? authorized.repos[index]!.branch,
       })),
     };
-    let token = authorized.token;
-    const installations = new Set(authorized.repos.map((r) => r.installationId));
-    if (authorizer.mint && installations.size === 1 && authorized.repos[0]?.installationId)
-      token = (
-        await authorizer.mint(
-          authorized.repos[0].installationId,
-          authorized.repos.map((r) => r.id),
-        )
-      ).token;
     if (!sql.transaction) throw new VaultError("unavailable", "Snapshot admission unavailable.");
+    const issued: { token: string; revoke(): Promise<void> }[] = [];
+    const revokeIssued = () =>
+      Promise.allSettled(issued.map((credential) => Promise.resolve().then(() => credential.revoke())));
+    let token: string;
+    try {
+      token = await resolveSnapshotBuildToken(authorizer, normalized.repos, authorized, issued);
+    } catch (error) {
+      await revokeIssued();
+      throw error;
+    }
+    let newlyEnqueued = false;
     // Host work is admitted only here: list, get and replays of a known request read the database.
-    await observeProviderCall(
+    const admission = observeProviderCall(
       "docker",
       `snapshot.${rebuildOf ? "rebuild" : "create"}`,
       () =>
         sql.transaction!(async (tx) => {
+          newlyEnqueued = false;
           await tx.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`docker-snapshot:${id}`]);
           const hint = (
             await tx.query<{ owner_id: string }>("select owner_id from public.docker_hosts where id=$1 and org_id=$2", [
@@ -272,11 +280,20 @@ export function createDockerSnapshots(
             request: { sandboxId: id, generation, image: baseImage, ttlSeconds: 3600, expiresAt: end },
             build: { id, ownerId: caller.userId, visibility, config, token, armadaVersion: VERSION },
           });
+          newlyEnqueued = true;
         }),
       undefined,
       // A replay found in the database queues nothing, so it is not a provider call.
       { replayable: true },
     );
+    let enqueued = false;
+    try {
+      await admission;
+      enqueued = newlyEnqueued;
+    } finally {
+      // WARNING: Queued Docker snapshot jobs run asynchronously on the remote host; only revoke tokens when no job was enqueued.
+      if (!enqueued) await revokeIssued();
+    }
     const row = (await read(id))[0];
     if (!row) throw new VaultError("unavailable", "Snapshot outcome unknown; retry the same request ID.");
     return { snapshot: snapshotRecord(row), currentVersion: VERSION };
@@ -284,3 +301,61 @@ export function createDockerSnapshots(
   return { command };
 }
 export type DockerSnapshots = ReturnType<typeof createDockerSnapshots>;
+
+async function resolveSnapshotBuildToken(
+  authorizer: ReturnType<typeof goldenGitHubAdapter>,
+  requestedRepos: readonly { owner: string; repo: string }[],
+  authorized: Awaited<ReturnType<ReturnType<typeof goldenGitHubAdapter>["authorize"]>>,
+  issued: { token: string; revoke(): Promise<void> }[],
+) {
+  const installationTokens = new Map<number, string>();
+  if (authorizer.mint) {
+    for (const installationId of new Set(
+      authorized.repos.map((r) => r.installationId).filter((installationId) => installationId > 0),
+    )) {
+      const repoIds = [
+        ...new Set(authorized.repos.filter((r) => r.installationId === installationId).map((r) => r.id)),
+      ];
+      let credential: { token: string; revoke(): Promise<void> };
+      try {
+        credential = await authorizer.mint(installationId, repoIds);
+      } catch (error) {
+        if (error instanceof GitHubAuthError && error.code === "unavailable") {
+          throw new VaultError(
+            "unavailable",
+            "GitHub could not issue repository checkout credentials. Retry when GitHub is available.",
+          );
+        }
+        throw new VaultError(
+          "forbidden",
+          "GitHub could not issue repository checkout credentials. Ask an administrator to verify the configured App signing key and repository installation access, then rebuild.",
+        );
+      }
+      issued.push(credential);
+      installationTokens.set(installationId, credential.token);
+    }
+  }
+  const tokenEntries = authorized.repos.map((repo, index) => {
+    const scope = `${requestedRepos[index]!.owner}/${requestedRepos[index]!.repo}`;
+    if (authorizer.mint && repo.installationId > 0) {
+      const scopedToken = installationTokens.get(repo.installationId);
+      if (!scopedToken) {
+        throw new VaultError(
+          "forbidden",
+          "The authorized GitHub installation has no checkout credential. Reconnect GitHub and retry.",
+        );
+      }
+      return { scope, token: scopedToken };
+    }
+    return { scope, token: authorized.token };
+  });
+  const distinctTokens = new Set(tokenEntries.map((entry) => entry.token));
+  if (distinctTokens.size === 1 && installationTokens.size <= 1) {
+    return tokenEntries[0]!.token;
+  }
+  try {
+    return encodeDockerSnapshotTokens(tokenEntries);
+  } catch {
+    throw new VaultError("invalid", "Snapshot repository credentials could not be encoded for the Docker host.");
+  }
+}
