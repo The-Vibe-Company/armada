@@ -18,26 +18,38 @@ function concreteModel(value: unknown) {
   return trimmed && trimmed !== "default" ? trimmed : undefined;
 }
 
-function currentModel(configOptions: unknown, models?: unknown) {
-  if (Array.isArray(configOptions)) {
-    const option = configOptions.find((value) => object(value) && value.id === "model");
-    const selected = option ? concreteModel(option.currentValue) : undefined;
-    if (selected) return selected;
+function findConfigOption(configOptions: unknown, idOrCategory: string) {
+  if (!Array.isArray(configOptions)) return undefined;
+  let byCategory: ObjectValue | undefined;
+  for (const value of configOptions) {
+    if (!object(value)) continue;
+    if (value.id === idOrCategory) return value;
+    if (byCategory === undefined && value.category === idOrCategory) byCategory = value;
   }
+  return byCategory;
+}
+
+function currentModel(configOptions: unknown, models?: unknown) {
+  const option = findConfigOption(configOptions, "model");
+  const selected = option ? concreteModel(option.currentValue) : undefined;
+  if (selected) return selected;
   return object(models) ? concreteModel(models.currentModelId) : undefined;
 }
 
-function availableModel(configOptions: unknown, model: string) {
-  if (!Array.isArray(configOptions)) return false;
-  const option = configOptions.find((value) => object(value) && value.id === "model" && value.type === "select");
-  return (
-    Array.isArray(option?.options) &&
-    option.options.some(
-      (value: unknown) =>
-        object(value) &&
-        (value.value === model ||
-          (Array.isArray(value.options) && value.options.some((item) => object(item) && item.value === model))),
-    )
+function optionHasValue(option: ObjectValue | undefined, target: string): option is ObjectValue & { id: string } {
+  if (
+    !option ||
+    typeof option.id !== "string" ||
+    !option.id ||
+    (option.type !== undefined && option.type !== "select") ||
+    !Array.isArray(option.options)
+  )
+    return false;
+  return option.options.some(
+    (entry: unknown) =>
+      object(entry) &&
+      (entry.value === target ||
+        (Array.isArray(entry.options) && entry.options.some((item) => object(item) && item.value === target))),
   );
 }
 export interface AcpObservation {
@@ -90,7 +102,11 @@ export class AcpDriver implements Driver {
     c.signal.throwIfAborted();
     // Definite refusal before spawn: replayed safely, including from native resume.
     if (c.request.fast) throw new RequestRefused("invalid_harness_protocol");
-    if (c.request.reasoningEffort !== undefined && c.request.reasoningEffort !== "default")
+    if (
+      this.options.modelSelection !== "config-option" &&
+      c.request.reasoningEffort !== undefined &&
+      c.request.reasoningEffort !== "default"
+    )
       throw new RequestRefused("invalid_harness_protocol");
     const cwd = validateHarnessCwd(c.request.cwd ?? this.options.cwd);
     const child = this.children.spawn(this.options.executable, this.options.args ?? ["acp"], {
@@ -105,6 +121,7 @@ export class AcpDriver implements Driver {
       interrupted = false,
       steering = false;
     let activeModel: string | undefined;
+    let latestConfigOptions: unknown;
     const longToolTitles = new Map<string, { title: string; bytes: number }>();
     let longToolTitleBytes = 0;
     const clearLongToolTitles = () => {
@@ -221,6 +238,7 @@ export class AcpDriver implements Driver {
           ) {
             const u = m.params.update;
             if (u.sessionUpdate === "config_option_update") {
+              if (Array.isArray(u.configOptions)) latestConfigOptions = u.configOptions;
               const resolved = currentModel(u.configOptions, u.models);
               if (resolved) activeModel = resolved;
               continue;
@@ -371,16 +389,33 @@ export class AcpDriver implements Driver {
           throw new HarnessError("invalid_harness_protocol");
         sessionId = session.sessionId;
       }
+      if (Array.isArray(session.configOptions)) latestConfigOptions = session.configOptions;
       activeModel = currentModel(session.configOptions, session.models) ?? activeModel;
       const model = c.request.model;
-      if (!resumeOnly && model && this.options.modelSelection === "config-option" && model !== "default") {
-        if (!availableModel(session.configOptions, model)) throw new RequestRefused("invalid_request");
-        const prior = activeModel;
-        const updated = await rpc("session/set_config_option", { sessionId, configId: "model", value: model });
-        activeModel =
-          currentModel(updated.configOptions, updated.models) ??
-          (activeModel !== prior ? activeModel : concreteModel(model)) ??
-          activeModel;
+      const effort = c.request.reasoningEffort;
+      if (!resumeOnly && this.options.modelSelection === "config-option") {
+        if (model && model !== "default") {
+          const modelOption = findConfigOption(latestConfigOptions, "model");
+          if (!optionHasValue(modelOption, model)) throw new RequestRefused("invalid_request");
+          const prior = activeModel;
+          const updated = await rpc("session/set_config_option", { sessionId, configId: modelOption.id, value: model });
+          if (Array.isArray(updated.configOptions)) latestConfigOptions = updated.configOptions;
+          activeModel =
+            currentModel(updated.configOptions, updated.models) ??
+            (activeModel !== prior ? activeModel : concreteModel(model)) ??
+            activeModel;
+        }
+        if (effort !== undefined && effort !== "default") {
+          const thoughtOption = findConfigOption(latestConfigOptions, "thought_level");
+          if (!optionHasValue(thoughtOption, effort)) throw new RequestRefused("invalid_request");
+          const updated = await rpc("session/set_config_option", {
+            sessionId,
+            configId: thoughtOption.id,
+            value: effort,
+          });
+          if (Array.isArray(updated.configOptions)) latestConfigOptions = updated.configOptions;
+          activeModel = currentModel(updated.configOptions, updated.models) ?? activeModel;
+        }
       }
       c.session(sessionId);
       if (!resumeOnly && model && !this.options.modelSelection) {

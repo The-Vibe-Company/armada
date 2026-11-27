@@ -349,8 +349,14 @@ function antigravityFixture(credential: ConstructorParameters<typeof Antigravity
           },
         },
       }),
-    context: (text: string, model?: string) => ({
-      request: { sandboxId: "s", harness: "opencode" as const, text, ...(model === undefined ? {} : { model }) },
+    context: (text: string, model?: string, reasoningEffort?: string) => ({
+      request: {
+        sandboxId: "s",
+        harness: "opencode" as const,
+        text,
+        ...(model === undefined ? {} : { model }),
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      },
       signal: new AbortController().signal,
       emit: (event: DriverEvent) => events.push(event),
       session: () => {},
@@ -445,6 +451,161 @@ test.each([
   }
 });
 
+test.each([
+  {
+    name: "sets model and skips thought_level when reasoningEffort is default",
+    env: { ACP_INITIAL_MODEL: "gemini-4-carbon" },
+    model: "gemini-4-neon",
+    reasoningEffort: "default",
+    expectedCalls: [{ configId: "model", value: "gemini-4-neon" }],
+    expectedModel: "gemini-4-neon",
+    expectedThought: "medium",
+  },
+  {
+    name: "sets model then refreshes configOptions before setting thought_level high",
+    env: { ACP_INITIAL_MODEL: "gemini-4-carbon" },
+    model: "gemini-4-neon",
+    reasoningEffort: "high",
+    expectedCalls: [
+      { configId: "model", value: "gemini-4-neon" },
+      { configId: "thought_level", value: "high" },
+    ],
+    expectedModel: "gemini-4-neon",
+    expectedThought: "high",
+  },
+  {
+    name: "sets model then allows xhigh unlocked by the chosen model",
+    env: { ACP_INITIAL_MODEL: "gemini-4-carbon" },
+    model: "gemini-4-neon",
+    reasoningEffort: "xhigh",
+    expectedCalls: [
+      { configId: "model", value: "gemini-4-neon" },
+      { configId: "thought_level", value: "xhigh" },
+    ],
+    expectedModel: "gemini-4-neon",
+    expectedThought: "xhigh",
+  },
+  {
+    name: "skips model and sets thought_level on the account default model",
+    env: { ACP_INITIAL_MODEL: "gemini-4-neon" },
+    model: "default",
+    reasoningEffort: "high",
+    expectedCalls: [{ configId: "thought_level", value: "high" }],
+    expectedModel: "gemini-4-neon",
+    expectedThought: "high",
+  },
+  {
+    name: "preserves activeModel when thought_level reply omits the model option",
+    env: { ACP_INITIAL_MODEL: "base", ACP_THOUGHT_REPLY_WITHOUT_MODEL: "1" },
+    model: "gemini-4-neon",
+    reasoningEffort: "high",
+    expectedCalls: [
+      { configId: "model", value: "gemini-4-neon" },
+      { configId: "thought_level", value: "high" },
+    ],
+    expectedModel: "gemini-4-neon",
+    expectedThought: "high",
+  },
+  {
+    name: "matches configOptions by category with flat options and omitted select type",
+    env: { ACP_INITIAL_MODEL: "base", ACP_CATEGORY_CONFIG_IDS: "1", ACP_FLAT_OPTIONS: "1" },
+    model: "gemini-4-neon",
+    reasoningEffort: "xhigh",
+    expectedCalls: [
+      { configId: "selected_model", value: "gemini-4-neon" },
+      { configId: "thinking_budget", value: "xhigh" },
+    ],
+    expectedModel: "gemini-4-neon",
+    expectedThought: "xhigh",
+  },
+])(
+  "ACP config-option model and thought_level: $name",
+  async ({ env, model, reasoningEffort, expectedCalls, expectedModel, expectedThought }) => {
+    const driver = new AcpDriver({
+      executable: process.execPath,
+      args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+      cwd: "/tmp",
+      env,
+      modelSelection: "config-option",
+    });
+    const events: DriverEvent[] = [];
+    try {
+      const turn = driver.start({
+        request: { sandboxId: "s", harness: "antigravity", text: "report-config", model, reasoningEffort },
+        signal: new AbortController().signal,
+        emit: (event) => events.push(event),
+        session: () => {},
+      });
+      expect(await turn.done).toBe("finished");
+      const snapshot = events.find((event) => event.kind === "message" && !event.partial && !event.tools.length);
+      expect(snapshot).toBeDefined();
+      if (snapshot?.kind === "message") {
+        expect(snapshot.model).toBe(expectedModel);
+        expect(JSON.parse(snapshot.text)).toEqual({
+          configCalls: expectedCalls,
+          currentModelValue: expectedModel,
+          currentThoughtValue: expectedThought,
+        });
+      }
+      const usage = events.find((event) => event.kind === "other" && event.type === "armada/turnUsage");
+      expect(usage?.kind === "other" ? usage.data : undefined).toMatchObject({ model: expectedModel });
+    } finally {
+      await driver.close();
+    }
+  },
+);
+
+test.each([
+  {
+    name: "rejects unsupported thought_level after model change refreshes configOptions",
+    env: { ACP_INITIAL_MODEL: "gemini-4-neon" },
+    model: "gemini-4-carbon",
+    reasoningEffort: "xhigh",
+  },
+  {
+    name: "rejects suffixed model id without compatibility alias",
+    env: { ACP_INITIAL_MODEL: "gemini-4-neon" },
+    model: "gemini-4-neon-high",
+    reasoningEffort: "default",
+  },
+  {
+    name: "rejects thought_level when configOptions omits thought_level",
+    env: { ACP_INITIAL_MODEL: "gemini-4-neon", ACP_OMIT_THOUGHT_LEVEL: "1" },
+    model: "gemini-4-neon",
+    reasoningEffort: "high",
+  },
+  {
+    name: "rejects thought_level when configOption type is not select",
+    env: { ACP_INITIAL_MODEL: "gemini-4-neon", ACP_NON_SELECT_THOUGHT: "1" },
+    model: "gemini-4-neon",
+    reasoningEffort: "high",
+  },
+])("ACP config-option refusal: $name", async ({ env, model, reasoningEffort }) => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env,
+    modelSelection: "config-option",
+  });
+  let sessionRecorded = false;
+  try {
+    const done = driver.start({
+      request: { sandboxId: "s", harness: "antigravity", text: "never-prompt", model, reasoningEffort },
+      signal: new AbortController().signal,
+      emit: () => {},
+      session: () => {
+        sessionRecorded = true;
+      },
+    }).done;
+    await expect(done).rejects.toBeInstanceOf(RequestRefused);
+    await expect(done).rejects.toThrow("invalid_request");
+    expect(sessionRecorded).toBe(false);
+  } finally {
+    await driver.close();
+  }
+});
+
 antigravityTest("Antigravity authenticates and selects a loaded ACP v1 model", async () => {
   const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
   try {
@@ -460,12 +621,35 @@ antigravityTest("Antigravity authenticates and selects a loaded ACP v1 model", a
   }
 });
 
-antigravityTest("Antigravity refuses an unlisted model before sending a prompt", async () => {
+antigravityTest("Antigravity selects a base model and thought_level through config options", async () => {
   const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
   try {
-    const done = f.driver().start(f.context("never-prompt", "unknown/model")).done;
-    await expect(done).rejects.toBeInstanceOf(RequestRefused);
-    await expect(done).rejects.toThrow("invalid_request");
+    await expect(f.driver().start(f.context("report-config", "gemini-4-neon", "xhigh")).done).resolves.toBe("finished");
+    const snapshot = f.events.find((event) => event.kind === "message" && !event.partial && !event.tools.length);
+    expect(snapshot).toMatchObject({ model: "gemini-4-neon", responseKind: "assistant" });
+    expect(snapshot?.kind === "message" && JSON.parse(snapshot.text)).toEqual({
+      configCalls: [
+        { configId: "model", value: "gemini-4-neon" },
+        { configId: "thought_level", value: "xhigh" },
+      ],
+      currentModelValue: "gemini-4-neon",
+      currentThoughtValue: "xhigh",
+    });
+    const usage = f.events.find((event) => event.kind === "other" && event.type === "armada/turnUsage");
+    expect(usage?.kind === "other" ? usage.data : undefined).toMatchObject({ model: "gemini-4-neon" });
+  } finally {
+    f.clean();
+  }
+});
+
+antigravityTest("Antigravity refuses an unlisted or suffixed model before sending a prompt", async () => {
+  const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
+  try {
+    for (const badModel of ["unknown/model", "gemini-4-neon-high"]) {
+      const done = f.driver().start(f.context("never-prompt", badModel)).done;
+      await expect(done).rejects.toBeInstanceOf(RequestRefused);
+      await expect(done).rejects.toThrow("invalid_request");
+    }
   } finally {
     f.clean();
   }

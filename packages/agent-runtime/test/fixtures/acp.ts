@@ -22,19 +22,52 @@ const authMethods = [
   { id: "oauth-personal", name: "Google" },
   { id: "gemini-api-key", name: "Gemini API key" },
 ];
-const modelConfigOptions = (currentValue: string) => [
-  {
-    id: "model",
+const useCategoryIds = process.env.ACP_CATEGORY_CONFIG_IDS === "1";
+const useFlatOptions = process.env.ACP_FLAT_OPTIONS === "1";
+const modelConfigId = useCategoryIds ? "selected_model" : "model";
+const thoughtConfigId = useCategoryIds ? "thinking_budget" : "thought_level";
+const availableModels = [
+  { value: "fixture/model", name: "Fixture" },
+  { value: "gemini-4-neon", name: "Gemini 4 Neon" },
+  { value: "gemini-4-carbon", name: "Gemini 4 Carbon" },
+];
+const thoughtLevelsFor = (model: string) => {
+  if (process.env.ACP_OMIT_THOUGHT_LEVEL === "1") return undefined;
+  return model === "gemini-4-carbon" ? ["low", "medium", "high"] : ["low", "medium", "high", "xhigh"];
+};
+const modelConfigOptions = (currentValue: string, thoughtValue = "medium") => {
+  const modelOption = {
+    id: modelConfigId,
+    ...(useCategoryIds ? { category: "model" } : {}),
     name: "Model",
     type: "select",
     currentValue,
-    options: [{ group: "available", name: "Available", options: [{ value: "fixture/model", name: "Fixture" }] }],
-  },
-];
+    options: useFlatOptions ? availableModels : [{ group: "available", name: "Available", options: availableModels }],
+  };
+  const levels = thoughtLevelsFor(currentValue);
+  if (!levels) return [modelOption];
+  const levelItems = levels.map((value) => ({ value, name: value }));
+  let thoughtType: { type?: string } = { type: "select" };
+  if (process.env.ACP_NON_SELECT_THOUGHT === "1") thoughtType = { type: "boolean" };
+  else if (useCategoryIds) thoughtType = {};
+  return [
+    modelOption,
+    {
+      id: thoughtConfigId,
+      ...(useCategoryIds ? { category: "thought_level" } : {}),
+      name: "Thought Level",
+      ...thoughtType,
+      currentValue: thoughtValue,
+      options: useFlatOptions ? levelItems : [{ group: "effort", name: "Effort", options: levelItems }],
+    },
+  ];
+};
 let currentModelValue = process.env.ACP_INITIAL_MODEL ?? "base";
+let currentThoughtValue = "medium";
+const configCalls: Array<{ configId: string; value: string }> = [];
 const sessionConfig = () => ({
   ...(profile || process.env.ACP_INITIAL_MODEL !== undefined
-    ? { configOptions: modelConfigOptions(currentModelValue) }
+    ? { configOptions: modelConfigOptions(currentModelValue, currentThoughtValue) }
     : {}),
   ...(process.env.ACP_MODELS_CURRENT_ID ? { models: { currentModelId: process.env.ACP_MODELS_CURRENT_ID } } : {}),
 });
@@ -99,16 +132,38 @@ for await (const line of lines) {
       reply(sessionConfig());
       break;
     case "session/set_config_option":
-      if (
-        (!profile && process.env.ACP_INITIAL_MODEL === undefined) ||
-        m.params.sessionId !== sessionId ||
-        m.params.configId !== "model" ||
-        m.params.value !== "fixture/model"
-      )
+      if ((!profile && process.env.ACP_INITIAL_MODEL === undefined) || m.params.sessionId !== sessionId)
         throw Error("wrong_model_config");
-      selectedModel = true;
-      currentModelValue = m.params.value;
-      reply(process.env.ACP_OMIT_SET_CONFIG_OPTIONS ? {} : { configOptions: modelConfigOptions(currentModelValue) });
+      if (m.params.configId === modelConfigId) {
+        if (!availableModels.some((entry) => entry.value === m.params.value)) throw Error("wrong_model_config");
+        selectedModel = true;
+        currentModelValue = m.params.value;
+        currentThoughtValue = "medium";
+        configCalls.push({ configId: m.params.configId, value: m.params.value });
+        reply(
+          process.env.ACP_OMIT_SET_CONFIG_OPTIONS
+            ? {}
+            : { configOptions: modelConfigOptions(currentModelValue, currentThoughtValue) },
+        );
+      } else if (m.params.configId === thoughtConfigId) {
+        const levels = thoughtLevelsFor(currentModelValue);
+        if (!levels?.includes(m.params.value)) throw Error("wrong_thought_config");
+        currentThoughtValue = m.params.value;
+        configCalls.push({ configId: m.params.configId, value: m.params.value });
+        if (process.env.ACP_OMIT_SET_CONFIG_OPTIONS) {
+          reply({});
+        } else if (process.env.ACP_THOUGHT_REPLY_WITHOUT_MODEL === "1") {
+          reply({
+            configOptions: modelConfigOptions(currentModelValue, currentThoughtValue).filter(
+              (option) => option.id !== modelConfigId,
+            ),
+          });
+        } else {
+          reply({ configOptions: modelConfigOptions(currentModelValue, currentThoughtValue) });
+        }
+      } else {
+        throw Error("wrong_model_config");
+      }
       break;
     case "session/set_model":
       reply({});
@@ -116,11 +171,12 @@ for await (const line of lines) {
     case "session/prompt": {
       if (m.params.sessionId !== sessionId) throw Error("wrong_session");
       let text = m.params.prompt[0].text;
+      if (text === "never-prompt") throw Error("unexpected_prompt");
+      if (text === "report-config") text = JSON.stringify({ configCalls, currentModelValue, currentThoughtValue });
       const echo = text === "echo-token";
       if (profile) {
         if (text === "explicit" && !selectedModel) throw Error("missing_model_config");
         if (text === "default" && selectedModel) throw Error("unexpected_model_config");
-        if (text === "never-prompt") throw Error("unexpected_prompt");
         if (text === "environment")
           text = JSON.stringify({
             argv: process.argv.slice(2),
