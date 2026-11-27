@@ -6,6 +6,267 @@
     "description": "Generated dashboard administration REST contracts. Each operation enforces its own caller, role and resource access requirements."
   },
   "paths": {
+    "/api/v1/github/repos": {
+      "post": {
+        "operationId": "github_repos",
+        "description": "List accessible GitHub repositories across connected GitHub App installations.",
+        "security": [
+          {
+            "personalSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 413,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "account": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100,
+                    "pattern": "^[A-Za-z0-9_-]+$"
+                  },
+                  "query": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "installations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "appId": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "appSlug": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100,
+                            "pattern": "^[A-Za-z0-9_-]+$"
+                          },
+                          "accountLogin": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100,
+                            "pattern": "^[A-Za-z0-9_-]+$"
+                          },
+                          "accountType": {
+                            "type": "string",
+                            "enum": [
+                              "User",
+                              "Organization"
+                            ]
+                          },
+                          "repositorySelection": {
+                            "type": "string",
+                            "enum": [
+                              "all",
+                              "selected"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "appId",
+                          "appSlug",
+                          "accountLogin",
+                          "accountType",
+                          "repositorySelection"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "repositories": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "owner": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100,
+                            "pattern": "^[A-Za-z0-9_-]+$"
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          "fullName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 301
+                          },
+                          "private": {
+                            "type": "boolean"
+                          },
+                          "defaultBranch": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "installationId": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "archived": {
+                            "type": "boolean"
+                          },
+                          "pushedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "accountLogin": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 100,
+                            "pattern": "^[A-Za-z0-9_-]+$"
+                          },
+                          "accountType": {
+                            "type": "string",
+                            "enum": [
+                              "User",
+                              "Organization"
+                            ]
+                          },
+                          "repositorySelection": {
+                            "type": "string",
+                            "enum": [
+                              "all",
+                              "selected"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "owner",
+                          "name",
+                          "fullName",
+                          "private",
+                          "defaultBranch",
+                          "installationId",
+                          "archived",
+                          "pushedAt",
+                          "accountLogin",
+                          "accountType",
+                          "repositorySelection"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "installations",
+                    "repositories",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/token/list": {
       "post": {
         "operationId": "token_list",

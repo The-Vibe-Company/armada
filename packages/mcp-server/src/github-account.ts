@@ -1,14 +1,24 @@
-import { controlRouteKey, githubCallbackOperations } from "@armada/core/contract";
+import {
+  controlRouteKey,
+  githubCallbackOperations,
+  githubReposOperation,
+  githubReposRequest,
+  githubReposResponse,
+} from "@armada/core/contract";
 import {
   createSqlVaultStore,
   encryptSecret,
   exchangeGitHubCode,
+  fetchGitHubInstallationRepositories,
   fetchGitHubInstallations,
   fetchGitHubUser,
   GITHUB_AUTHORIZE_URL,
   type GitHubApp,
+  GitHubAuthError,
+  type GitHubInstallation,
   resolveGitHubAccess,
   type Sql,
+  serializeGitHubInstallations,
   VaultError,
 } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
@@ -18,7 +28,7 @@ import { fail } from "./control-response.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
 export interface GitHubAccountApi {
-  command(action: string, caller: Caller, body: Record<string, unknown>): Promise<unknown>;
+  command(action: string, caller: Caller, body: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   callback(request: Request): Promise<Response>;
 }
 const hash = async (state: string) =>
@@ -32,16 +42,78 @@ export function createGitHubAccountApi(options: {
   development?: boolean;
   encryptionKey: string;
   slug?: string;
+  appId?: string | number;
+  reposTimeoutMs?: number;
   fetch?: typeof fetch;
   now?: () => Date;
 }): GitHubAccountApi {
   const { sql } = options;
   const now = options.now ?? (() => new Date());
   const redirectUri = new URL("/github/callback", dashboardOrigin(options.dashboardUrl, options.development)).href;
-  const installUrl =
-    options.slug && /^[A-Za-z0-9-]+$/.test(options.slug)
-      ? `https://github.com/apps/${options.slug}/installations/new`
-      : null;
+  const rawSlug = options.slug?.trim();
+  const appSlug = rawSlug && /^[A-Za-z0-9-]+$/.test(rawSlug) ? rawSlug : undefined;
+  const rawAppId = options.appId === undefined ? "" : String(options.appId).trim();
+  const appId = /^[1-9][0-9]{0,15}$/.test(rawAppId) && Number.isSafeInteger(Number(rawAppId)) ? rawAppId : undefined;
+  const installUrl = appSlug ? `https://github.com/apps/${appSlug}/installations/new` : null;
+  const reposTimeoutMs =
+    options.reposTimeoutMs !== undefined && Number.isFinite(options.reposTimeoutMs) && options.reposTimeoutMs > 0
+      ? Math.trunc(options.reposTimeoutMs)
+      : 20_000;
+  function filterAppInstallations(list: readonly GitHubInstallation[]) {
+    const seen = new Set<number>();
+    return list.filter((item) => {
+      if (seen.has(item.id)) return false;
+      if (appSlug && item.appSlug.toLowerCase() !== appSlug.toLowerCase()) return false;
+      if (appId && String(item.appId) !== appId) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }
+  async function persistInstallations(userId: string, live: readonly GitHubInstallation[], expectedEpoch?: string) {
+    try {
+      if (expectedEpoch && sql.transaction) {
+        await sql.transaction(async (tx) => {
+          const current = (
+            await tx.query<{ connection_epoch: string; revoked_at: unknown }>(
+              "select connection_epoch, revoked_at from public.github_connections where user_id = $1::uuid for update",
+              [userId],
+            )
+          ).rows[0];
+          if (!current || current.revoked_at || current.connection_epoch !== expectedEpoch) return;
+          await createSqlVaultStore(tx).updateGitHubInstallations(userId, live);
+        });
+      } else {
+        await createSqlVaultStore(sql).updateGitHubInstallations(userId, live);
+      }
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "github_installations_persist_failed",
+          ownerId: userId,
+          count: live.length,
+          reason: error instanceof Error ? error.name : "unknown",
+        }),
+      );
+    }
+  }
+  async function startAuthorizationFlow(userId: string) {
+    if (!options.app) throw new VaultError("unavailable", "GitHub App authorization is not configured.");
+    if (!sql.transaction) throw new VaultError("unavailable", "Transactional account storage is required.");
+    const state = CLI_GITHUB_STATE_PREFIX + crypto.randomUUID() + crypto.randomUUID();
+    const flowId = crypto.randomUUID();
+    await sql.transaction(async (tx) => {
+      await tx.query("select id from auth.users where id = $1::uuid for update", [userId]);
+      await tx.query(
+        "delete from public.github_authorizations where user_id = $1::uuid and (expires_at < $2 or status in ('pending','processing'))",
+        [userId, now()],
+      );
+      await tx.query(
+        "insert into public.github_authorizations(id,user_id,state_hash,status,expires_at) values ($1,$2,$3,'pending',$4)",
+        [flowId, userId, await hash(state), new Date(now().getTime() + 600_000)],
+      );
+    });
+    return { app: options.app, flowId, state };
+  }
   async function metadata(userId: string) {
     const row = (
       await sql.query<{
@@ -70,15 +142,11 @@ export function createGitHubAccountApi(options: {
     let status: string = access.status === "revoked" ? "needs_reconnect" : access.status;
     if (access.status === "connected") {
       try {
-        const live = await fetchGitHubInstallations(access.token, options.fetch ? { fetch: options.fetch } : {});
-        installations = live.map((i) => ({
-          id: i.id,
-          app_id: i.appId,
-          app_slug: i.appSlug,
-          account: i.accountLogin,
-          account_type: i.accountType,
-          repository_selection: i.repositorySelection,
-        }));
+        const live = filterAppInstallations(
+          await fetchGitHubInstallations(access.token, options.fetch ? { fetch: options.fetch } : {}),
+        );
+        installations = serializeGitHubInstallations(live);
+        await persistInstallations(userId, live, access.connectionEpoch);
       } catch {
         status = "unavailable";
       }
@@ -94,7 +162,7 @@ export function createGitHubAccountApi(options: {
     };
   }
   return {
-    async command(action, caller, body) {
+    async command(action, caller, body, signal) {
       if (caller.via !== "supabase")
         throw new VaultError("forbidden", "Sign in as a person to manage your GitHub account.");
       if (action === "status") {
@@ -117,6 +185,69 @@ export function createGitHubAccountApi(options: {
         }
         return { connection: await metadata(caller.userId) };
       }
+      if (action === "repos") {
+        const parsed = githubReposRequest.safeParse(body);
+        if (!parsed.success) {
+          const issue = parsed.error.issues[0];
+          const path = issue?.path.join(".");
+          throw new VaultError(
+            "invalid",
+            issue ? `${path ? `${path}: ` : ""}${issue.message}` : "Invalid GitHub repository filter.",
+          );
+        }
+        if (!options.app) throw new VaultError("unavailable", "GitHub App authorization is not configured.");
+        const access = await resolveGitHubAccess(
+          {
+            caller: "account_status",
+            store: createSqlVaultStore(sql),
+            encryptionKey: options.encryptionKey,
+            app: options.app,
+            ...(options.fetch ? { fetch: options.fetch } : {}),
+            now,
+          },
+          caller.userId,
+        );
+        if (access.status === "not_connected")
+          throw new VaultError(
+            "forbidden",
+            "GitHub is not connected. Connect GitHub in Settings or run `armada account login github`.",
+          );
+        if (access.status === "revoked")
+          throw new VaultError(
+            "forbidden",
+            "Your GitHub connection was revoked or has expired. Reconnect GitHub in Settings or run `armada account login github`.",
+          );
+        if (access.status !== "connected")
+          throw new VaultError("unavailable", "GitHub connection is temporarily unavailable. Retry shortly.");
+        const fetchImpl = options.fetch ?? fetch;
+        const timeoutSignal = AbortSignal.timeout(reposTimeoutMs);
+        const requestSignal = signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal;
+        const boundedFetch = ((input: string | URL | Request, init?: RequestInit) => {
+          const combined = init?.signal ? AbortSignal.any([requestSignal, init.signal]) : requestSignal;
+          if (combined.aborted)
+            return Promise.reject(combined.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+          return fetchImpl(input, { ...init, signal: combined });
+        }) as typeof fetch;
+        try {
+          const listed = await fetchGitHubInstallationRepositories(access.token, {
+            ...(appId ? { appId } : {}),
+            ...(appSlug ? { appSlug } : {}),
+            ...(parsed.data.account ? { account: parsed.data.account } : {}),
+            ...(parsed.data.query !== undefined ? { query: parsed.data.query } : {}),
+            ...(parsed.data.limit !== undefined ? { limit: parsed.data.limit } : {}),
+            fetch: boundedFetch,
+          });
+          return githubReposResponse.parse(listed);
+        } catch (error) {
+          if (
+            error instanceof GitHubAuthError ||
+            requestSignal.aborted ||
+            (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
+          )
+            throw new VaultError("unavailable", "GitHub repositories are temporarily unavailable. Retry shortly.");
+          throw error;
+        }
+      }
       if (action === "disconnect") {
         if (!sql.transaction) throw new VaultError("unavailable", "Transactional account storage is required.");
         await sql.transaction(async (tx) => {
@@ -136,26 +267,15 @@ export function createGitHubAccountApi(options: {
       }
       if (action === "install") {
         if (!installUrl) throw new VaultError("unavailable", "GitHub App installation is not configured.");
-        return { authorizationUrl: installUrl };
+        const { flowId, state } = await startAuthorizationFlow(caller.userId);
+        const url = new URL(installUrl);
+        url.searchParams.set("state", state);
+        return { flowId, authorizationUrl: url.href };
       }
       if (action === "connect" || action === "reconnect") {
-        if (!options.app) throw new VaultError("unavailable", "GitHub App authorization is not configured.");
-        const state = CLI_GITHUB_STATE_PREFIX + crypto.randomUUID() + crypto.randomUUID();
-        const flowId = crypto.randomUUID();
-        if (!sql.transaction) throw new VaultError("unavailable", "Transactional account storage is required.");
-        await sql.transaction(async (tx) => {
-          await tx.query("select id from auth.users where id = $1::uuid for update", [caller.userId]);
-          await tx.query(
-            "delete from public.github_authorizations where user_id = $1::uuid and (expires_at < $2 or status in ('pending','processing'))",
-            [caller.userId, now()],
-          );
-          await tx.query(
-            "insert into public.github_authorizations(id,user_id,state_hash,status,expires_at) values ($1,$2,$3,'pending',$4)",
-            [flowId, caller.userId, await hash(state), new Date(now().getTime() + 600_000)],
-          );
-        });
+        const { app, flowId, state } = await startAuthorizationFlow(caller.userId);
         const url = new URL(GITHUB_AUTHORIZE_URL);
-        url.searchParams.set("client_id", options.app.clientId);
+        url.searchParams.set("client_id", app.clientId);
         url.searchParams.set("redirect_uri", redirectUri);
         url.searchParams.set("state", state);
         return { flowId, authorizationUrl: url.href };
@@ -215,16 +335,7 @@ export function createGitHubAccountApi(options: {
               tokens.refreshExpiresAt,
               access,
               tokens.accessExpiresAt,
-              JSON.stringify(
-                installations.map((i) => ({
-                  id: i.id,
-                  app_id: i.appId,
-                  app_slug: i.appSlug,
-                  account: i.accountLogin,
-                  account_type: i.accountType,
-                  repository_selection: i.repositorySelection,
-                })),
-              ),
+              JSON.stringify(serializeGitHubInstallations(filterAppInstallations(installations))),
             ],
           );
         });
@@ -353,9 +464,9 @@ async function callbackInput(request: Request): Promise<{ state: string; code: s
   return schema.parse(values);
 }
 
-function githubAccountCommand({ route, caller, body, options }: ControlRouteContext) {
+function githubAccountCommand({ route, caller, body, options, request }: ControlRouteContext) {
   if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
-  return options.githubAccount.command(route.slice("github/".length), caller, body);
+  return options.githubAccount.command(route.slice("github/".length), caller, body, request?.signal);
 }
 
 export const githubAccountRoutes = defineRoutes("github-account", {
@@ -364,6 +475,7 @@ export const githubAccountRoutes = defineRoutes("github-account", {
   "github/install": githubAccountCommand,
   "github/connect": githubAccountCommand,
   "github/reconnect": githubAccountCommand,
+  [controlRouteKey(githubReposOperation.route)]: githubAccountCommand,
   [controlRouteKey(githubOAuthCallback.route)]: {
     methods: [githubOAuthCallback.route.method, githubOAuthRelay.route.method],
     respond: (request: Request, options: ControlOptions) =>

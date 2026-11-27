@@ -46,6 +46,7 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /github/oauth/callback",
       "POST /github/reconnect",
       "POST /github/refresh",
+      "POST /github/repos",
       "POST /github/runtime-status",
       "POST /github/status",
       "POST /golden/adopt",

@@ -380,3 +380,20 @@ test("published Skillpack versions pairs each source with its reference and adve
     expect(input.safeParse({ source, reference }).success).toBe(accepted);
   }
 });
+
+test("published GitHub repos operation requires a personal session, advertises no-store, and validates filters", () => {
+  const operation = adminPublished.paths["/api/v1/github/repos"].post;
+  expect(operation.security).toEqual([{ personalSession: [] }]);
+  expect(operation.responses["200"].headers["Cache-Control"].schema).toMatchObject({
+    type: "string",
+    const: "no-store",
+  });
+  const input = z.fromJSONSchema(
+    operation.requestBody.content["application/json"].schema as Parameters<typeof z.fromJSONSchema>[0],
+  );
+  expect(input.safeParse({}).success).toBe(true);
+  expect(input.safeParse({ account: "acme_emu", query: "api", limit: 50 }).success).toBe(true);
+  expect(input.safeParse({ account: "bad/org" }).success).toBe(false);
+  expect(input.safeParse({ limit: 501 }).success).toBe(false);
+  expect(input.safeParse({ unknown: true }).success).toBe(false);
+});

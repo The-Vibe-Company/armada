@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { accountOperations, antigravityLoginOperations } from "./accounts.ts";
 import type { ServerFailureCode } from "./failures.ts";
+import { githubReposOperation } from "./github-repos.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchResponse } from "./launch-response.ts";
@@ -180,6 +181,7 @@ export const operations = {
   ...githubCallbackOperations,
   ...goldenOperations,
   ...githubOperations,
+  listGitHubRepos: githubReposOperation,
   ...tokenOperations,
   ...accountOperations,
   ...antigravityLoginOperations,
