@@ -541,6 +541,7 @@ export async function createServerServices(env: Record<string, string | undefine
       development: env.NODE_ENV === "development",
       encryptionKey: config.encryptionKey,
       ...(env.GITHUB_APP_SLUG ? { slug: env.GITHUB_APP_SLUG } : {}),
+      ...(env.GITHUB_APP_ID ? { appId: env.GITHUB_APP_ID } : {}),
     }),
     providerFor,
     providerMetadata,

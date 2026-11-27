@@ -9,6 +9,7 @@ Inside every sandbox Armada launches, `git commit`, `git push` and the `gh` CLI 
    - Not installed, and `GITHUB_APP_SLUG` is set: nothing is stored yet. The browser is sent to `https://github.com/apps/<slug>/installations/new` with the same state cookie and `state` parameter. With **Request user authorization (OAuth) during installation** on, GitHub installs the App and authorizes in one step, then calls the callback with `code`, `installation_id` and `setup_action` (`install` or `update`).
    - That install return is accepted even when the state cookie is missing (the install started on GitHub, or in another browser). A signed-in Armada session is required; the code is exchanged and the `installation_id` must be an installation of this App, and only then is the connection saved. With no session the login page says so, and nothing is saved. A plain OAuth callback, with no `setup_action`, still requires the state cookie.
    - A user JWT cannot read the ciphertext column or write the table directly (it only selects the other columns, including `installations`, and deletes its row); row level security keeps each row to its owner. Your connections shows the recorded installations, a Manage installation link for each, and a warning when none are recorded.
+   - Calling `POST /api/v1/github/status` refreshes live installations from GitHub and persists them to `github_connections.installations` without rotating `connection_epoch`, keeping Dashboard **Your connections** in sync after multi-org installs. Calling `POST /api/v1/github/install` starts a stateful CLI install flow (`armada_cli_` state on `https://github.com/apps/<slug>/installations/new?state=...`), and `POST /api/v1/github/repos` lists accessible repositories across all connected installations (filterable by `account` and `query`).
 2. **Launch** (`armada new`, the MCP `launch` tool). The server reads the caller's row, refreshes to get a fresh access token, stores the rotated refresh token (compare-and-swap, so two launches racing cannot lose the new token) and:
    - puts `GH_TOKEN` and `GITHUB_TOKEN` in the fork's environment (never in a snapshot; forks stay `noEnv` apart from the credentials Armada injects);
    - sets the global git identity to `<name or login>` and `<id>+<login>@users.noreply.github.com`;
@@ -48,7 +49,7 @@ GitHub: Settings (of the account or org that owns the app), Developer settings, 
 | Repository permission: Metadata | Read-only (always on) |
 | Repository permission: Workflows | optional; Read and write if agents change `.github/workflows` |
 | Repository permission: Issues | optional; Read and write if agents use `gh issue` |
-| Where can this app be installed | Any account if people outside your org use Armada, otherwise Only on this account |
+| Where can this app be installed | **Any account** (required to install the App across multiple GitHub organizations or personal accounts; **Only on this account** restricts installation to the single owning account) |
 
 Then, on the app's page:
 
@@ -66,8 +67,8 @@ key on the server.
 | --- | --- | --- |
 | `GITHUB_APP_CLIENT_ID` | yes, build and runtime | yes |
 | `GITHUB_APP_CLIENT_SECRET` | yes, runtime | yes |
-| `GITHUB_APP_SLUG` | the slug of the App (`https://github.com/apps/<slug>`). Connect redirects there when the person has no installation, and Your connections links to it | no |
-| `GITHUB_APP_ID` | optional numeric App ID (not the client id). When set together with the slug, an installation must match both | optional numeric App ID for snapshot checkout |
+| `GITHUB_APP_SLUG` | yes — the slug of the App (`https://github.com/apps/<slug>`). Connect redirects there when the person has no installation, and Your connections links to it | yes — required for `POST /api/v1/github/install`, `installUrl` in `github/status`, and filtering App installations on `github/status` and `github/repos` |
+| `GITHUB_APP_ID` | optional numeric App ID (not the client id). When set together with the slug, an installation must match both | optional numeric App ID for snapshot checkout and filtering App installations (when set together with `GITHUB_APP_SLUG`, an installation must match both) |
 | `GITHUB_APP_PRIVATE_KEY` | no | optional PEM key for snapshot checkout, paired with `GITHUB_APP_ID` |
 | `ARMADA_ENCRYPTION_KEY` | already set (seals the refresh token) | already set (opens it) |
 
