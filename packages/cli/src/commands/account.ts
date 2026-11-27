@@ -26,12 +26,17 @@ Example: armada account login codex --name personal
 `;
 
 function authorizationHelp(verb: "add" | "login") {
-  const purpose =
-    verb === "add"
-      ? "Start GitHub App installation and wait for a new installation."
-      : "Authorize or reauthorize GitHub and wait for this flow to complete.";
-  return `Usage: armada account ${verb} github [--no-browser] [--timeout <seconds>] [--json]
-${purpose} Requires a personal Armada login.
+  if (verb === "add") {
+    return `Usage: armada account add github [--no-browser] [--no-wait | --timeout <seconds>] [--json]
+Install the Armada GitHub App on a GitHub organization or update selected repositories. Requires a personal Armada login.
+--no-browser prints the installation URL and instructions to stderr.
+--no-wait starts the flow without polling (useful when waiting for GitHub org admin approval).
+--timeout accepts 0 to 600 seconds (default 300). Zero still starts the flow and checks once.
+After a timeout or approval request, inspect armada account ls github before retrying.
+`;
+  }
+  return `Usage: armada account login github [--no-browser] [--timeout <seconds>] [--json]
+Authorize or reauthorize GitHub and wait for this flow to complete. Requires a personal Armada login.
 --no-browser prints the authorization URL and instructions to stderr.
 --timeout accepts 0 to 600 seconds (default 300). Zero still starts the flow and checks once.
 After a timeout, inspect armada account ls github before retrying.
@@ -58,7 +63,7 @@ Manage model credentials, GitHub access or your personal Armada session.
   test          Check a sandbox's bound API-key connection.
 Supply API keys and imported credentials through hidden input, stdin or a private file.
   ls github      Inspect your GitHub connection and installations.
-  add github     Start GitHub App installation and wait for a new installation.
+  add github     Install or update GitHub App access for an organization.
   login github  Authorize or reauthorize GitHub.
   rm github      Disconnect your GitHub account.
 Use leaf --help/-h for exact syntax and authorization requirements.
@@ -128,7 +133,8 @@ Set a named account cap with --max-agents N or --unlimited. Morph defaults to 2.
     "account import codex": importHelp("codex"),
     "account import antigravity": importHelp("antigravity"),
     "account ls github": `Usage: armada account ls github [--json]
-Read GitHub connection and installation metadata as JSON. Requires a personal Armada login.
+List your GitHub connection and installed GitHub organizations with repository scope. Requires a personal Armada login.
+Pass --json (or pipe stdout) for raw JSON metadata.
 `,
     "account add github": authorizationHelp("add"),
     "account login github": authorizationHelp("login"),

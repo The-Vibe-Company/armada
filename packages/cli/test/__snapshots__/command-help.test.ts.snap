@@ -358,7 +358,7 @@ Manage model credentials, GitHub access or your personal Armada session.
   test          Check a sandbox's bound API-key connection.
 Supply API keys and imported credentials through hidden input, stdin or a private file.
   ls github      Inspect your GitHub connection and installations.
-  add github     Start GitHub App installation and wait for a new installation.
+  add github     Install or update GitHub App access for an organization.
   login github  Authorize or reauthorize GitHub.
   rm github      Disconnect your GitHub account.
 Use leaf --help/-h for exact syntax and authorization requirements.

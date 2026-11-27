@@ -130,7 +130,7 @@ export function parseAccountArgs(argv: readonly string[]) {
       "--endpoint-auth",
       ...priceOptions,
     ],
-    ["--unlimited"],
+    ["--unlimited", "--no-wait"],
   );
 }
 

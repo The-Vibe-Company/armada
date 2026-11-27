@@ -2,9 +2,13 @@
 
 ## GitHub and model access
 
-Use `armada account ls github` and, with the human present,
-`armada account login github` to authorize or reauthorize. Installation access and
-user authorization are distinct: ensure the App can access the requested repo.
+Use `armada account ls github` (add `--json` or pipe stdout for raw metadata) to
+inspect connected GitHub organizations and repository scopes (`all` vs `selected`).
+With the human present, use `armada account login github` to authorize or reauthorize,
+and `armada account add github` (pass `--no-wait` when waiting for GitHub org admin
+approval) to install the Armada GitHub App on another organization or update selected
+repositories. Installation access and user authorization are distinct: ensure the App
+can access the requested repo.
 `armada api github/refresh '{"id":"SANDBOX"}'` refreshes sandbox GitHub access after connection
 repair; it is not a model-account refresh or a way around repository permissions.
 
