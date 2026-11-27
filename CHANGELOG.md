@@ -1,5 +1,22 @@
 # Changelog
 
+## [14.9.0](https://github.com/The-Vibe-Company/armada/compare/v14.8.0...v14.9.0) (2026-11-27)
+
+
+### Features
+
+* **cli:** support multi-org GitHub installations and --no-wait in account commands ([#4433](https://github.com/The-Vibe-Company/armada/issues/4433)) ([f6420a2](https://github.com/The-Vibe-Company/armada/commit/f6420a2326cdd9d381e323ded4fcf178cd8f35c5))
+* **core:** add multi-org GitHub contracts, repo discovery, and scoped snapshot tokens ([#4430](https://github.com/The-Vibe-Company/armada/issues/4430)) ([f34a25c](https://github.com/The-Vibe-Company/armada/commit/f34a25cd55f193360c80f2a0c3e59a706ee59cfa))
+* **dashboard:** add org-grouped GitHub repository picker ([#4436](https://github.com/The-Vibe-Company/armada/issues/4436)) ([84a1d36](https://github.com/The-Vibe-Company/armada/commit/84a1d360a6332eda948588fb8212aa6189df69c4))
+* **dashboard:** support multi-org GitHub sync and non-disruptive org connect ([#4434](https://github.com/The-Vibe-Company/armada/issues/4434)) ([6ba03ba](https://github.com/The-Vibe-Company/armada/commit/6ba03ba494f68a0617de0c0d633c0040a0697210))
+* **mcp-server:** add multi-org GitHub repos route, status sync, and stateful CLI install ([#4432](https://github.com/The-Vibe-Company/armada/issues/4432)) ([f6ca104](https://github.com/The-Vibe-Company/armada/commit/f6ca104c0033b1e3f51d7093e9a25047bb33b147))
+
+
+### Bug Fixes
+
+* **mcp-server:** make multi-kind jobs runner claim test deterministic ([#4428](https://github.com/The-Vibe-Company/armada/issues/4428)) ([f9f8bdb](https://github.com/The-Vibe-Company/armada/commit/f9f8bdba0b0b42042e8e71a7ecccca23e7a4e63b))
+* **mcp-server:** mint per-org scoped tokens for Docker snapshots ([#4431](https://github.com/The-Vibe-Company/armada/issues/4431)) ([e9f0da8](https://github.com/The-Vibe-Company/armada/commit/e9f0da81b3a346573424cb87869e96405aa38044))
+
 ## [14.8.0](https://github.com/The-Vibe-Company/armada/compare/v14.7.0...v14.8.0) (2026-11-26)
 
 
