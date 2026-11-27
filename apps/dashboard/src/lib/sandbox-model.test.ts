@@ -9,10 +9,10 @@ describe("displayedSandboxModel", () => {
   });
 
   test("prefers concrete executed model(s) over default or null requested model", () => {
-    expect(displayedSandboxModel("antigravity", "default", ["gemini-4-neon-high"])).toBe("gemini-4-neon-high");
-    expect(
-      displayedSandboxModel("antigravity", "default", ["default", "gemini-4-neon-high", "gemini-4-neon-high"]),
-    ).toBe("gemini-4-neon-high");
+    expect(displayedSandboxModel("antigravity", "default", ["gemini-4-neon"])).toBe("gemini-4-neon");
+    expect(displayedSandboxModel("antigravity", "default", ["default", "gemini-4-neon", "gemini-4-neon"])).toBe(
+      "gemini-4-neon",
+    );
     expect(displayedSandboxModel("claude", null, ["claude-opus-5-5", "claude-haiku-5-5"])).toBe(
       "claude-opus-5-5, claude-haiku-5-5",
     );
@@ -25,7 +25,7 @@ describe("displayedSandboxModel", () => {
   });
 
   test("preserves an explicit requested model choice", () => {
-    expect(displayedSandboxModel("antigravity", "gemini-4-neon-high", [])).toBe("gemini-4-neon-high");
+    expect(displayedSandboxModel("antigravity", "gemini-4-neon", [])).toBe("gemini-4-neon");
     expect(displayedSandboxModel("claude", "claude-opus-5-5", ["claude-opus-5-5", "claude-haiku-5-5"])).toBe(
       "claude-opus-5-5",
     );
@@ -34,11 +34,11 @@ describe("displayedSandboxModel", () => {
 
 describe("costModelsLabel and turnModelLabel", () => {
   test("filters legacy default when concrete models exist and humanizes default-only entries", () => {
-    expect(costModelsLabel(["default", "gemini-4-neon-high"])).toBe("gemini-4-neon-high");
+    expect(costModelsLabel(["default", "gemini-4-neon"])).toBe("gemini-4-neon");
     expect(costModelsLabel(["default"])).toBe("Account default");
     expect(costModelsLabel([])).toBe("Not reported");
     expect(turnModelLabel("default")).toBe("Account default");
-    expect(turnModelLabel("gemini-4-neon-high")).toBe("gemini-4-neon-high");
+    expect(turnModelLabel("gemini-4-neon")).toBe("gemini-4-neon");
     expect(turnModelLabel(null)).toBe("Model not reported");
   });
 });
@@ -48,11 +48,11 @@ describe("turnModelDisplay", () => {
     expect(
       turnModelDisplay({
         requestedModel: "default",
-        observedModel: "gemini-4-neon-high",
+        observedModel: "gemini-4-neon",
         modelSelectionReason: "model_selection_unverified",
         modelSelectionMessage: "Unverified",
       }),
-    ).toEqual({ kind: "model", model: "gemini-4-neon-high" });
+    ).toEqual({ kind: "model", model: "gemini-4-neon" });
   });
 
   test("keeps unverified notice and humanizes default when observed model is missing or default", () => {

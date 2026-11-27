@@ -70,30 +70,19 @@ test("the vendored model catalog preserves the pre-consolidation values", () => 
   const { antigravity, ...preConsolidationHarnesses } = MODEL_CATALOG;
   expect(antigravity.defaultModel).toBe("default");
   expect(antigravity.defaultReasoningEffort).toBe("default");
-  expect(antigravity.reasoningEfforts).toEqual(["default"]);
-  expect(antigravity.models.map(({ id }) => id)).toEqual([
-    "default",
-    "gemini-4-neon-low",
-    "gemini-4-neon-medium",
-    "gemini-4-neon-high",
-    "gemini-4-neon-xhigh",
-    "gemini-4-hydrogen-low",
-    "gemini-4-hydrogen-medium",
-    "gemini-4-hydrogen-high",
-    "gemini-4-hydrogen-xhigh",
-    "gemini-4-argon-low",
-    "gemini-4-argon-medium",
-    "gemini-4-argon-high",
-    "gemini-4-carbon-low",
-    "gemini-4-carbon-medium",
-    "gemini-4-carbon-high",
+  expect(antigravity.reasoningEfforts).toEqual(["default", "low", "medium", "high", "xhigh"]);
+  expect(antigravity.models).toEqual([
+    { id: "default", label: "Account default", reasoningEfforts: ["default", "low", "medium", "high", "xhigh"] },
+    { id: "gemini-4-neon", label: "Gemini 4 Neon", reasoningEfforts: ["default", "low", "medium", "high", "xhigh"] },
+    {
+      id: "gemini-4-hydrogen",
+      label: "Gemini 4 Hydrogen",
+      reasoningEfforts: ["default", "low", "medium", "high", "xhigh"],
+    },
+    { id: "gemini-4-argon", label: "Gemini 4 Argon", reasoningEfforts: ["default", "low", "medium", "high"] },
+    { id: "gemini-4-carbon", label: "Gemini 4 Carbon", reasoningEfforts: ["default", "low", "medium", "high"] },
   ]);
-  expect(
-    antigravity.models.every(
-      ({ label, reasoningEfforts }) =>
-        !label.includes("confirm on staging") && reasoningEfforts.length === 1 && reasoningEfforts[0] === "default",
-    ),
-  ).toBe(true);
+  expect(antigravity.models.every(({ label }) => !label.includes("confirm on staging"))).toBe(true);
   const generatedMorph = { models: MORPH_MODEL_IDS, ...MORPH_ENDPOINTS };
   expect<unknown>(generatedMorph).toEqual(catalog.compatibleProviders.morph);
   expect<unknown>(CONNECTION_MODELS).toEqual(catalog.snapshot.providers);

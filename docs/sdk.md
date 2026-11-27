@@ -20,7 +20,7 @@ The client defaults to the Armada dashboard origin. It sends its service token o
 
 `launch` accepts `DockerLaunchInput` with `provider: "docker"`, `harness`, and either `hostId` (with optional `repos`) or `snapshotId` (which selects its host and workspace). Supply an `idempotencyKey` of 16–128 characters and keep it for retries. An optional `externalRef` lets you find the sandbox later. With a service token, omit `org` or set it to the token's organization UUID. Discover Docker availability with `launch/options`.
 
-Antigravity launches use `harness: "antigravity"`, a compatible `credentialId`, and optionally a model such as `"default"` or a verified Gemini 4 model ID (for example `"gemini-4-neon-high"`). The server admits Antigravity on Modal and Docker. See [Antigravity runtime](runtime/antigravity.md) for account setup.
+Antigravity launches use `harness: "antigravity"`, a compatible `credentialId`, and optionally a model such as `"default"` or a verified Gemini 4 base model ID (for example `"gemini-4-neon"` with optional `reasoningEffort` such as `"high"`). The server admits Antigravity on Modal and Docker. See [Antigravity runtime](runtime/antigravity.md) for account setup.
 
 For a Docker sandbox launched from a snapshot, `client.status({ id })` reports
 the recorded `snapshotId` alongside the host and image.
