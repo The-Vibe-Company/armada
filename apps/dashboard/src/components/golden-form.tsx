@@ -22,6 +22,7 @@ import {
   recoverGoldenBuild,
 } from "@/app/actions/goldens";
 import { SnapshotDetails, SnapshotPlacementWord, useSnapshotPlacement } from "@/components/docker-snapshot-forms";
+import { GitHubRepoPickerButton } from "@/components/github-repo-picker";
 import { LaunchDialog } from "@/components/launch-dialog";
 import { LaunchChoice } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,7 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import type { ActionResult } from "@/lib/action";
+import { applyRepoSelectionToRows } from "@/lib/github-repos";
 import {
   type CapacityState,
   GOLDEN_PROVIDERS,
@@ -546,18 +548,30 @@ function ScopedGoldenForm({
                 </li>
               ))}
             </ol>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              // After the rows for the keyboard. In the create view, which is wide, it sits beside the legend and costs
-              // no line; the rebuild form lives in the narrow row panel and keeps it below.
-              className={cn(mode === "create" && "sm:absolute sm:-top-8 sm:right-0")}
-              disabled={rows.length >= MAX_GOLDEN_REPOS}
-              onClick={() => setRows((current) => [...current, keyed({ url: "", branch: "", dir: "" })])}
-            >
-              <PlusIcon /> Add repository
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <GitHubRepoPickerButton
+                selected={rows.map((r) => r.url)}
+                maxSelected={MAX_GOLDEN_REPOS}
+                githubConnected={githubConnected}
+                disabled={pending || jobActive}
+                onSelect={(url) =>
+                  setRows((c) =>
+                    applyRepoSelectionToRows(c, url, (u) => keyed({ url: u, branch: "", dir: "" }), MAX_GOLDEN_REPOS),
+                  )
+                }
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                // After the rows for the keyboard. In the create view, which is wide, it sits beside the legend and costs
+                // no line; the rebuild form lives in the narrow row panel and keeps it below.
+                disabled={rows.length >= MAX_GOLDEN_REPOS}
+                onClick={() => setRows((current) => [...current, keyed({ url: "", branch: "", dir: "" })])}
+              >
+                <PlusIcon /> Add repository
+              </Button>
+            </div>
           </fieldset>
         </SnapshotDetails>
         <div className="space-y-2">

@@ -15,6 +15,7 @@ import {
   useState,
 } from "react";
 import { buildDockerSnapshot, rebuildDockerSnapshot } from "@/app/actions/docker-snapshots";
+import { GitHubRepoPickerButton } from "@/components/github-repo-picker";
 import { LaunchDialog } from "@/components/launch-dialog";
 import { LaunchChoice } from "@/components/launch-surface";
 import { Button } from "@/components/ui/button";
@@ -34,7 +35,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useMutationState } from "@/components/use-mutation-state";
 import { isUuid } from "@/lib/action";
 import { type DockerHost, hostBuildBlocker } from "@/lib/docker-hosts";
-import { goldenRequest, type RepoRow } from "@/lib/golden-form";
+import { applyRepoSelectionToRows } from "@/lib/github-repos";
+import { goldenRequest, MAX_GOLDEN_REPOS, type RepoRow } from "@/lib/golden-form";
 import { embeddedSnapshotParams } from "@/lib/launch-repositories";
 
 type SnapshotPlacement = {
@@ -485,19 +487,42 @@ function DockerSnapshotForm({
                     </DockerRepositoryDetails>
                   </div>
                 ))}
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={repos.length >= 16}
-                  onClick={() =>
-                    setRepos((rows) => [
-                      ...rows,
-                      { key: crypto.randomUUID(), url: "", branch: "", dir: "", history: "full" },
-                    ])
-                  }
-                >
-                  Add repository
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <GitHubRepoPickerButton
+                    selected={repos.map((r) => r.url)}
+                    maxSelected={MAX_GOLDEN_REPOS}
+                    githubConnected={githubConnected}
+                    disabled={
+                      pending ||
+                      Boolean(embeddedReceipt) ||
+                      Boolean(result?.ok && built?.status !== "failed" && !embeddedFailed)
+                    }
+                    onSelect={(url) =>
+                      setRepos((c) =>
+                        applyRepoSelectionToRows(
+                          c,
+                          url,
+                          (u) => ({ key: crypto.randomUUID(), url: u, branch: "", dir: "", history: "full" }),
+                          MAX_GOLDEN_REPOS,
+                        ),
+                      )
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={repos.length >= MAX_GOLDEN_REPOS}
+                    onClick={() =>
+                      setRepos((rows) => [
+                        ...rows,
+                        { key: crypto.randomUUID(), url: "", branch: "", dir: "", history: "full" },
+                      ])
+                    }
+                  >
+                    Add repository
+                  </Button>
+                </div>
                 {!parsed.ok && repos.some((repo) => repo.url) && (
                   <p role="alert" className="text-sm">
                     {parsed.error}
