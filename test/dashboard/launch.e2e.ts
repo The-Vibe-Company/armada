@@ -28,13 +28,15 @@ for (const organization of [
     browser,
   }) => {
     await app.open("/sandboxes");
-    const launch = screen.getByRole("button", /^Launch a sandbox/);
+    const desktop = await browser.evaluate(() => window.innerWidth >= 768);
+    const launch = browser.locator("[data-page-launch]").getByRole("button", /^Launch a sandbox/);
     await expect(launch).toHaveCount(1);
+    await expect(screen.getByRole("button", /^Launch a sandbox/)).toHaveCount(desktop ? 2 : 1);
     await launch.tap();
     await screen.getByLabel("Task").fill(`Inspect the ${organization.name} fixture`);
     if (organization.repository) {
       await screen.getByRole("button", "No repository", { exact: true }).tap();
-      await screen.getByPlaceholder("Search or type owner/repo").fill(organization.repository);
+      await screen.getByPlaceholder("Search repos or type owner/repo").fill(organization.repository);
       await screen.getByRole("option", new RegExp(organization.repository)).tap();
     }
     await screen.getByRole("button", /^From ·/).tap();
@@ -71,12 +73,18 @@ for (const organization of [
   });
 }
 
-test("Acme: empty Sandboxes has one launch entry", { session: "alice" }, async ({ app, screen }) => {
+test("Acme: empty Sandboxes shows launch entry without duplicating mobile shell launch", { session: "alice" }, async ({
+  app,
+  screen,
+  browser,
+}) => {
   await configureFixture("sandbox-inventory", { hidden: true });
   try {
     await app.open("/sandboxes");
+    const desktop = await browser.evaluate(() => window.innerWidth >= 768);
     await expect(screen.getByText("No sandboxes yet", { exact: true })).toBeVisible();
-    await expect(screen.getByRole("button", /^Launch a sandbox/)).toHaveCount(1);
+    await expect(browser.locator("[data-page-launch]").getByRole("button", /^Launch a sandbox/)).toHaveCount(1);
+    await expect(screen.getByRole("button", /^Launch a sandbox/)).toHaveCount(desktop ? 3 : 2);
   } finally {
     await configureFixture("sandbox-inventory", { hidden: false });
   }
@@ -95,7 +103,7 @@ test("Acme: launch is available from a page without a header launch action", { s
 
 test("Acme: an agent without an account cannot launch", { session: "alice" }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
+  await browser.locator("[data-page-launch]").getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", /^Claude Code ·/).tap();
   await screen.getByRole("radio", "Codex", { exact: true }).tap();
   await browser.keyboard.press("Escape");
@@ -103,9 +111,9 @@ test("Acme: an agent without an account cannot launch", { session: "alice" }, as
   await expect(screen.getByRole("link", "Add an account")).toBeVisible();
 });
 
-test("Large: a full account cannot be selected", { session: "large" }, async ({ app, screen }) => {
+test("Large: a full account cannot be selected", { session: "large" }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
+  await browser.locator("[data-page-launch]").getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", /^(Claude Code|Codex|OpenCode) ·/).tap();
   await screen.getByRole("button", /^(as |Choose an account)/).tap();
   const limited = screen.getByRole("option", /model-account-0-international/);
@@ -115,12 +123,12 @@ test("Large: a full account cannot be selected", { session: "large" }, async ({ 
 
 test("Large: launch on the online Docker host", { session: "large" }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
+  await browser.locator("[data-page-launch]").getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", /^From ·/).tap();
   await screen.getByPlaceholder("Search from").fill("Docker host");
   await expect(screen.getByRole("group", /^Docker hosts$/)).toBeVisible();
-  await screen.getByRole("option", /^Empty machine · Large platform/).tap();
-  await expect(screen.getByRole("button", /^From · Empty machine · Large platform/)).toBeVisible();
+  await screen.getByRole("option", /^Base Armada image · Large platform/).tap();
+  await expect(screen.getByRole("button", /^From · Base Armada image · Large platform/)).toBeVisible();
   await screen.getByLabel("Task").fill("Inspect the Docker fixture");
   await screen.getByRole("button", /^(Claude Code|Codex|OpenCode) ·/).tap();
   await screen.getByRole("radio", "Claude Code", { exact: true }).tap();
@@ -144,9 +152,9 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
   });
 });
 
-test("Acme: a disconnected tool cannot be selected", { session: "alice" }, async ({ app, screen }) => {
+test("Acme: a disconnected tool cannot be selected", { session: "alice" }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
+  await browser.locator("[data-page-launch]").getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", /^Tools ·/).tap();
   const attention = screen.getByRole("region", "Needs attention");
   await expect(attention.getByText("Acme Sentry", { exact: true })).toBeVisible();
@@ -160,17 +168,17 @@ test("Large: build a Docker snapshot in the composer and launch with the same ta
 }) => {
   await ensureFixtureGitHub();
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
+  await browser.locator("[data-page-launch]").getByRole("button", "Launch a sandbox").tap();
   const task = screen.getByLabel("Task");
   await task.fill("Inspect the new Docker repository");
   await screen.getByRole("button", "No repository", { exact: true }).tap();
-  await screen.getByPlaceholder("Search or type owner/repo").fill("example/new-docker-repo");
+  await screen.getByPlaceholder("Search repos or type owner/repo").fill("example/new-docker-repo");
   await screen.getByRole("option", /Use example\/new-docker-repo/).tap();
   await screen.getByRole("button", "Create a snapshot", { exact: true }).tap();
   const build = screen.getByRole("region", "Snapshot build");
   const host = build.getByRole("button", /^Docker host Large platform/);
   await host.tap();
-  await expect(build.getByText("Init commands (optional)")).toBeVisible();
+  await expect(build.getByText(/Runs once while building this Docker snapshot/)).toBeVisible();
   await build.getByRole("button", "Build snapshot", { exact: true }).tap();
   await expect(screen.getByText("new-docker-repo is ready and selected.", { exact: true })).toBeVisible();
   await expect(task).toHaveValue("Inspect the new Docker repository");
@@ -206,13 +214,13 @@ test("Acme: recover a saved inline cloud snapshot when launch discovery is delay
   await configureFixture("snapshot-visibility", { hidden: name });
   try {
     await app.open("/sandboxes");
-    await screen.getByRole("button", "Launch a sandbox").tap();
+    await browser.locator("[data-page-launch]").getByRole("button", "Launch a sandbox").tap();
     const task = screen.getByLabel("Task");
     await task.fill("Review the new cloud repository");
     await screen.getByRole("button", /^Stops in /).tap();
     await screen.getByRole("option", "1 hour").tap();
     await screen.getByRole("button", "No repository", { exact: true }).tap();
-    await screen.getByPlaceholder("Search or type owner/repo").fill(`example/${name}`);
+    await screen.getByPlaceholder("Search repos or type owner/repo").fill(`example/${name}`);
     await screen.getByRole("option", new RegExp(`Use example/${name}`)).tap();
     await screen.getByRole("button", "Create a snapshot", { exact: true }).tap();
     const build = screen.getByRole("region", "Snapshot build");
@@ -237,9 +245,9 @@ test("Large: a repository with only a failed Docker snapshot explains why launch
   session: "large",
 }, async ({ app, screen, browser }) => {
   await app.open("/sandboxes");
-  await screen.getByRole("button", "Launch a sandbox").tap();
+  await browser.locator("[data-page-launch]").getByRole("button", "Launch a sandbox").tap();
   await screen.getByRole("button", "No repository", { exact: true }).tap();
-  await screen.getByPlaceholder("Search or type owner/repo").fill("example/failed-fixture");
+  await screen.getByPlaceholder("Search repos or type owner/repo").fill("example/failed-fixture");
   await screen.getByRole("option", /^example\/failed-fixture/).tap();
   await expect(screen.getByRole("button", /^From · host-snapshot-2/)).toBeVisible();
   await expect(

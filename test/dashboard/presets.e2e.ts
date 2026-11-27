@@ -45,7 +45,7 @@ for (const org of [
     await app.open("/templates");
     await screen.getByRole("link", name, { exact: true }).tap();
     await screen.getByRole("button", "Change", { exact: true }).tap();
-    await screen.getByRole("button", "low", { exact: true }).tap();
+    await screen.getByRole("button", "Low", { exact: true }).tap();
     await screen.getByRole("button", "Save as version 2").tap();
     await expect(screen.getByRole("dialog", `Change ${name}`)).toBeHidden();
     await expect(browser.locator(`[data-template-panel="${name}"]`)).toContainText(
