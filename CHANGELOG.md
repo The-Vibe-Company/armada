@@ -1,5 +1,13 @@
 # Changelog
 
+## [14.9.1](https://github.com/The-Vibe-Company/armada/compare/v14.9.0...v14.9.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **agent-runtime:** support ACP thought_level config option for Antigravity ([#4439](https://github.com/The-Vibe-Company/armada/issues/4439)) ([7dc9cbd](https://github.com/The-Vibe-Company/armada/commit/7dc9cbd1c38fed04112aed090075290450257518))
+* **catalog:** use Antigravity 1.5.13 base models with reasoning effort ([#4438](https://github.com/The-Vibe-Company/armada/issues/4438)) ([e7c518e](https://github.com/The-Vibe-Company/armada/commit/e7c518e315a5d73fc2adc96b8b4028cfc9b80d97))
+
 ## [14.9.0](https://github.com/The-Vibe-Company/armada/compare/v14.8.0...v14.9.0) (2026-11-27)
 
 
