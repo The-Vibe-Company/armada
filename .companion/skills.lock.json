@@ -1,0 +1,100 @@
+{
+  "lockfileVersion": 2,
+  "workspaces": {
+    "430850df-2b12-4437-95bf-ec7045879843": {
+      "apiUrl": "https://skillpack.app/v1",
+      "skills": {
+        "captain": {
+          "checksum": "sha256:5627e40d3f338157cb9a9e02dddf2368ffe1883f2483b9a27448f77ac90cced7",
+          "name": "captain",
+          "pinned": null,
+          "skillId": "20f68ccd-7807-4cc8-82f0-2ce45282b23b",
+          "slug": "captain",
+          "targets": [
+            {
+              "checksum": "sha256:36f71fad7e8b2a5184b4f3cc12d1cac9147eb407afc2255598aa5b4162577ad9",
+              "packageChecksum": "sha256:5627e40d3f338157cb9a9e02dddf2368ffe1883f2483b9a27448f77ac90cced7",
+              "path": ".agents/skills/captain",
+              "scope": "project",
+              "tool": "shared",
+              "version": "0.2.0"
+            }
+          ],
+          "version": "0.2.0"
+        },
+        "capture-learning-tools": {
+          "checksum": "sha256:f9ae2f0b3fedb58b681b5d3afbe680ecefbe337c701fb54846a745db4a90182d",
+          "name": "capture-learning-tools",
+          "pinned": null,
+          "skillId": "2ef3ebe4-63bb-468a-acc0-a37360a65840",
+          "slug": "capture-learning-tools",
+          "targets": [
+            {
+              "checksum": "sha256:a48d8febf13149fe42b76b21b3254c8c0701324049d4e3d6e59cabc4662eb8eb",
+              "packageChecksum": "sha256:f9ae2f0b3fedb58b681b5d3afbe680ecefbe337c701fb54846a745db4a90182d",
+              "path": ".agents/skills/capture-learning-tools",
+              "scope": "project",
+              "tool": "shared",
+              "version": "0.2.1"
+            }
+          ],
+          "version": "0.2.1"
+        },
+        "grilling": {
+          "checksum": "sha256:27c39645d0ff1e6fd9626f07127ac31c9e0e84708a9f730f296e9235aaa9d623",
+          "name": "grilling",
+          "pinned": null,
+          "skillId": "4232efaf-3767-4a3b-85e7-d138981436e0",
+          "slug": "grilling",
+          "targets": [
+            {
+              "checksum": "sha256:0f6100a209a6b4796994d0132cbf8798062d7fa57db0631d88e110f78af2d942",
+              "packageChecksum": "sha256:27c39645d0ff1e6fd9626f07127ac31c9e0e84708a9f730f296e9235aaa9d623",
+              "path": ".agents/skills/grilling",
+              "scope": "project",
+              "tool": "shared",
+              "version": "1.1.1"
+            }
+          ],
+          "version": "1.1.1"
+        },
+        "review-code-dev": {
+          "checksum": "sha256:147d372b2360e54b2113d00a21fe0609f4ae653716668f24aedc91d922c77cff",
+          "name": "review-code-dev",
+          "pinned": null,
+          "skillId": "b0780a97-6972-4a2b-8e88-f41a528900c7",
+          "slug": "review-code-dev",
+          "targets": [
+            {
+              "checksum": "sha256:562f59e2a73f97175acbb2223d07ef2a9df21eee4f24e0649898030414179dbb",
+              "packageChecksum": "sha256:147d372b2360e54b2113d00a21fe0609f4ae653716668f24aedc91d922c77cff",
+              "path": ".agents/skills/review-code-dev",
+              "scope": "project",
+              "tool": "shared",
+              "version": "2.2.0"
+            }
+          ],
+          "version": "2.2.0"
+        },
+        "ship-pr-dev": {
+          "checksum": "sha256:7bff5c980333fce8fa8b091a0f6f51c93f6e8dbb949181e7812976485119a701",
+          "name": "ship-pr-dev",
+          "pinned": null,
+          "skillId": "bccb0c35-71bf-4fe8-ad7c-7a931889fa84",
+          "slug": "ship-pr-dev",
+          "targets": [
+            {
+              "checksum": "sha256:7329cd73efeb2c73f90383ea1f8fca06aadbf0d2ce309900a39f422aabb5fc28",
+              "packageChecksum": "sha256:7bff5c980333fce8fa8b091a0f6f51c93f6e8dbb949181e7812976485119a701",
+              "path": ".agents/skills/ship-pr-dev",
+              "scope": "project",
+              "tool": "shared",
+              "version": "1.6.2"
+            }
+          ],
+          "version": "1.6.2"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "repo": "The-Vibe-Company/armada",
+  "base_branch": "main",
+  "branch_prefix": "captain/",
+  "topology": "solo",
+  "is_monorepo": true,
+  "openboard": {
+    "board_url": "https://openboard.thevibecompany.co/api/tvc/main",
+    "channel": "armada",
+    "worker_connection": "armada",
+    "area_labels": [
+      "area=mcp-server",
+      "area=dashboard",
+      "area=cli",
+      "area=core",
+      "area=ios",
+      "area=docker-host",
+      "area=agent-runtime",
+      "area=docs"
+    ]
+  },
+  "armada": {
+    "cli": "npx -y @the-vibe-company/armada@latest",
+    "org": "68865be7-cbeb-4328-82ae-4e2d4578117d",
+    "provider": "modal",
+    "template": "armada-neon-openboard",
+    "snapshot": "aa2f1e6c-c4f1-4c7f-8c46-c48118808abd",
+    "max_inflight": 8
+  },
+  "routing": {
+    "builder_models": ["antigravity:gemini-4-neon-high"],
+    "light_model": "antigravity:default",
+    "challenger_model": "codex:gpt-6.2-astra"
+  },
+  "delivery": {
+    "review_tool": "ship-pr-dev",
+    "merge_mode": "auto-merge",
+    "max_open_prs": 5,
+    "post_merge_hook": ""
+  },
+  "cadence": {
+    "wakeup_seconds": 120,
+    "challenger_every_n_prs": 10
+  },
+  "circuit_breakers": {
+    "max_ttl_extensions": 3,
+    "max_ci_fail_rounds": 3,
+    "max_rebase_rounds": 3
+  }
+}

@@ -1,0 +1,8 @@
+# Runtime state created during active Captain runs (never commit)
+orch.log
+orch.log.*
+watchdog.pid
+watchdog.lock/
+rules.md
+HANDOFF.md
+*.tmp
