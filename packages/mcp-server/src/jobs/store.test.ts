@@ -6095,8 +6095,16 @@ test("jobs runner claims across multiple kinds and stays at one SQL round-trip o
   expect(statements).toHaveLength(1);
   expect(statements[0]).toContain("claim_next_job");
 
-  const w1 = await f.store.enqueue("webhook", null, null, "w1", null, { orgId: f.people.org, maxAttempts: 1 });
-  const w2 = await f.store.enqueue("webhook", null, null, "w2", null, { orgId: f.people.org, maxAttempts: 1 });
+  const w1 = await f.store.enqueue("webhook", null, null, "w1", null, {
+    orgId: f.people.org,
+    maxAttempts: 1,
+    runAfter: new Date(0),
+  });
+  const w2 = await f.store.enqueue("webhook", null, null, "w2", null, {
+    orgId: f.people.org,
+    maxAttempts: 1,
+    runAfter: new Date(1_000),
+  });
   const lf = await f.store.enqueue("langfuse_export", null, null, "lf1", null, { orgId: f.people.org, maxAttempts: 1 });
 
   const otherOwner = crypto.randomUUID();
