@@ -19,6 +19,9 @@ test("command boundaries reject recognized but unused flags before making reques
     ["account", "status", "--timeout", "4"],
     ["account", "logout", "--private"],
     ["account", "ls", "github", "--timeout", "4"],
+    ["account", "ls", "github", "--no-wait"],
+    ["account", "ls", "--no-wait"],
+    ["account", "login", "github", "--no-wait"],
     ["account", "login", "github", "--ttl", "4h"],
   ];
   for (const argv of invocations) {

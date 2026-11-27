@@ -226,7 +226,7 @@ test.each([
     expect(await request.json()).toEqual({});
     return Response.json(response);
   });
-  expect(await h.run(["account", verb, "github"])).toBe(0);
+  expect(await h.run(["account", verb, "github", "--json"])).toBe(0);
   expect(JSON.parse(h.output().out)).toEqual(response);
 });
 
@@ -244,7 +244,7 @@ test("account add github waits for a new installation", async () => {
     const installations = checked < 3 ? [previous] : [previous, { ...previous, id: 2 }];
     return Response.json({ connection: { status: "connected", installations } });
   });
-  expect(await h.run(["account", "add", "github", "--no-browser"])).toBe(0);
+  expect(await h.run(["account", "add", "github", "--no-browser", "--json"])).toBe(0);
   expect(h.opened).toEqual([]);
   expect(h.output().err).toContain("https://github.com/apps/armada/installations/new");
   expect(JSON.parse(h.output().out).connection.installations).toHaveLength(2);
