@@ -5,7 +5,6 @@ import {
   EncryptionKeyError,
   encryptSecret,
   exchangeGitHubCode,
-  fetchGitHubInstallationRepositories,
   fetchGitHubInstallations,
   GITHUB_NOT_CONNECTED,
   type GitHubApp,
@@ -15,11 +14,11 @@ import {
   type GitHubResolveDeps,
   githubAppFromEnv,
   gitIdentity,
-  isGitHubSlug,
   redact,
   resolveGitHubAccess,
   type StoredGitHubConnection,
 } from "../src/index.ts";
+import { fetchGitHubInstallationRepositories, isGitHubSlug } from "../src/server.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
 const USER = "22222222-2222-4222-8222-222222222222";

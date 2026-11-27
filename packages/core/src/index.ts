@@ -37,7 +37,6 @@ export {
   presetModels,
 } from "./connection-presets.ts";
 export * from "./connections.ts";
-export type { GitHubReposRequest, GitHubReposResponse } from "./contract/github-repos.ts";
 export { HARNESSES, type Harness, type Visibility } from "./contract.ts";
 export type { CredentialBinding } from "./credentials.ts";
 export {
@@ -142,8 +141,6 @@ export {
 } from "./event-history.ts";
 export {
   exchangeGitHubCode,
-  type FetchGitHubInstallationRepositoriesOptions,
-  fetchGitHubInstallationRepositories,
   fetchGitHubInstallations,
   fetchGitHubUser,
   GH_MISSING_NOTE,
@@ -155,7 +152,6 @@ export {
   GITHUB_CLIENT_SECRET_ENV,
   GITHUB_NOT_CONNECTED,
   GITHUB_REVOKED,
-  GITHUB_SLUG_PATTERN,
   type GitHubAccess,
   type GitHubApp,
   GitHubAuthError,
@@ -163,8 +159,6 @@ export {
   type GitHubConnectionStore,
   type GitHubInstallation,
   type GitHubInstallationApp,
-  type GitHubInstallationRepositoriesResult,
-  type GitHubInstallationRepository,
   type GitHubResolveDeps,
   type GitHubStatus,
   type GitHubTokenSet,
@@ -175,12 +169,9 @@ export {
   githubInstallationAppFromEnv,
   gitIdentity,
   gitSetupCommand,
-  isGitHubSlug,
   refreshGitHubToken,
   resolveGitHubAccess,
   type StoredGitHubConnection,
-  type StoredGitHubInstallation,
-  serializeGitHubInstallations,
 } from "./github.ts";
 export {
   assertGoldenMutation,
