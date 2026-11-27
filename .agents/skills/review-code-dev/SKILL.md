@@ -1,23 +1,21 @@
 ---
 name: review-code-dev
 description: >
-  Review workspace changes, PRs, commits, or branch comparisons with the
-  host agent's model. OCR's CLI handles file selection and rule resolution;
-  this skill defines the review workflow, coverage requirements, and output
-  format.
+  Review workspace changes, PRs, commits, or branch comparisons with the host
+  agent's model. OCR's CLI handles file selection and rule resolution; this
+  skill defines the review workflow, coverage requirements, and output format.
   Use when the user has no separate API key for OCR or wants to reuse their
-  coding-agent subscription or model setup. For OCR's full native pipeline
-  with its own model provider, choose open-code-review instead.
-license: Apache-2.0
-compatibility: >
-  Requires the `ocr` CLI installed (via `npm install -g
-  @alibaba-group/open-code-review` or GitHub release binary). Does NOT
-  require a configured LLM endpoint — delegation mode is LLM-free on the
-  OCR side.
+  coding-agent subscription or model setup. For OCR's full native pipeline with
+  its own model provider, choose open-code-review instead.
 metadata:
   author: alibaba
   homepage: https://github.com/alibaba/open-code-review
-  version: "1.0.0"
+  version: 1.0.0
+license: Apache-2.0
+compatibility: >
+  Requires the `ocr` CLI installed (via `npm install -g
+  @alibaba-group/open-code-review` or GitHub release binary). Does NOT require a
+  configured LLM endpoint — delegation mode is LLM-free on the OCR side.
 ---
 
 <!-- skillpack:usage:start -->
@@ -27,23 +25,9 @@ Usage is observed locally by skillpack-runtime when installed through Skillpack.
 Do not send activation reports, run tracking commands, or install hooks during this skill's execution. Setup and updates belong to Skillpack. Continue the task when collection is unavailable. SKILLPACK_TELEMETRY=0 disables collection for this session.
 <!-- skillpack:usage:end -->
 
-
 # Open Code Review — Delegation Mode
 
 ## Distribution setup (local adaptation)
-
-<!-- Modified by Armada: setup diagnostics and precise runtime requirements. -->
-
-Check the OCR cache without downloading or executing OCR by running
-`python3 "$SKILL_DIR/scripts/ocr.py" check`: exit 0 means the cached binary
-matches its pinned checksum, exit 2 means a first download is needed, and
-exit 1 reports an unsupported platform, bad checksum or unusable cache.
-The cache defaults to `~/.local/share/review-code-dev/ocr`; the optional
-`REVIEW_CODE_OCR_HOME` overrides it. A first download needs HTTPS access to
-`github.com/alibaba/open-code-review/releases` and GitHub's release asset host,
-plus a writable cache. Supported platforms are macOS/Linux on x86_64/ARM64.
-Delegation needs an isolated host reviewer with normal model access; it does
-not need an Alibaba service account, API key, Node, sudo or OCR LLM endpoint.
 
 This is Alibaba's `open-code-review-delegate` skill from release v1.13.12,
 distributed under the existing `review-code-dev` name. The upstream workflow below

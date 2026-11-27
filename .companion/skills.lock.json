@@ -5,22 +5,22 @@
       "apiUrl": "https://skillpack.app/v1",
       "skills": {
         "captain": {
-          "checksum": "sha256:5627e40d3f338157cb9a9e02dddf2368ffe1883f2483b9a27448f77ac90cced7",
+          "checksum": "sha256:1ccdde203b7fba990285aa4642b891c88405e4dfa3428c9cf8a702326c0ad3c3",
           "name": "captain",
           "pinned": null,
           "skillId": "20f68ccd-7807-4cc8-82f0-2ce45282b23b",
           "slug": "captain",
           "targets": [
             {
-              "checksum": "sha256:36f71fad7e8b2a5184b4f3cc12d1cac9147eb407afc2255598aa5b4162577ad9",
-              "packageChecksum": "sha256:5627e40d3f338157cb9a9e02dddf2368ffe1883f2483b9a27448f77ac90cced7",
+              "checksum": "sha256:d785e03ffc05d60560920dd3b2459754f464068878caaf4fd86e82e5fb9a6f59",
+              "packageChecksum": "sha256:1ccdde203b7fba990285aa4642b891c88405e4dfa3428c9cf8a702326c0ad3c3",
               "path": ".agents/skills/captain",
               "scope": "project",
               "tool": "shared",
-              "version": "0.2.0"
+              "version": "0.2.1"
             }
           ],
-          "version": "0.2.0"
+          "version": "0.2.1"
         },
         "capture-learning-tools": {
           "checksum": "sha256:f9ae2f0b3fedb58b681b5d3afbe680ecefbe337c701fb54846a745db4a90182d",

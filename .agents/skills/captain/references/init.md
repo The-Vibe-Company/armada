@@ -8,7 +8,8 @@ Use this guide when a repo has no `.captain/config.json`, no OpenBoard setup, or
 
 1. **CLI & forge preflight:**
    - `ob --version && ob doctor && ob whoami && ob channels` (if missing: `curl -fsSL https://openboard.thevibecompany.co/install.sh | sh`, or `npx -y @the-vibe-company/openboard-cli` on Node >= 22.1).
-   - `armada --version` — **must be `>= 14.x`** (older `3.x` binaries use incompatible subcommands; if `< 14` or missing, set `armada_cli` to `npx -y @the-vibe-company/armada@latest`). Then check `armada info --setup`, `armada org list`, `armada snapshot ls`, `armada account ls`, `armada host ls`.
+   - `armada --version` — **must be `>= 14.x`** (older `3.x` / `10.x` binaries lack `templates`, `--no-connections`, and current Modal receipts; if `< 14` or missing, set `armada.cli` to `npx -y @the-vibe-company/armada@latest`). Then check `<armada-cli> info --setup --org <org>`, `org list`, `snapshot ls --provider modal --org <org> --json`, `template list --org <org> --json`, `account ls --org <org>`, `host ls --org <org>`.
+   - **MCP connection preflight (prevents `409 conflict` on launch):** run `bash "$SKILL_DIR/scripts/armada-modal.sh" preflight-mcp --org <org>` (calls `armada api mcp/list`). If any connection has `defaultForLaunch: true` and `status != "connected"` (e.g. `needs_reconnect`), flag it upfront: worker Launch Templates pin `"connections": []` by default, and any bare `armada new` must pass `--no-connections` (or explicit connected IDs only).
    - `gh auth status` and `git remote get-url origin` + `git symbolic-ref --short refs/remotes/origin/HEAD` (preserve dots in repo names like `next.js` and detect real default branch instead of assuming `main`). If remote is GitLab/Bitbucket, warn upfront that automated PR supervision currently targets GitHub (`gh`).
    - **Reachability check:** Remote Modal sandboxes require an HTTPS `BOARD_URL` reachable from Modal — a local SQLite `ob serve` on `localhost` will fail inside Modal sandboxes.
 
@@ -66,8 +67,8 @@ Summarize your findings concisely and confirm:
 
 2. **Review workflow:** install `ship-pr-dev` if accepted, otherwise keep the adopted workflow.
 
-3. **Armada snapshot & sandbox OpenBoard auth** (if requested):
-   - Use a root+user-safe `ob` install in the snapshot `init` script (attach `OPENBOARD_INSTALL_DIR` to `sh`, NOT `curl`):
+3. **Armada snapshot, Vault OpenBoard auth, Launch Template & smoke test** (if requested):
+   - **Golden snapshot build:** use a root+user-safe `ob` install in the snapshot `--init` command (attach `OPENBOARD_INSTALL_DIR` to `sh`, NOT `curl`):
      ```sh
      if command -v ob >/dev/null 2>&1; then
        ob --version
@@ -77,7 +78,52 @@ Summarize your findings concisely and confirm:
        curl -fsSL https://openboard.thevibecompany.co/install.sh | sh
      fi
      ```
-   - Provision `BOARD_URL` and the scoped worker connection secret via Armada's secret/env store (never baked into the image or git), connect via `ob connect "$BOARD_URL" --as <worker-profile> < "$OPENBOARD_SECRET_FILE"`, smoke-test `ob --version && ob whoami && ob grants explain <channel>`, and stop the smoke sandbox immediately.
+     **Modal build-wait trap:** `armada snapshot new ... --wait --json` can return while `state == "running"` (e.g. `phase: "secret_scan"`), and `armada snapshot show --build <jobId>` **rejects `--org`** (`invalid_config`). Always poll to terminal `succeeded`/`failed` using:
+     ```bash
+     bash "$SKILL_DIR/scripts/armada-modal.sh" wait-build <jobId> --timeout 600
+     ```
+     Never resubmit a snapshot build while a job is still running.
+   - **Modal OpenBoard auth (Vault + Launch Template — required because `--secret`/`--variable` on `armada new` are Docker-only):**
+     1. Check existing Vault entries first (`<armada-cli> api secrets/list '{"org":"<org>"}'` and `variables/list '{"org":"<org>"}'`).
+     2. Store the scoped OpenBoard worker connection secret via **stdin** (`-`) so it never touches argv, logs, or git:
+        ```bash
+        jq -n --arg org "<org-uuid>" --arg name "OPENBOARD_SECRET" --arg val "$(cat ~/.config/openboard/<conn>.secret)" \
+          '{org:$org, scope:"personal", name:$name, value:$val}' \
+          | <armada-cli> api secrets/set -
+        ```
+        *(Use `scope: "org"` only if you are an org admin sharing the template with teammates.)*
+     3. Store `BOARD_URL` as a readable variable:
+        ```bash
+        <armada-cli> api variables/set '{"org":"<org-uuid>","scope":"personal","name":"BOARD_URL","value":"https://<board-host>/api/<org>/<board>"}'
+        ```
+     4. Create a Modal **Launch Template** per worker model/harness via `<armada-cli> api templates/create` binding `goldenId` (snapshot UUID from `snapshot ls --provider modal --org <org> --json`), `variables`, `secrets`, and explicit `"connections": []` (or only verified `connected` MCP IDs — never relying on server defaults that may be `needs_reconnect`):
+        ```bash
+        jq -n \
+          --arg org "<org-uuid>" --arg name "captain-<repo>-<harness>" \
+          --arg goldenId "<snapshot-uuid>" --arg harness "<codex|claude|opencode|antigravity>" \
+          --arg model "<model-id>" --arg effort "<medium|high>" \
+          --arg varId "<board-url-var-uuid>" --argjson varVer 1 \
+          --arg secId "<openboard-secret-uuid>" --argjson secVer 1 \
+          '{
+            org: $org, scope: "personal", name: $name,
+            definition: {
+              goldenId: $goldenId, provider: "modal", harness: $harness,
+              model: $model, reasoningEffort: $effort,
+              variables: [{key: "BOARD_URL", variableId: $varId, version: $varVer}],
+              secrets: [{key: "OPENBOARD_SECRET", secretId: $secId, version: $secVer}],
+              connections: [], skills: []
+            }
+          }' | <armada-cli> api templates/create -
+        ```
+        *(Add `modelAccount: {id, version}` if multiple accounts exist for that harness. When rotating a secret/variable, publish a new template revision via `templates/publish`.)*
+     5. **Smoke-test inside the agent harness (NOT `armada exec`):** Armada's runtime injects template secrets into the **agent harness process environment** (and automatically redacts them from logs), while `armada exec` runs in `execEnv` without harness secrets. Launch a one-shot turn with `armada-modal.sh launch-template`, wait for ready + completion, inspect events, and stop immediately:
+        ```bash
+        bash "$SKILL_DIR/scripts/armada-modal.sh" launch-template "<template-id>" \
+          --org "<org-uuid>" --request-key "captain-smoke-$(date +%s)" --ttl 15m --wait-ready \
+          --prompt 'Run `ob --version && ob connect "$BOARD_URL" --as worker-smoke && ob whoami && ob grants explain <channel>` (ob connect reads OPENBOARD_SECRET from env; never echo secrets). Report only the non-secret output.'
+        ```
+        Then wait for turn completion (`<armada-cli> info <sid> --wait --timeout 120 --org <org> --json`), confirm `ob whoami` + `ob grants explain` in `<armada-cli> events <sid> --tail 40 --org <org> --json`, and stop immediately (`<armada-cli> stop <sid> --org <org>`).
+     - *(Docker hosts can use the exact same Launch Template workflow, or direct `armada new --provider docker --variable BOARD_URL:<uuid>:<v> --secret OPENBOARD_SECRET:<uuid>:<v> --no-connections ...`.)*
 
 4. **Write minimal `.captain/config.json`** (zero secrets):
    ```json
@@ -87,8 +133,16 @@ Summarize your findings concisely and confirm:
      "branch_prefix": "captain/",
      "topology": "solo|team",
      "is_monorepo": false,
-     "openboard": { "board_url": "<https://...>", "channel": "<channel>" },
-     "armada": { "cli": "npx -y @the-vibe-company/armada@latest", "org": "<org-id>", "provider": "modal", "snapshot": "<name>", "max_inflight": 8 },
+     "openboard": { "board_url": "<https://...>", "channel": "<channel>", "worker_profile_prefix": "worker" },
+     "armada": {
+       "cli": "npx -y @the-vibe-company/armada@latest",
+       "org": "<org-id>",
+       "provider": "modal",
+       "snapshot": "<name>",
+       "templates": { "builder": "<template-id-or-name>" },
+       "connections": [],
+       "max_inflight": 8
+     },
      "routing": { "builder_models": [], "light_model": "", "challenger_model": "" },
      "delivery": { "review_tool": "<adopted|ship-pr-dev|builtin:isolated-review>", "merge_mode": "review-gate", "max_open_prs": 5, "post_merge_hook": "" },
      "cadence": { "wakeup_seconds": 120, "challenger_every_n_prs": 10 },
