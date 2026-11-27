@@ -25,10 +25,11 @@ The token file contains a `token` object with `access_token`, `refresh_token` an
 optional ISO 8601 `expiry`. Keep key and token values out of command arguments.
 
 Use model `default` to accept the account's selection, or pick one of the
-verified Antigravity `1.5.13` Gemini 4 model IDs (`gemini-4-neon-{low,medium,high,xhigh}`,
-`gemini-4-hydrogen-{low,medium,high,xhigh}`, `gemini-4-argon-{low,medium,high}`,
-`gemini-4-carbon-{low,medium,high}`) with `reasoningEffort: "default"`. Armada
-has no prices for them.
+verified Antigravity `1.5.13` Gemini 4 base model IDs (`gemini-4-neon`,
+`gemini-4-hydrogen`, `gemini-4-argon`, `gemini-4-carbon`) paired with
+`reasoningEffort` (`default`, `low`, `medium`, `high`, plus `xhigh` for
+`default`, `gemini-4-neon`, and `gemini-4-hydrogen`). Armada has no prices for
+them.
 Boat refuses Antigravity before provider access. The server seals the selected
 credential for private runtime enrollment. Follow-ups work in a running
 sandbox. Conversation restore after stopping the sandbox is unsupported.

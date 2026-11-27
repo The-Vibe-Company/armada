@@ -51,7 +51,7 @@ export const HARNESS_CATALOG = {
     runtimePlacements: ["modal", "docker"],
     credentialKinds: ["antigravity"],
     boatProvider: null,
-    capabilities: { ...COMMON_CAPABILITIES, steer: "restart", resume: false, reasoningEffort: false, fast: false },
+    capabilities: { ...COMMON_CAPABILITIES, steer: "restart", resume: false, fast: false },
   },
 } as const satisfies Record<string, HarnessDescriptor>;
 

@@ -35,6 +35,40 @@ describe("new command", () => {
       base,
     );
     expect(effort.err).toContain("Use one of: low, medium, high, xhigh, max");
+    const antigravityCarbonXhigh = await capture(
+      [
+        "new",
+        "web",
+        "--provider",
+        "modal",
+        "--agent",
+        "antigravity",
+        "--model",
+        "gemini-4-carbon",
+        "--reasoning-effort",
+        "xhigh",
+      ],
+      base,
+    );
+    expect(antigravityCarbonXhigh.code).toBe(2);
+    expect(antigravityCarbonXhigh.err).toContain("Use one of: default, low, medium, high");
+    const antigravityNeonXhigh = await capture(
+      [
+        "new",
+        "web",
+        "--provider",
+        "modal",
+        "--agent",
+        "antigravity",
+        "--model",
+        "gemini-4-neon",
+        "--reasoning-effort",
+        "xhigh",
+      ],
+      base,
+    );
+    expect(antigravityNeonXhigh.code).toBe(3);
+    expect(antigravityNeonXhigh.err).toContain("You are not signed in. Run armada login.");
     expect(calls).toEqual([]);
   });
 

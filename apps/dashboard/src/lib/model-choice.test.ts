@@ -65,6 +65,32 @@ describe("model choice from the dashboard forms", () => {
       expect(launchArgs({ ...form, harness: "opencode" }, discovery)).toMatchObject({ ok: false });
 
     expect(launchArgs({ ...form, harness: "claude", provider: "elsewhere" })).toMatchObject({ ok: false });
+
+    expect(launchArgs({ ...form, provider: "modal", harness: "antigravity" })).toMatchObject({
+      ok: true,
+      args: { provider: "modal", harness: "antigravity", model: "default", reasoning_effort: "default" },
+    });
+    expect(
+      launchArgs({
+        ...form,
+        provider: "modal",
+        harness: "antigravity",
+        model: "gemini-4-neon",
+        reasoningEffort: "xhigh",
+      }),
+    ).toMatchObject({
+      ok: true,
+      args: { model: "gemini-4-neon", reasoning_effort: "xhigh" },
+    });
+    const carbonXhigh = launchArgs({
+      ...form,
+      provider: "modal",
+      harness: "antigravity",
+      model: "gemini-4-carbon",
+      reasoningEffort: "xhigh",
+    });
+    expect(carbonXhigh).toMatchObject({ ok: false });
+    expect(carbonXhigh.ok ? "" : carbonXhigh.error).toContain("default, low, medium, high");
   });
 
   test("a send keeps the launch choice unless a field is set, and an effort alone applies to the launch model", () => {

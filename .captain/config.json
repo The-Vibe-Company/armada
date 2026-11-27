@@ -28,7 +28,7 @@
     "max_inflight": 8
   },
   "routing": {
-    "builder_models": ["antigravity:gemini-4-neon-high"],
+    "builder_models": ["antigravity:gemini-4-neon"],
     "light_model": "antigravity:default",
     "challenger_model": "codex:gpt-6.2-astra"
   },
