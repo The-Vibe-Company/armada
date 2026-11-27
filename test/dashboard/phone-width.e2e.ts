@@ -4,7 +4,7 @@ import { expect } from "e2e";
 const PAGES = [
   { path: "/templates", heading: "Templates" },
   { path: "/snapshots", heading: "Snapshots" },
-  { path: "/tools", heading: "Tools" },
+  { path: "/tools", heading: "Tools (MCP servers)" },
   { path: "/variables", heading: "Variables" },
   { path: "/sandboxes", heading: "Sandboxes" },
 ];

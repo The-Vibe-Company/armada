@@ -63,8 +63,7 @@ for (const org of [
         .locator("form")
         .filter({ has: screen.getByRole("textbox", "Snapshot name", { visible: true }) });
       await expect(hostForm).toContainText("Where it is built and who sees it are permanent");
-      await hostForm.getByRole("button", /^Who sees it:/).tap();
-      await expect(screen.getByRole("option", /everyone in the organization/)).toHaveAttribute("aria-disabled", "true");
+      await expect(hostForm.getByRole("button", /^everyone in /)).toBeDisabled();
     }
   });
 

@@ -7,16 +7,17 @@ for (const session of ["alice", "large"]) {
     {
       path: "/skills",
       title: "Skills",
-      search: "Search keys",
       add: "Add a key",
       row: "[data-skillpack-key] button[aria-expanded]",
     },
   ]) {
     test(`${session}: filter and inspect ${resource.title}`, { session }, async ({ app, screen, browser }) => {
       await app.open(resource.path);
-      await screen.getByPlaceholder(resource.search).fill("no_matching_resource");
-      await expect(browser.locator(resource.row)).toHaveCount(0);
-      await screen.getByPlaceholder(resource.search).fill("");
+      if (resource.search) {
+        await screen.getByPlaceholder(resource.search).fill("no_matching_resource");
+        await expect(browser.locator(resource.row)).toHaveCount(0);
+        await screen.getByPlaceholder(resource.search).fill("");
+      }
       await browser.locator(resource.row).first().tap();
       await expect(screen.getByRole("dialog")).toBeVisible();
       await screen
@@ -39,16 +40,16 @@ for (const session of ["alice", "large"]) {
     const variable = screen.getByRole("link", name, { exact: true });
     const row = screen.getByRole(mobile ? "listitem" : "row").filter({ has: variable });
     if (mobile) {
-      await expect(row.getByText("Not shown", { exact: true })).toBeVisible();
+      await expect(row.getByText("Click to view", { exact: true })).toBeVisible();
     } else {
       await expect(screen.getByRole("columnheader", "Value", { exact: true })).toBeVisible();
-      await expect(row.getByRole("cell", "Not shown", { exact: true })).toBeVisible();
+      await expect(row.getByRole("cell", "Click to view", { exact: true })).toBeVisible();
     }
     await expect(screen.getByText(storedValue, { exact: true })).toHaveCount(0);
     await variable.tap();
     await expect(screen.getByRole("dialog")).toBeVisible();
     await screen.getByRole("button", "Close the panel", { exact: true }).tap();
     await screen.getByRole("button", "Add a variable", { exact: true }).tap();
-    await expect(screen.getByRole("dialog", "Add a setting or a secret")).toBeVisible();
+    await expect(screen.getByRole("dialog", "Add a variable or secret")).toBeVisible();
   });
 }

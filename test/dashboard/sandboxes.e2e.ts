@@ -27,7 +27,7 @@ test.setup(
       { name: "armada-org", value: "00000000-0000-4000-8000-000000000014", url: app.baseUrl! },
     ]);
     await app.open("/sandboxes");
-    await expect(screen.getByText("600 sandboxes", { exact: true })).toBeVisible();
+    await expect(screen.getByRole("button", "All 600", { exact: true })).toBeVisible();
     await session.save("large");
   },
 );
@@ -42,9 +42,26 @@ for (const organization of [
     browser,
   }) => {
     await app.open("/sandboxes");
-    for (const tab of ["Mine", "Working", "Waiting for you", "Stopped", "Failed", "All"]) {
-      await screen.getByRole("link", new RegExp(`^${tab} `)).tap();
-      await expect(screen.getByRole("region", tab)).toBeVisible();
+    const scope = screen.getByRole("group", "Sandbox scope");
+    await scope.getByRole("button", "Mine", { exact: true }).tap();
+    await expect(scope.getByRole("button", "Mine", { exact: true })).toHaveAttribute("aria-pressed", "true");
+    await scope.getByRole("button", "Everyone", { exact: true }).tap();
+    await expect(scope.getByRole("button", "Everyone", { exact: true })).toHaveAttribute("aria-pressed", "true");
+    const states = screen.getByRole("group", "Sandbox state");
+    for (const tab of [
+      { label: "Active", empty: "No active sandboxes" },
+      { label: "Waiting", empty: "Nothing waiting for you" },
+      { label: "Stopped", empty: "No stopped sandboxes" },
+      { label: "Failed", empty: "No failed sandboxes" },
+      { label: "All", empty: "No sandboxes in this view" },
+    ]) {
+      const button = states.getByRole("button", new RegExp(`^${tab.label} \\d+`));
+      const text = (await button.textContent())?.replace(/\s+/g, " ").trim() ?? "";
+      const isEmpty = text === `${tab.label} 0` || text === `${tab.label}0`;
+      await button.tap();
+      await expect(button).toHaveAttribute("aria-pressed", "true");
+      if (isEmpty) await expect(screen.getByText(tab.empty, { exact: true })).toBeVisible();
+      else await expect(screen.getByRole("region", tab.label)).toBeVisible();
     }
     await browser.locator(`section[aria-label="All"] a[href="/sandboxes/${organization.id}"]`).tap();
     await expect(browser).toHaveURL(`/sandboxes/${organization.id}`);

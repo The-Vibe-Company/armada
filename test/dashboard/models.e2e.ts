@@ -92,9 +92,12 @@ test("long account names and subscription fallback fit a phone", { session: "ali
       .check();
     const fallback = dialog.getByRole("button", "Sign-in instructions and terminal login");
     await expect(fallback).toBeVisible();
+    await expect(fallback).toHaveAttribute("aria-expanded", "true");
     await fits();
     const box = await fallback.boundingBox();
     expect(box !== null && box.x >= 0 && box.x + box.width <= (await browser.evaluate(() => innerWidth))).toBe(true);
+    await fallback.tap();
+    await expect(fallback).toHaveAttribute("aria-expanded", "false");
     await fallback.tap();
     await expect(fallback).toHaveAttribute("aria-expanded", "true");
     await dialog.getByRole("button", "Close", { exact: true }).tap();

@@ -1292,6 +1292,125 @@ function auth(request: Request, url: URL, body: Row): Response {
 
 type RpcMessage = { id?: number; method: string; params?: Record<string, unknown> };
 
+type SandboxGatewayAction = "status" | "logs" | "send" | "steer" | "interrupt" | "stop";
+
+function runSandboxGateway(action: SandboxGatewayAction, args: Row, userId: string) {
+  const driving = action === "send" || action === "steer" || action === "interrupt";
+  const target = state.sandboxes.find((row) => row.id === args.id);
+  const visible = visibleRows("sandboxes", userId).some((row) => row === target);
+  if (!target || !visible) return { ok: false as const, status: 404, code: "not_found", message: "not found" };
+  if (driving && target.provider === "modal" && target.credential_id === null) {
+    // As #603's server answers a legacy unbound Modal sandbox: a typed refusal, never a silent default account.
+    return {
+      ok: false as const,
+      status: 409,
+      code: "credential_binding_required",
+      message:
+        "This legacy Modal sandbox needs an explicit account binding by its owner. Stop it safely, then its owner chooses an account on the sandbox's dashboard page or runs 'armada bind-credential <sandbox-id> --credential-id <account-uuid>'. Its workspace and conversations are retained.",
+    };
+  }
+  const events = state.events.get(String(target.id)) ?? [];
+  state.events.set(String(target.id), events);
+  const conversations = (target.conversation_ids ?? []) as string[];
+
+  switch (action) {
+    case "status":
+      return {
+        ok: true as const,
+        value: {
+          status: target.status,
+          prompt: null,
+          usage: {
+            computeSeconds: target.usage_runtime_seconds ?? null,
+            turnCount: (target.usage_turns as Row | undefined)?.turnCount ?? null,
+            turns: (target.usage_turns as Row | undefined)?.turns ?? [],
+          },
+        },
+      };
+    case "logs": {
+      const rawCursor = args.cursor ?? args.since_cursor;
+      const since = typeof rawCursor === "string" ? rawCursor : undefined;
+      if (args.direction === "backward" && target.id === id(11001)) {
+        const end = since ? Number(since.slice("older-".length)) : events.length;
+        const start = Math.max(0, end - 1);
+        return {
+          ok: true as const,
+          value: {
+            events: events.slice(start, end),
+            cursor: String(end),
+            hasMore: start > 0,
+            ...(start > 0 ? { olderCursor: `older-${start}` } : {}),
+          },
+        };
+      }
+      if (since?.startsWith("older-"))
+        return {
+          ok: false as const,
+          status: 400,
+          code: "invalid",
+          message: "Backward cursor used for a forward read.",
+        };
+      return {
+        ok: true as const,
+        value: { events: events.slice(Number(since ?? 0)), cursor: String(events.length), hasMore: false },
+      };
+    }
+    case "steer": {
+      const conversationId = conversations.at(-1);
+      events.push({
+        id: `steer-${events.length}`,
+        at: Date.now(),
+        kind: "steer",
+        text: String(args.text ?? args.prompt),
+        conversationId,
+      });
+      const delivery = target.harness === "codex" ? "restart" : "in-place";
+      return { ok: true as const, value: { id: target.id, promptId: "steered", conversationId, delivery, mode: null } };
+    }
+    case "send": {
+      const conversationId = conversations.at(-1) ?? `conv-${events.length}`;
+      if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
+      target.status = "running";
+      // A send to a stopped sandbox restores it: the server clears its stop time.
+      target.stopped_at = null;
+      const promptId = `sent-${events.length}`;
+      events.push({
+        id: promptId,
+        at: Date.now(),
+        kind: "prompt",
+        text: String(args.prompt),
+        status: "running",
+        conversationId,
+        promptId,
+      });
+      return { ok: true as const, value: { id: target.id, promptId, conversationId, status: "running" } };
+    }
+    case "interrupt": {
+      const conversationId = conversations.at(-1);
+      const running = [...events]
+        .reverse()
+        .find(
+          (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
+        );
+      if (running)
+        events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
+      return { ok: true as const, value: { id: target.id, interrupted: !!running } };
+    }
+    case "stop": {
+      target.status = "stopped";
+      target.stopped_at = new Date().toISOString();
+      return { ok: true as const, value: { ok: true } };
+    }
+  }
+}
+
+function sandboxGatewayRoute(action: SandboxGatewayAction, body: Row, request: Request) {
+  const userId = viewer(request);
+  if (!userId) return controlFail(401, "unauthorized", "Sign in again.");
+  const outcome = runSandboxGateway(action, body, userId);
+  return outcome.ok ? json(outcome.value) : controlFail(outcome.status, outcome.code, outcome.message);
+}
+
 function mcp(message: RpcMessage, userId: string | null): Response {
   if (!userId) return json({ error: "unauthorized" }, 401);
   const reply = (result: unknown) => json({ jsonrpc: "2.0", id: message.id, result });
@@ -1311,105 +1430,37 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   const args = (message.params?.arguments ?? {}) as Row;
   const name = String(message.params?.name);
-  const interruptTurn = name === "stop" && args.turn === true;
-  const driving = name === "send" || interruptTurn;
-  const target = state.sandboxes.find((row) => row.id === args.id);
-  const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
     reply({ content: [{ type: "text", text: JSON.stringify(value) }], isError });
-  if (!target || !visible) return text("not found", true);
-  if (driving && target.provider === "modal" && target.credential_id === null) {
-    // As #603's server answers a legacy unbound Modal sandbox: a typed refusal, never a silent default account.
+  let action: SandboxGatewayAction | null = null;
+  switch (name) {
+    case "status":
+      action = "status";
+      break;
+    case "logs":
+      action = "logs";
+      break;
+    case "send":
+      action = args.steer === true ? "steer" : "send";
+      break;
+    case "stop":
+      action = args.turn === true ? "interrupt" : "stop";
+      break;
+  }
+  if (!action) return text("unknown tool", true);
+  const outcome = runSandboxGateway(action, args, userId);
+  if (outcome.ok) return text(outcome.value);
+  if (outcome.code === "credential_binding_required") {
     return reply({
       content: [
-        {
-          type: "text",
-          text: "This legacy Modal sandbox needs an explicit account binding by its owner. Stop it safely, then its owner chooses an account on the sandbox's dashboard page or runs 'armada bind-credential <sandbox-id> --credential-id <account-uuid>'. Its workspace and conversations are retained.",
-        },
-        { type: "text", text: "error code: credential_binding_required" },
+        { type: "text", text: outcome.message },
+        { type: "text", text: `error code: ${outcome.code}` },
       ],
       isError: true,
     });
   }
-  const events = state.events.get(String(target.id)) ?? [];
-  state.events.set(String(target.id), events);
-  const conversations = (target.conversation_ids ?? []) as string[];
-
-  switch (name) {
-    case "status":
-      return text({
-        status: target.status,
-        prompt: null,
-        usage: {
-          computeSeconds: target.usage_runtime_seconds ?? null,
-          turnCount: (target.usage_turns as Row | undefined)?.turnCount ?? null,
-          turns: (target.usage_turns as Row | undefined)?.turns ?? [],
-        },
-      });
-    case "logs": {
-      const since = typeof args.since_cursor === "string" ? String(args.since_cursor) : undefined;
-      if (args.direction === "backward" && target.id === id(11001)) {
-        const end = since ? Number(since.slice("older-".length)) : events.length;
-        const start = Math.max(0, end - 1);
-        return text({
-          events: events.slice(start, end),
-          cursor: String(end),
-          hasMore: start > 0,
-          ...(start > 0 ? { olderCursor: `older-${start}` } : {}),
-        });
-      }
-      if (since?.startsWith("older-")) return text({ error: "Backward cursor used for a forward read." }, true);
-      return text({ events: events.slice(Number(since ?? 0)), cursor: String(events.length), hasMore: false });
-    }
-    case "send": {
-      if (args.steer === true) {
-        const conversationId = conversations.at(-1);
-        events.push({
-          id: `steer-${events.length}`,
-          at: Date.now(),
-          kind: "steer",
-          text: String(args.prompt),
-          conversationId,
-        });
-        const delivery = target.harness === "codex" ? "restart" : "in-place";
-        return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
-      }
-      const conversationId = conversations.at(-1) ?? `conv-${events.length}`;
-      if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
-      target.status = "running";
-      // A send to a stopped sandbox restores it: the server clears its stop time.
-      target.stopped_at = null;
-      const promptId = `sent-${events.length}`;
-      events.push({
-        id: promptId,
-        at: Date.now(),
-        kind: "prompt",
-        text: String(args.prompt),
-        status: "running",
-        conversationId,
-        promptId,
-      });
-      return text({ id: target.id, promptId, conversationId, status: "running" });
-    }
-    case "stop": {
-      if (interruptTurn) {
-        const conversationId = conversations.at(-1);
-        const running = [...events]
-          .reverse()
-          .find(
-            (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
-          );
-        if (running)
-          events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
-        return text({ id: target.id, interrupted: !!running });
-      }
-      target.status = "stopped";
-      target.stopped_at = new Date().toISOString();
-      return text({ ok: true });
-    }
-    default:
-      return text("unknown tool", true);
-  }
+  if (outcome.code === "invalid") return text({ error: outcome.message }, true);
+  return text(outcome.message, true);
 }
 
 /** Fixture transport only: supported owner account changes retain the logical workspace, without a provider probe. */
@@ -3428,6 +3479,12 @@ const server = Bun.serve({
               : { ok: true, status: 200, error: null, code: null },
         });
       }
+      if (route === "logs/read") return sandboxGatewayRoute("logs", body, request);
+      if (route === "sandbox/status") return sandboxGatewayRoute("status", body, request);
+      if (route === "sandbox/send") return sandboxGatewayRoute("send", body, request);
+      if (route === "sandbox/steer") return sandboxGatewayRoute("steer", body, request);
+      if (route === "sandbox/interrupt") return sandboxGatewayRoute("interrupt", body, request);
+      if (route === "sandbox/stop") return sandboxGatewayRoute("stop", body, request);
       if (route === "sandbox/bind-credential") return bindCredential(body, viewer(request));
       if (route.startsWith("variables/") || route.startsWith("secrets/")) return vaultRoute(route, body, request);
       if (route.startsWith("routines/")) return routineRoute(route, body, request);
