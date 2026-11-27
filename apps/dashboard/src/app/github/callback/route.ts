@@ -1,10 +1,13 @@
 import { encryptSecret, githubAppFromEnv, toBytea } from "@armada/core";
 import { type NextRequest, NextResponse } from "next/server";
+import { createControlClient } from "@/lib/control";
+import { getGitHubConnection } from "@/lib/data/github";
 import { readViewer } from "@/lib/data/viewer";
 import { mcpUrl } from "@/lib/env";
 import {
   type ConnectDeps,
   completeGitHubConnection,
+  completeGitHubSync,
   decideGitHubCallback,
   GITHUB_CALLBACK_PATH,
   GITHUB_STATE_COOKIE,
@@ -16,6 +19,8 @@ import {
   githubOAuthErrorLog,
   githubStateCookieOptions,
   installationJson,
+  sameState,
+  syncGitHubStatus,
 } from "@/lib/github";
 import { CLI_DONE_PATH, cliGitHubCallback, relayCliGitHubCallback } from "@/lib/github-cli";
 import { originFromHeaders } from "@/lib/routes";
@@ -72,15 +77,27 @@ export async function GET(request: NextRequest) {
   }
   if (decision.kind === "result") return finish(decision.result, origin);
 
+  const serverUrl = mcpUrl();
+  const viewerToken = viewer.token;
+  const syncInstallations =
+    serverUrl && viewerToken
+      ? () => syncGitHubStatus(createControlClient({ serverUrl, token: viewerToken }))
+      : undefined;
+
+  if (decision.kind === "sync") return finish(await completeGitHubSync(syncInstallations), origin);
+
   const code = searchParams.get("code");
   const app = githubAppFromEnv(process.env);
   if (!code || !app) return finish(app ? "bad_code" : "not_configured", origin);
 
   const supabase = await createClient();
+  const existing = decision.mode === "install" ? await getGitHubConnection(supabase) : null;
   const deps: ConnectDeps = {
     ownerId: viewer.id,
     app,
     encrypt: (plaintext) => encryptSecret(plaintext),
+    existingConnection: existing ? { githubId: existing.github_id, revoked: existing.revoked_at !== null } : null,
+    ...(syncInstallations ? { syncInstallations } : {}),
     log(fields) {
       console.error("GitHub OAuth token request was refused.", fields);
     },
@@ -99,6 +116,8 @@ export async function GET(request: NextRequest) {
   const result = await completeGitHubConnection(deps, {
     code,
     redirectUri: githubCallbackUrl(origin),
+    mode: decision.mode,
+    stateVerified: sameState(request.cookies.get(GITHUB_STATE_COOKIE)?.value, searchParams.get("state")),
     appIdentity: identity,
     installationId: decision.installationId,
   });

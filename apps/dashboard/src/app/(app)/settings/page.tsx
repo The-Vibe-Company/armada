@@ -1,5 +1,5 @@
 import { githubAppFromEnv } from "@armada/core";
-import { GitPullRequestIcon } from "lucide-react";
+import { ExternalLinkIcon, GitPullRequestIcon, PlusIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { disconnectGitHub } from "@/app/actions/github";
@@ -9,37 +9,55 @@ import { PageHeader } from "@/components/page-header";
 import { PersonalProviderKeys } from "@/components/personal-provider-keys";
 import { ConnectionBadge } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { createControlClient } from "@/lib/control";
 import { listCredentials } from "@/lib/data/credentials";
 import { getGitHubConnection } from "@/lib/data/github";
 import { requireViewer } from "@/lib/data/viewer";
+import { mcpUrl } from "@/lib/env";
 import {
   GITHUB_RESULT_MESSAGES,
   githubInstallationManageUrl,
+  githubInstallationsSummary,
   githubInstallUrl,
   isGitHubResult,
-  storedGitHubInstallations,
+  resolveSettingsGitHubView,
+  syncGitHubStatus,
 } from "@/lib/github";
 import { createClient } from "@/lib/supabase/server";
+import { GitHubSyncButton } from "./github-sync-button";
 
 export const metadata: Metadata = { title: "Your connections" };
 export const dynamic = "force-dynamic";
 
+const SSR_STATUS_TIMEOUT_MS = 5_000;
+
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ github?: string }> }) {
   const viewer = await requireViewer();
   const supabase = await createClient();
-  const [connection, params, credentials] = await Promise.all([
+  const serverUrl = mcpUrl();
+  const [connection, params, credentials, liveStatus] = await Promise.all([
     getGitHubConnection(supabase),
     searchParams,
     listCredentials(supabase),
+    serverUrl && viewer.token
+      ? syncGitHubStatus(createControlClient({ serverUrl, token: viewer.token, timeoutMs: SSR_STATUS_TIMEOUT_MS }))
+      : Promise.resolve(null),
   ]);
   const personalKeys = credentials.filter((item) => item.scope === "user" && item.owner_id === viewer.id);
   const configured = githubAppFromEnv(process.env) !== null;
-  const installUrl = githubInstallUrl(process.env.GITHUB_APP_SLUG);
   const result = isGitHubResult(params.github) ? GITHUB_RESULT_MESSAGES[params.github] : null;
-  const revoked = connection?.revoked_at != null;
-  const installations = connection && !revoked ? storedGitHubInstallations(connection.installations) : [];
+  const view = resolveSettingsGitHubView({
+    dbConnection: connection,
+    liveStatus,
+    serverConfigured: Boolean(serverUrl && viewer.token),
+    envInstallUrl: githubInstallUrl(process.env.GITHUB_APP_SLUG),
+  });
+  const connected = view.state === "connected" && connection !== null;
+  const revoked = view.state === "revoked";
+  const { installations, installUrl } = view;
 
   return (
     <div className="mx-auto flex w-full max-w-[920px] flex-col gap-7">
@@ -52,8 +70,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </Button>
       </PageHeader>
       {result && (
-        <Alert variant={result.ok ? "default" : "destructive"}>
-          <AlertDescription>{result.text}</AlertDescription>
+        <Alert variant={result.ok ? "default" : "destructive"} data-github-result={params.github}>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+            <span>{result.text}</span>
+            {params.github === "requested" && connected && <GitHubSyncButton label="Refresh status" />}
+          </AlertDescription>
         </Alert>
       )}
 
@@ -74,7 +95,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </Alert>
           )}
 
-          {connection && !revoked ? (
+          {connected ? (
             <div className="flex flex-wrap items-center justify-between gap-3" data-github-state="connected">
               <div className="min-w-0 space-y-1">
                 <p className="flex flex-wrap items-center gap-2 text-sm font-medium">
@@ -134,23 +155,38 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           )}
         </CardContent>
       </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Armada's GitHub App</CardTitle>
-          <CardDescription>
-            Installed on your GitHub account, it lets sandboxes reach your repositories.
-          </CardDescription>
+      <Card data-settings="github-installations">
+        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1">
+            <CardTitle>Armada's GitHub App</CardTitle>
+            <CardDescription>
+              Install Armada's GitHub App on your personal account and GitHub organizations so sandboxes can reach their
+              repositories.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {installUrl && (
+              <Button asChild size="sm" variant={connected ? "default" : "outline"}>
+                <a href={installUrl} target="_blank" rel="noreferrer" data-github-connect-org="cta">
+                  <PlusIcon aria-hidden="true" className="size-3.5" />
+                  Connect GitHub organization
+                </a>
+              </Button>
+            )}
+            {connected && <GitHubSyncButton />}
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          {connection && !revoked && installations.length === 0 && (
+          {connected && installations.length === 0 && (
             <Alert variant="destructive" data-github-installations="missing">
               <AlertDescription>
-                The Armada GitHub App is not installed on an account you can access: sandboxes cannot push.
+                The Armada GitHub App is not installed on any GitHub account or organization you can access: sandboxes
+                cannot clone or push private repositories.
                 {installUrl ? (
                   <>
                     {" "}
                     <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
-                      Install
+                      Connect GitHub organization
                     </a>
                     .
                   </>
@@ -174,16 +210,28 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                     data-github-installation={installation.account}
                   >
                     <div className="min-w-0 space-y-1">
-                      <p className="text-sm font-medium">{installation.account}</p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-mono text-sm font-medium">{installation.account}</p>
+                        <Badge variant="secondary">
+                          {installation.account_type === "Organization" ? "Organization" : "Personal account"}
+                        </Badge>
+                      </div>
                       <p className="text-xs text-muted-foreground">
-                        {installation.account_type === "Organization" ? "Organization" : "Account"} ·{" "}
-                        {installation.repository_selection === "all" ? "All repositories" : "Selected repositories"}
+                        {installation.repository_selection === "all"
+                          ? "All repositories"
+                          : "Selected repositories only"}
                       </p>
                     </div>
                     {manage && (
                       <Button variant="outline" size="sm" asChild>
-                        <a href={manage} target="_blank" rel="noreferrer">
+                        <a
+                          href={manage}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label={`Manage installation for ${installation.account}`}
+                        >
                           Manage installation
+                          <ExternalLinkIcon aria-hidden="true" className="size-3.5" />
                         </a>
                       </Button>
                     )}
@@ -193,27 +241,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             </ul>
           )}
 
-          <p className="text-sm text-muted-foreground">
-            Only repositories with the app installed.
-            {installUrl && installations.length === 0 && !(connection && !revoked) ? (
-              <>
-                {" "}
-                <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
-                  Install on your account
-                </a>
-                .
-              </>
-            ) : null}
-            {installUrl && installations.length > 0 ? (
-              <>
-                {" "}
-                <a href={installUrl} className="underline underline-offset-4" target="_blank" rel="noreferrer">
-                  Install it on another account
-                </a>
-                .
-              </>
-            ) : null}
-          </p>
+          <div className="space-y-1 text-xs text-muted-foreground">
+            <p>{githubInstallationsSummary(installations)}</p>
+            {connected && view.liveSync === "fallback" && (
+              <p data-github-installations-sync="fallback">
+                Showing saved installations; live sync with GitHub is temporarily unavailable.
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
       <PersonalProviderKeys owner={viewer.id} rows={personalKeys} />
