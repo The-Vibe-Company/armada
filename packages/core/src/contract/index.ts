@@ -39,6 +39,13 @@ export {
   isDockerHostVersionStatus,
   parseDockerHostUpdateReport,
 } from "./docker-host.ts";
+export {
+  type GitHubReposRequest,
+  type GitHubReposResponse,
+  githubReposOperation,
+  githubReposRequest,
+  githubReposResponse,
+} from "./github-repos.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
   type DockerLaunchInput,

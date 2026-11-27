@@ -25,6 +25,12 @@ export {
   newDelegatedEpochSecret,
 } from "./delegated-authority.ts";
 export {
+  type DockerSnapshotTokenEntry,
+  encodeDockerSnapshotTokens,
+  type ParsedDockerSnapshotTokens,
+  parseDockerSnapshotTokens,
+} from "./docker-snapshot-build.ts";
+export {
   githubAppJwt,
   type InstallationToken,
   mintInstallationToken,

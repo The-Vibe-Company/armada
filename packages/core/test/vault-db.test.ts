@@ -1174,3 +1174,43 @@ test("OpenCode accounts keep independent defaults, sealed endpoints and the mode
     }
   });
 });
+
+test("updateGitHubInstallations persists up to 64 KB without rotating connection_epoch", async () => {
+  await withVault(async ({ db, people }) => {
+    const store = createSqlVaultStore(db);
+    const set = (u: string, v: Parameters<typeof store.updateGitHubInstallations>[1]) =>
+      store.updateGitHubInstallations(u, v);
+    const tok1 = new Uint8Array([1, 2, 3]);
+    const tok2 = new Uint8Array([9, 9, 9]);
+    const ins =
+      "insert into github_connections (user_id, github_id, login, refresh_token_enc) values ($1, 583231, 'octocat', $2::bytea)";
+    await db.query(ins, [people.stan, tok1]);
+    const epoch = (await store.getGitHubConnection(people.stan))?.connectionEpoch;
+    expect(epoch).toBeTruthy();
+    const list = (n: number, p: string) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: i + 1,
+        appId: 4242,
+        appSlug: "armada-tvc",
+        accountLogin: `${p}_${i}`,
+        accountType: "Organization" as const,
+        repositorySelection: i % 2 === 0 ? ("all" as const) : ("selected" as const),
+      }));
+    expect(await set(people.stan, list(120, "emu_org"))).toBe(true);
+    expect((await store.getGitHubConnection(people.stan))?.connectionEpoch).toBe(epoch);
+    const q = "select installations from public.github_connections where user_id = $1";
+    const { rows } = await db.query<{ installations: unknown[] }>(q, [people.stan]);
+    expect(rows[0]?.installations).toHaveLength(120);
+    expect(rows[0]?.installations[0]).toMatchObject({ id: 1, account: "emu_org_0", repository_selection: "all" });
+    await store.withGitHubConnectionRefresh(people.stan, async (scoped) => {
+      const rot = "update public.github_connections set refresh_token_enc = $2::bytea where user_id = $1";
+      await db.query(rot, [people.stan, tok2]);
+      expect(await scoped.updateGitHubInstallations?.(people.stan, [])).toBe(false);
+    });
+    await expect(set(people.stan, list(700, "very_long_org_name"))).rejects.toThrow(
+      /github_connections_installations_chk/,
+    );
+    expect(await store.markGitHubRevoked(people.stan, tok2)).toBe(true);
+    expect([await set(people.stan, []), await set(people.ada, [])]).toEqual([false, false]);
+  });
+});

@@ -300,6 +300,7 @@ export interface GitHubConnectionStore {
   /** Marks the connection revoked, only while the refresh token still is `expected`. */
   markGitHubRevoked(userId: string, expected: Uint8Array): Promise<boolean>;
   updateGitHubProfile(userId: string, profile: GitHubUser): Promise<void>;
+  updateGitHubInstallations?(userId: string, installations: readonly GitHubInstallation[]): Promise<boolean>;
 }
 
 export type GitHubStatus = "connected" | "not_connected" | "revoked" | "unavailable";
@@ -646,8 +647,9 @@ function accountKind(value: unknown): "User" | "Organization" | null {
   return value === "User" || value === "Organization" ? value : null;
 }
 
-function isGitHubSlug(value: string): boolean {
-  return /^[A-Za-z0-9-]+$/.test(value);
+export const GITHUB_SLUG_PATTERN = /^[A-Za-z0-9_-]+$/;
+export function isGitHubSlug(value: string): boolean {
+  return value.length <= 100 && GITHUB_SLUG_PATTERN.test(value);
 }
 
 function positiveId(value: unknown): number | null {
@@ -665,4 +667,123 @@ export function githubInstallationAppFromEnv(env: Record<string, string | undefi
   const appId = env[GITHUB_APP_ID_ENV]?.trim();
   const privateKey = env[GITHUB_APP_PRIVATE_KEY_ENV]?.replace(/\\n/g, "\n").trim();
   return appId && privateKey ? { appId, privateKey } : null;
+}
+
+const GITHUB_REPO_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export function serializeGitHubInstallations(installations: readonly GitHubInstallation[]) {
+  const seen = new Set<number>();
+  return installations
+    .filter((i) => !seen.has(i.id) && seen.add(i.id))
+    .map(({ id, appId, appSlug, accountLogin, accountType, repositorySelection }) => ({
+      id,
+      app_id: appId,
+      app_slug: appSlug,
+      account: accountLogin,
+      account_type: accountType,
+      repository_selection: repositorySelection,
+    }));
+}
+
+export type StoredGitHubInstallation = ReturnType<typeof serializeGitHubInstallations>[number];
+export type GitHubInstallationRepository = NonNullable<ReturnType<typeof parseInstallationRepository>>;
+export type GitHubInstallationRepositoriesResult = Awaited<ReturnType<typeof fetchGitHubInstallationRepositories>>;
+export type FetchGitHubInstallationRepositoriesOptions = {
+  installations?: readonly GitHubInstallation[];
+  account?: string;
+  query?: string;
+  appId?: number | string;
+  appSlug?: string;
+  maxPagesPerInstallation?: number;
+  limit?: number;
+  fetch?: typeof fetch;
+};
+
+export async function fetchGitHubInstallationRepositories(
+  accessToken: string,
+  options: FetchGitHubInstallationRepositoriesOptions = {},
+) {
+  const fetchImpl = options.fetch ?? fetch;
+  const clamp = (v: number | undefined, fallback: number, max: number) =>
+    v !== undefined && Number.isFinite(v) ? Math.min(max, Math.max(1, Math.trunc(v))) : fallback;
+  const maxPages = clamp(options.maxPagesPerInstallation, INSTALLATIONS_MAX_PAGES, 20);
+  const limit = clamp(options.limit, 500, 2000);
+  const all = options.installations
+    ? [...options.installations]
+    : await fetchGitHubInstallations(accessToken, { fetch: fetchImpl });
+  const appId = options.appId === undefined ? "" : String(options.appId).trim();
+  const appSlug = options.appSlug?.trim().toLowerCase() ?? "";
+  const seenInst = new Set<number>();
+  const okApp = (i: GitHubInstallation) =>
+    (!appId || String(i.appId) === appId) && (!appSlug || i.appSlug.toLowerCase() === appSlug);
+  const installations = all.filter((i) => !seenInst.has(i.id) && seenInst.add(i.id) && okApp(i));
+  const account = options.account?.trim().toLowerCase() ?? "";
+  const targets = account ? installations.filter((i) => i.accountLogin.toLowerCase() === account) : installations;
+  if (!targets.length) return { installations, repositories: [] as GitHubInstallationRepository[], truncated: false };
+
+  let truncated = false;
+  const collected: GitHubInstallationRepository[] = [];
+  for (let start = 0; start < targets.length; start += 4) {
+    const batch = await Promise.all(
+      targets.slice(start, start + 4).map(async (inst) => {
+        const list: GitHubInstallationRepository[] = [];
+        for (let page = 1; page <= maxPages; page++) {
+          const url = `${GITHUB_INSTALLATIONS_URL}/${inst.id}/repositories?per_page=${INSTALLATIONS_PER_PAGE}&page=${page}`;
+          const res = await fetchImpl(url, {
+            headers: githubApiHeaders(accessToken),
+            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          }).catch((cause) => {
+            throw new GitHubAuthError("unavailable", "GitHub could not be reached.", { cause });
+          });
+          const body: unknown = await res.json().catch(() => null);
+          if (!res.ok || !isRecord(body) || !Array.isArray(body.repositories))
+            throw new GitHubAuthError("unavailable", `GitHub did not list installation repositories (${res.status}).`);
+          for (const item of body.repositories) {
+            const repo = parseInstallationRepository(item, inst);
+            if (repo) list.push(repo);
+          }
+          if (body.repositories.length < INSTALLATIONS_PER_PAGE) break;
+          if (page === maxPages) truncated = true;
+        }
+        return list;
+      }),
+    );
+    collected.push(...batch.flat());
+  }
+  const needle = options.query?.trim().toLowerCase() ?? "";
+  const seen = new Set<number>();
+  const repositories = collected
+    .filter((r) => !seen.has(r.id) && seen.add(r.id) && (!needle || r.fullName.toLowerCase().includes(needle)))
+    .sort((a, b) => a.fullName.toLowerCase().localeCompare(b.fullName.toLowerCase(), "en") || a.id - b.id);
+  if (repositories.length > limit) {
+    repositories.length = limit;
+    truncated = true;
+  }
+  return { installations, repositories, truncated };
+}
+
+function parseInstallationRepository(value: unknown, inst: GitHubInstallation) {
+  if (!isRecord(value) || !isRecord(value.owner) || value.disabled === true) return null;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  const id = positiveId(value.id);
+  const owner = str(value.owner.login);
+  const name = str(value.name);
+  const defaultBranch = str(value.default_branch);
+  const invalidName = name.length > 200 || !GITHUB_REPO_NAME_PATTERN.test(name);
+  if (id === null || !isGitHubSlug(owner) || invalidName || typeof value.private !== "boolean") return null;
+  if (!defaultBranch || defaultBranch.length > 255) return null;
+  return {
+    id,
+    owner,
+    name,
+    fullName: `${owner}/${name}`,
+    private: value.private,
+    defaultBranch,
+    installationId: inst.id,
+    accountLogin: inst.accountLogin,
+    accountType: inst.accountType,
+    repositorySelection: inst.repositorySelection,
+    archived: value.archived === true,
+    pushedAt: str(value.pushed_at) || null,
+  };
 }
