@@ -18,7 +18,7 @@ metadata: {}
 <!-- skillpack:usage:start -->
 ## Skillpack runtime
 
-Usage is observed locally by skillpack-runtime when installed through Skillpack. Package: 20f68ccd-7807-4cc8-82f0-2ce45282b23b@0.2.0, origin: https://skillpack.app.
+Usage is observed locally by skillpack-runtime when installed through Skillpack. Package: 20f68ccd-7807-4cc8-82f0-2ce45282b23b@0.2.1, origin: https://skillpack.app.
 Do not send activation reports, run tracking commands, or install hooks during this skill's execution. Setup and updates belong to Skillpack. Continue the task when collection is unavailable. SKILLPACK_TELEMETRY=0 disables collection for this session.
 <!-- skillpack:usage:end -->
 
@@ -60,12 +60,13 @@ Never ask the user for facts you can read yourself from git, files, `ob`, `armad
 6. **Adopt existing review workflows; never mutate `ship-pr-dev`.** Use what the repository already has (local review skill, CI bots). Only offer `ship-pr-dev` when none exists, and never edit `ship-pr-dev` itself.
 7. **Releases never auto-merge & red `main` freezes the fleet.** Release PRs (`release-please`, `chore(release)`, `Version Packages`) always require explicit human approval, even in `auto-merge` mode. If the base branch CI turns red, freeze merges, rebases, and new launches until a priority fix restores green base CI.
 8. **Hard circuit breakers & DB migration serialization.** Cap retries (`max_ttl_extensions`, `max_ci_fail_rounds`, `max_rebase_rounds`) so wedged workers never burn compute indefinitely, and strictly serialize tasks touching DB migrations (`migrations/**`, `prisma/migrations/**`, `drizzle/**`, `alembic/**`) — disjoint migration filenames still corrupt migration order with zero git conflict.
-9. **Zero secrets in tracked files, `.captain/`, or chat.** Store only board URLs, channel names, and profile names in config; provision worker secrets outside repos via Armada secrets/env. Fail closed if a credential is missing.
+9. **Zero secrets in tracked files, `.captain/`, prompts, or `exec` argv.** Store only board URLs, channel names, profile names, and non-secret template IDs in config. On Modal/Boat, inject `BOARD_URL` and `OPENBOARD_SECRET` via **Armada Vault (`variables/set`, `secrets/set` via stdin) + Launch Templates (`armada template launch`)** — never `--secret`/`--variable` on `armada new --provider modal` (those flags are Docker-only) and never raw tokens in prompts or `armada exec`. Fail closed if a credential is missing.
 
 ---
 
-## Bundled script (zero Python)
+## Bundled scripts (zero Python)
 
+- **`scripts/armada-modal.sh`** — Zero-Python POSIX bash + `jq` wrapper for Armada `>= 14.x` Modal operations (`preflight-mcp`, `wait-build`, `wait-ready`, `launch-template`, `launch-raw`). Absorbs real Modal CLI traps: flags `needs_reconnect` `defaultForLaunch` MCP connections and defaults raw launches to `--no-connections`; polls `snapshot show --build <jobId>` **without `--org`** past `phase: secret_scan`; and waits via `armada info <id> --wait` until a sandbox leaves `starting` before any `armada exec`.
 - **`scripts/watchdog.sh`** — Lightweight, zero-dependency POSIX bash wakeup loop (`start` / `stop` / `status`) for hosts without a native scheduler (e.g. Claude Code + `Monitor`). Enforces integer interval validation (no macOS `sleep 2m` busy-loop), atomic start lock, PID+cmdline check, clean process-group stop, UTC timestamps, and 5 MiB log rotation, emitting a compact live snapshot from `ob tasks counts` + `gh pr list` + base-branch `gh run list`. Hosts with native schedulers (`schedule` / `CronCreate`) should use their native timer instead of `watchdog.sh`.
 
 ---

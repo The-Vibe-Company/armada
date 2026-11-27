@@ -6,7 +6,8 @@ Use this guide when OpenBoard has ready tasks and the user wants Captain to laun
 
 ## Step 1: Inspect live capabilities & queue
 
-- Armada 14.x: `<armada-cli> info --setup`, `snapshot ls`, `account ls`, `host ls` (always pass `--org <org>` when targeting an org).
+- Armada `>= 14.x`: `<armada-cli> info --setup --org <org>`, `template list --org <org> --json`, `snapshot ls --provider <provider> --org <org> --json`, `account ls --org <org>`, `host ls --org <org>` (always pass `--org <org>` when targeting an org; **exception**: `snapshot show --build <jobId>` forbids `--org`).
+- MCP preflight: `bash "$SKILL_DIR/scripts/armada-modal.sh" preflight-mcp --org <org>` — ensure disconnected `defaultForLaunch` MCPs never block launches (Launch Templates pin `connections: []`; raw `armada new` passes `--no-connections`).
 - OpenBoard: `ob tasks counts <channel> --json` and `ob tasks <channel> --state ready --json`.
 - GitHub: `gh pr list --repo <repo> --state open --limit 50` and `gh run list --repo <repo> --branch <base> --limit 3` (record the current merged PR count / timestamp as the Challenger baseline so historical merged PRs never false-trigger on tick #1).
 
@@ -43,14 +44,27 @@ Before launching a ready OpenBoard task:
 - Verify no active sandbox touches overlapping non-shareable globs — and **never launch two concurrent tasks touching DB migrations (`migrations/**`, `prisma/migrations/**`, `drizzle/**`, `alembic/**`)**.
 - Name/tag every sandbox deterministically (`captain-<channel>-t<id>-a<attempt>`) so orphan reconciliation distinguishes Captain sandboxes from user sandboxes.
 
-Launch commands (Armada 14.x):
-- Modal: `<armada-cli> new <snapshot> --provider modal --agent <agent> --model <model> --org <org> --ttl 4h --json "<prompt>"`
-- Docker: `<armada-cli> new --provider docker --host <host> --repo <repo> --agent <agent> --model <model> --org <org> --ttl 4h --idempotency-key "<key>" --json "<prompt>"`
+Launch commands (Armada `>= 14.x`):
+- **Modal with OpenBoard auth (recommended — uses Vault `BOARD_URL` + `OPENBOARD_SECRET` and pinned `connections: []`):**
+  ```bash
+  bash "$SKILL_DIR/scripts/armada-modal.sh" launch-template "<template-id-or-name>" \
+    --org "<org>" --request-key "captain-<channel>-t<id>-a<attempt>-$(date +%s)" \
+    --ttl 4h --prompt-file "<prompt-file>"
+  ```
+  *(Under the hood: `<armada-cli> template launch <template> --request-key <key> --org <org> --ttl 4h --prompt "<prompt>" --json`. Keep the same `--request-key` if replaying an uncertain launch.)*
+- **Modal bare snapshot (only when no Vault secrets are needed — ALWAYS pass `--no-connections` or explicit connected `--connections` to avoid 409 on `needs_reconnect` default MCPs):**
+  ```bash
+  bash "$SKILL_DIR/scripts/armada-modal.sh" launch-raw "<snapshot>" \
+    --org "<org>" --agent "<agent>" --model "<model>" --ttl 4h --prompt-file "<prompt-file>"
+  ```
+  *(Never pass `--secret` or `--variable` to `armada new --provider modal` — those flags are Docker-only.)*
+- **Docker:** `<armada-cli> new --provider docker --host <host> --repo <repo> --agent <agent> --model <model> --variable BOARD_URL:<uuid>:<v> --secret OPENBOARD_SECRET:<uuid>:<v> --no-connections --org <org> --ttl 4h --idempotency-key "<key>" --json "<prompt>"` (or `template launch`).
+- **Wait before `armada exec`:** a freshly launched Modal sandbox starts in `status: "starting"`, during which `armada exec` returns `not_found`. Before running any `armada exec`, always wait via `bash "$SKILL_DIR/scripts/armada-modal.sh" wait-ready <sid> --org <org>` (or `<armada-cli> info <sid> --wait --timeout 60 --org <org> --json`).
 
 ### Canonical Worker Brief (anti-slop + foreground discipline)
 
 Include in every worker prompt:
-- **OpenBoard lifecycle:** `ob whoami`, `ob tasks claim <id>`, `ob read <id>`, `ob tasks renew <id>`, `ob reply <id> "<update + PR URL>"`, and `ob tasks complete <id> "<result>"` only after verification passes.
+- **OpenBoard auth & lifecycle:** connect first if not yet authenticated using the Vault-injected env vars (`ob whoami >/dev/null 2>&1 || ob connect "$BOARD_URL" --as "<worker-profile>"` — `ob connect` natively reads `OPENBOARD_SECRET` from env; never echo or print secrets), then `ob tasks claim <id>`, `ob read <id>`, `ob tasks renew <id>`, `ob reply <id> "<update + PR URL>"`, and `ob tasks complete <id> "<result>"` only after verification passes.
 - **Branch & PR hygiene:** pull freshly from `<base>`, branch `captain/<id>-<slug>`, push a draft branch early on long tasks, and put `OpenBoard #<id>` in the PR body (never `Closes #<id>`).
 - **Verify by using it & hard refusals:** write tests at public seams (never mock the module under test), run the real artifact/CLI/server/browser against every acceptance criterion (including empty/error states, plus final-SHA screenshots for `verify=ui`), and include `## Verification` + `## Seams Tested` in the PR body. Never add `.skip`/`.only`/`@ts-ignore`/`eslint-disable`/`# type: ignore`, loosen lint/CI rules, use `--no-verify`, or fake auth/permissions/billing/PII.
 - **Dynamic split / block protocol:** if oversized, missing a prerequisite, or blocked on a human decision, place the hold yourself (`ob tasks block <id> "<reason>" --kind awaiting_approval`) and end with `BLOCKED: SPLIT_PROPOSED ...`, `BLOCKED: MISSING_PREREQ ...`, or `BLOCKED: <reason>`.

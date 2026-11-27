@@ -7,7 +7,8 @@ Captain never relies on chat history: live OpenBoard, live Armada, live GitHub, 
 ## Resuming an existing fleet
 
 1. **Preflight CLI auth first** (especially on a new machine/harness):
-   - Verify `ob whoami`, `<armada-cli> --version` (`>= 14.x`) + `<armada-cli> info --setup`, and `gh auth status`.
+   - Verify `ob whoami`, `<armada-cli> --version` (`>= 14.x`) + `<armada-cli> info --setup --org <org>`, `template list --org <org> --json`, and `gh auth status`.
+   - Before running `armada exec` on any recently launched sandbox (`status == "starting"`), wait with `bash "$SKILL_DIR/scripts/armada-modal.sh" wait-ready <sid> --org <org>` (otherwise `armada exec` returns `not_found`).
 2. **Read local context:**
    - `.captain/config.json`, `.captain/rules.md` (check for `PAUSED: OFF_THE_RAILS` or active `STOP` rules), and `.captain/HANDOFF.md` if present.
 3. **Reconcile against live reality:**
