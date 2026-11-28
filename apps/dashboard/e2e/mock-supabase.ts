@@ -66,6 +66,7 @@ const users = new Map<string, { id: string; email: string }>([
 type State = {
   orgs: Row[];
   langfuse: Map<string, Row>;
+  langfuseModels: Map<string, Row[]>;
   members: Row[];
   goldens: Row[];
   hiddenSnapshot: string;
@@ -111,6 +112,7 @@ function seed(): State {
   const now = "2026-11-08T10:00:00.000Z";
   const state: State = {
     langfuse: new Map(),
+    langfuseModels: new Map(),
     // Acme's Boat key predates org credentials: the legacy `orgs.boat_api_key_enc` column, never readable by a user JWT.
     orgs: [{ id: ACME, name: "Acme", created_at: now, boat_api_key_enc: "\\x0102" }],
     members: [
@@ -3131,16 +3133,97 @@ function control(url: URL, body: Row): Response {
   return json({ message: "not found" }, 404);
 }
 
+function langfuseModelsControl(request: Request, org: string, param: string | undefined, body: Row) {
+  const cur = state.langfuseModels.get(org) ?? [];
+  const mk = (id: string, name: string, pat: string, pr: Row, managed = false) => ({
+    id,
+    modelName: name,
+    matchPattern: pat,
+    unit: "TOKENS",
+    isLangfuseManaged: managed,
+    pricesPerMillion: pr,
+  });
+  const opt = (v: unknown) => (typeof v === "number" ? v : null);
+  const summary = () => {
+    const customModels = state.langfuseModels.get(org) ?? [];
+    const esc = (s: string) => `(?i)^${s.replace(/\./g, "\\.")}$`;
+    const rows = [
+      ["antigravity-pro", "Gemini 2.5 Pro", "antigravity", "gemini-2.5-pro", true, 1.25, 10, 0.31, "langfuse"],
+      ["morph-v3-large", "Morph v3 Large", "morph", "morph-v3-large", false, 0.9, 1.9, null, "catalog"],
+    ] as const;
+    const armadaModels = rows.map(([id, label, pg, s, hasB, input, output, cacheRead, source]) => {
+      const [defaultModelName, defaultMatchPattern] = [`${pg}/${s}`, esc(`${pg}/${s}`)];
+      const pr = { input, output, cacheRead, cacheWrite: null, reasoning: null };
+      const builtin = hasB ? mk(`lf-builtin-${s}`, s, esc(s), pr, true) : null;
+      const custom = customModels.find((m) => {
+        const p = String(m.matchPattern ?? "");
+        try {
+          const re = new RegExp(p.replace(/^\(\?i\)/, ""), p.startsWith("(?i)") ? "i" : "");
+          return re.test(defaultModelName) || re.test(s);
+        } catch {
+          return false;
+        }
+      });
+      let status = "unmatched";
+      if (custom) status = "matched_custom";
+      else if (builtin) status = "matched_builtin";
+      const sug = { ...pr, source, sourceModel: s };
+      const base = { id, label, providerGroup: pg, sampleModelNames: [s], defaultModelName, defaultMatchPattern };
+      return { ...base, status, matchedModel: custom ?? builtin, suggestedPricesPerMillion: sug };
+    });
+    return { armadaModels, customModels };
+  };
+  if (request.method === "GET" && !param) return json(summary());
+  if (request.method === "POST" && param === "sync") {
+    const [list, created, skipped]: [Row[], string[], string[]] = [[...cur], [], []];
+    for (const m of summary().armadaModels) {
+      if (m.status !== "unmatched") {
+        skipped.push(m.defaultModelName);
+        continue;
+      }
+      const { input, output, cacheRead, cacheWrite, reasoning } = m.suggestedPricesPerMillion;
+      const pr = { input, output, cacheRead, cacheWrite, reasoning };
+      list.push(mk(`lf-custom-${++sequence}`, m.defaultModelName, m.defaultMatchPattern, pr));
+      created.push(m.defaultModelName);
+    }
+    state.langfuseModels.set(org, list);
+    return json({ created, skipped, failed: [], ...summary() });
+  }
+  if (request.method === "PUT" && !param) {
+    const p = (body.pricesPerMillion ?? {}) as Row;
+    const [name, pat, input, output] = [body.modelName, body.matchPattern, p.input, p.output];
+    if (typeof name !== "string" || typeof pat !== "string") return json({ error: "invalid_model_override" }, 400);
+    if (typeof input !== "number" || typeof output !== "number") return json({ error: "invalid_model_override" }, 400);
+    const [cacheRead, cacheWrite, reasoning] = [opt(p.cacheRead), opt(p.cacheWrite), opt(p.reasoning)];
+    const model = mk(`lf-custom-${++sequence}`, name, pat, { input, output, cacheRead, cacheWrite, reasoning });
+    state.langfuseModels.set(org, [...cur.filter((m) => m.id !== body.replaceModelId), model]);
+    return json({ model, ...summary() });
+  }
+  if (request.method === "DELETE" && param && param !== "sync") {
+    const next = cur.filter((m) => m.id !== param);
+    if (next.length === cur.length) return json({ error: "not_found" }, 404);
+    state.langfuseModels.set(org, next);
+    return new Response(null, { status: 204 });
+  }
+  return new Response(null, { status: 405 });
+}
+
 function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): Response {
   const org = match[1]!;
   const testing = Boolean(match[2]);
+  const models = Boolean(match[3]);
+  const modelParam = match[4] ? decodeURIComponent(match[4]) : undefined;
   const user = viewer(request);
   if (!user) return json({ error: "unauthorized" }, 401);
   const admin = isAdmin(org, user);
-  if (!isMember(org, user) || (!admin && (testing || request.method !== "GET"))) {
+  if (!isMember(org, user) || (!admin && (testing || models || request.method !== "GET"))) {
     return json({ error: "forbidden" }, 403);
   }
   const saved = state.langfuse.get(org);
+  if (models)
+    return saved
+      ? langfuseModelsControl(request, org, modelParam, body)
+      : json({ error: "langfuse_configuration_unavailable" }, 400);
   const status = { enabled: saved?.enabled ?? false, contentMode: saved?.contentMode ?? "metadata" };
   const host = "https://cloud.langfuse.com";
   if (request.method === "GET" && !testing) {
@@ -3156,6 +3239,7 @@ function langfuseControl(request: Request, match: RegExpMatchArray, body: Row): 
   }
   if (request.method === "DELETE" && !testing) {
     state.langfuse.delete(org);
+    state.langfuseModels.delete(org);
     return new Response(null, { status: 204 });
   }
   if ((testing && request.method !== "POST") || (!testing && request.method !== "PUT")) {
@@ -3337,7 +3421,9 @@ const server = Bun.serve({
       return mcpControl(url.pathname.slice("/api/v1/mcp/".length), body, viewer(request));
     }
     if (url.pathname.startsWith("/oauth/")) return oauth(url);
-    const langfuse = url.pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(\/test)?$/i);
+    const langfuse = url.pathname.match(
+      /^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(?:\/(test)|\/(models)(?:\/([^/]+))?)?$/i,
+    );
     if (langfuse) return langfuseControl(request, langfuse, body);
     const triggerPath = url.pathname.match(/^\/api\/v1\/triggers(?:\/([^/]+)\/(deliveries|rotate|disable))?$/);
     if (triggerPath) return inboundTriggers(request, url, triggerPath, body);

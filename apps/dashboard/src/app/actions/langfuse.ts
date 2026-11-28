@@ -9,6 +9,7 @@ import {
   type LangfuseEditable,
   type LangfuseTest,
   readLangfuseForm,
+  readLangfuseModelOverrideForm,
 } from "@/lib/langfuse";
 
 type Result = { ok: true; test?: LangfuseTest } | { ok: false; error: string };
@@ -62,4 +63,45 @@ export async function updateLangfuse(
     }
     return { ok: false, error: "Armada could not complete the request. Reload this organization before retrying." };
   }
+}
+
+type LangfuseCtrl = NonNullable<Awaited<ReturnType<typeof viewerLangfuse>>>;
+const MODEL_ERR: Record<number, string> = {
+  401: "Sign in again, then retry.",
+  403: "Only an organization admin can change this.",
+  502: "Langfuse did not accept this request. Check the connection and try again.",
+};
+
+async function runModel<T>(org: string, err400: string, work: (c: LangfuseCtrl) => Promise<T>) {
+  const selected = await selectedOrganization();
+  if (selected?.org.id !== org) return { ok: false as const, error: "Switch to that organization first." };
+  if (selected.role !== "admin") return { ok: false as const, error: "Only an organization admin can change this." };
+  const control = await viewerLangfuse(org);
+  if (!control) return { ok: false as const, error: "Ask an Armada administrator to finish server setup." };
+  try {
+    return { ok: true as const, data: await work(control) };
+  } catch (e) {
+    const code = e instanceof ControlError ? e.status : undefined;
+    const msg = code === 400 ? err400 : MODEL_ERR[code ?? 0];
+    return { ok: false as const, error: msg ?? "Armada could not complete the request. Reload and retry." };
+  }
+}
+
+export async function loadLangfuseModels(org: string) {
+  return runModel(org, "Connect Langfuse with valid keys first.", (c) => c.models());
+}
+export async function syncLangfuseModels(org: string) {
+  return runModel(org, "Connect Langfuse with valid keys first.", (c) => c.syncModels());
+}
+export async function saveLangfuseModelOverride(org: string, form: FormData) {
+  const p = readLangfuseModelOverrideForm(form);
+  return p.ok
+    ? runModel(org, "Check model name, regex pattern, and USD/1M prices.", (c) => c.saveModelOverride(p.input))
+    : p;
+}
+export async function deleteLangfuseModelOverride(org: string, modelId: string) {
+  const id = modelId.trim();
+  if (!id) return { ok: false as const, error: "Select a custom model override to delete." };
+  const r = await runModel(org, "Could not delete this custom model override.", (c) => c.deleteModelOverride(id));
+  return r.ok ? { ok: true as const } : r;
 }
