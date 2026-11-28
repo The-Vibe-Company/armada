@@ -1,6 +1,6 @@
 {
   "name": "@armada/provider-modal",
-  "version": "14.9.1",
+  "version": "14.10.0",
   "private": true,
   "type": "module",
   "exports": {

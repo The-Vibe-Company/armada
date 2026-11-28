@@ -20,7 +20,7 @@
     },
     "apps/dashboard": {
       "name": "@armada/dashboard",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "@supabase/ssr": "0.12.7",
@@ -54,7 +54,7 @@
     },
     "packages/agent-runtime": {
       "name": "@armada/agent-runtime",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "0.3.322",
         "@anthropic-ai/claude-code": "2.1.322",
@@ -65,11 +65,11 @@
     },
     "packages/auth": {
       "name": "@armada/auth",
-      "version": "14.9.1",
+      "version": "14.10.0",
     },
     "packages/cli": {
       "name": "@armada/cli",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "bin": {
         "armada": "./src/main.ts",
       },
@@ -84,7 +84,7 @@
     },
     "packages/core": {
       "name": "@armada/core",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "croner": "11.0.0",
         "cronstrue": "3.39.0",
@@ -97,7 +97,7 @@
     },
     "packages/docker-host": {
       "name": "@armada/docker-host",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "bin": {
         "armada-docker-host": "./src/main.ts",
       },
@@ -107,7 +107,7 @@
     },
     "packages/mcp-gateway": {
       "name": "@armada/mcp-gateway",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.32.2",
         "zod": "4.6.7",
@@ -115,7 +115,7 @@
     },
     "packages/mcp-server": {
       "name": "@armada/mcp-server",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "@armada/agent-runtime": "workspace:*",
         "@armada/auth": "workspace:*",
@@ -131,7 +131,7 @@
     },
     "packages/provider-boat": {
       "name": "@armada/provider-boat",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "@boatdev/sdk": "^1.13.0",
@@ -139,7 +139,7 @@
     },
     "packages/provider-modal": {
       "name": "@armada/provider-modal",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "@armada/core": "workspace:*",
         "modal": "0.11.1",
@@ -147,7 +147,7 @@
     },
     "packages/sdk": {
       "name": "@armada/sdk",
-      "version": "14.9.1",
+      "version": "14.10.0",
       "dependencies": {
         "@armada/core": "workspace:*",
       },

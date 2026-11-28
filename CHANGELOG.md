@@ -1,5 +1,14 @@
 # Changelog
 
+## [14.10.0](https://github.com/The-Vibe-Company/armada/compare/v14.9.1...v14.10.0) (2026-11-28)
+
+
+### Features
+
+* **dashboard:** add Langfuse model pricing status and override UI ([#4443](https://github.com/The-Vibe-Company/armada/issues/4443)) ([2a3801e](https://github.com/The-Vibe-Company/armada/commit/2a3801ea0bef3296659dd27a74f88f692a4d9ac5))
+* **mcp-server:** add Langfuse model pricing admin routes and auto-sync ([#4444](https://github.com/The-Vibe-Company/armada/issues/4444)) ([9703066](https://github.com/The-Vibe-Company/armada/commit/970306667aa2197dd05b45ee12a0b261c517b3cd))
+* **mcp-server:** add Langfuse model pricing sync contract and fix Antigravity reasoning usage ([#4441](https://github.com/The-Vibe-Company/armada/issues/4441)) ([f66bfba](https://github.com/The-Vibe-Company/armada/commit/f66bfba28e17af80406f5bca109c9510adfc6ffb))
+
 ## [14.9.1](https://github.com/The-Vibe-Company/armada/compare/v14.9.0...v14.9.1) (2026-11-27)
 
 
