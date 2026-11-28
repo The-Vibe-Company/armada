@@ -130,9 +130,14 @@ function settingsRequest(orgId: string, method: string, input?: object, suffix =
   });
 }
 
+const stubLangfuseFetch = Object.assign(
+  async () => Response.json({ data: [], meta: { page: 1, limit: 100, totalPages: 1 } }),
+  { preconnect: fetch.preconnect },
+);
+
 test("partial Langfuse settings updates preserve encrypted keys and disconnect clears the configuration", async () => {
   const { db, people } = await database();
-  const route = createLangfuse(db, key).route(async () => ({
+  const route = createLangfuse(db, key, stubLangfuseFetch).route(async () => ({
     ok: true,
     caller: { userId: people.admin, via: "service", orgs: [{ orgId: people.org, role: "admin" }] },
   }));
@@ -174,7 +179,7 @@ test("a complete Langfuse replacement can recover unreadable stored credentials"
     people.org,
     new Uint8Array([1]),
   ]);
-  const route = createLangfuse(db, key).route(async () => ({
+  const route = createLangfuse(db, key, stubLangfuseFetch).route(async () => ({
     ok: true,
     caller: { userId: people.admin, via: "service", orgs: [{ orgId: people.org, role: "admin" }] },
   }));
@@ -1062,4 +1067,294 @@ test("repo-backed turn export expedites pr_scan and idempotent pr_linked score u
   } finally {
     unsub();
   }
+});
+
+function mockModelsApi() {
+  const stored: Record<string, unknown>[] = [];
+  const calls: string[] = [];
+  const state = { nextId: 1, modelsStatus: 200, failNetwork: false };
+  const send = Object.assign(
+    async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const u = new URL(String(url));
+      const method = init?.method ?? "GET";
+      calls.push(`${method} ${u.pathname}`);
+      if (state.failNetwork) throw new Error("upstream_secret_network_failure");
+      if (u.pathname.startsWith("/api/public/models")) {
+        if (state.modelsStatus !== 200) return new Response("upstream_secret_body", { status: state.modelsStatus });
+        if (method === "GET") return Response.json({ data: stored, meta: { page: 1, limit: 100, totalPages: 1 } });
+        if (method === "POST") {
+          const item = {
+            id: `m-${state.nextId++}`,
+            isLangfuseManaged: false,
+            ...JSON.parse(String(init?.body ?? "{}")),
+          };
+          stored.push(item);
+          return Response.json(item);
+        }
+        if (method === "DELETE") {
+          const idx = stored.findIndex((m) => m.id === decodeURIComponent(u.pathname.split("/").pop() ?? ""));
+          if (idx >= 0) stored.splice(idx, 1);
+          return new Response(null, { status: 204 });
+        }
+      }
+      return new Response(null, { status: 200 });
+    },
+    { preconnect: fetch.preconnect },
+  );
+  return { stored, calls, state, send };
+}
+
+async function enqueueUsageTurn(db: Sql, ownerId: string, promptId: string, model: string, priced = false) {
+  const id = crypto.randomUUID();
+  const pricing = priced
+    ? {
+        schemaVersion: 1,
+        basis: "estimated",
+        credentialId: null,
+        credentialVersion: null,
+        capturedAt: "2026-11-28T00:00:00.000Z",
+        snapshot: null,
+        inputs: null,
+        usd: "0.01",
+        unknown: null,
+      }
+    : null;
+  const usage = {
+    turnCount: 1,
+    turns: [{ promptId, model, inputTokens: 10, outputTokens: 20, cachedTokens: null, pricing }],
+  };
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,boat_runtime,usage_turns)
+     select $1,id,org_id,owner_id,$3,'codex','ready',true,$4::jsonb
+     from goldens where owner_id=$2 and visibility='private' limit 1`,
+    [id, ownerId, `boat_${promptId}`, JSON.stringify(usage)],
+  );
+  await db.query("select public.enqueue_webhook_turn($1,$2,'finished')", [id, promptId]);
+}
+
+test("Langfuse models admin routes handle GET, sync, PUT create/replace/invalid, DELETE, auth, unconfigured and upstream errors", async () => {
+  const { db, people } = await database();
+  const mock = mockModelsApi();
+  const lf = createLangfuse(db, key, mock.send);
+  const roleRoute = (userId: string, role: "admin" | "member") =>
+    lf.route(async () => ({ ok: true, caller: { userId, via: "service", orgs: [{ orgId: people.org, role }] } }));
+  const adminRoute = roleRoute(people.admin, "admin");
+  const memberRoute = roleRoute(people.member, "member");
+  const unauthRoute = lf.route(async () => ({ ok: false }));
+
+  expect((await unauthRoute(settingsRequest(people.org, "GET", undefined, "/models")))?.status).toBe(401);
+  const checks = [
+    ["GET", "/models", undefined],
+    ["POST", "/models/sync", undefined],
+    ["PUT", "/models", { modelName: "x", matchPattern: "^x$", pricesPerMillion: { input: 1, output: 2 } }],
+    ["DELETE", "/models/m-1", undefined],
+  ] as const;
+  for (const [method, suffix, body] of checks) {
+    const mRes = await memberRoute(settingsRequest(people.org, method, body, suffix));
+    expect([mRes?.status, mRes?.headers.get("cache-control")]).toEqual([403, "no-store"]);
+    const uRes = await adminRoute(settingsRequest(people.org, method, body, suffix));
+    expect([uRes?.status, await uRes?.json()]).toEqual([400, { error: "langfuse_not_configured" }]);
+  }
+  expect([
+    (await adminRoute(settingsRequest(people.org, "DELETE", undefined, "/models")))?.status,
+    (await adminRoute(settingsRequest(people.org, "GET", undefined, "/models/sync")))?.status,
+    (await adminRoute(settingsRequest(people.org, "GET", undefined, "/models/m-1")))?.status,
+  ]).toEqual([405, 405, 405]);
+
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+
+  const getRes = await adminRoute(settingsRequest(people.org, "GET", undefined, "/models"));
+  const getBody = (await getRes?.json()) as { armadaModels: { id: string; status: string }[]; customModels: unknown[] };
+  expect([getRes?.status, getRes?.headers.get("cache-control"), getBody.customModels]).toEqual([200, "no-store", []]);
+  expect(getBody.armadaModels.find((m) => m.id === "gemini-4-neon")?.status).toBe("unmatched");
+
+  const syncRes = await adminRoute(settingsRequest(people.org, "POST", undefined, "/models/sync"));
+  const syncBody = (await syncRes?.json()) as {
+    created: string[];
+    failed: string[];
+    armadaModels: { id: string; status: string }[];
+    customModels: { id: string }[];
+  };
+  expect([syncRes?.status, syncBody.failed, syncBody.customModels.length]).toEqual([200, [], syncBody.created.length]);
+  expect(syncBody.created).toEqual(expect.arrayContaining(["gemini-4-neon", "morph-dsv41flash"]));
+  expect(syncBody.armadaModels.find((m) => m.id === "gemini-4-neon")?.status).toBe("matched_custom");
+
+  const p = { input: 1.5, output: 6, cacheRead: 0.2 };
+  const putRes = await adminRoute(
+    settingsRequest(
+      people.org,
+      "PUT",
+      { modelName: "custom-m", matchPattern: "(?i)^custom-m$", pricesPerMillion: p },
+      "/models",
+    ),
+  );
+  const created = (await putRes?.json()) as {
+    model: { id: string; modelName: string };
+    customModels: { id: string }[];
+  };
+  expect([
+    putRes?.status,
+    created.model.modelName,
+    created.customModels.some((m) => m.id === created.model.id),
+  ]).toEqual([200, "custom-m", true]);
+
+  mock.calls.length = 0;
+  const repRes = await adminRoute(
+    settingsRequest(
+      people.org,
+      "PUT",
+      {
+        modelName: "custom-m2",
+        matchPattern: "(?i)^custom-m$",
+        pricesPerMillion: { input: 2, output: 8 },
+        replaceModelId: created.model.id,
+      },
+      "/models",
+    ),
+  );
+  const replaced = (await repRes?.json()) as { model: { id: string }; customModels: { id: string }[] };
+  expect([repRes?.status, mock.calls, replaced.customModels.some((m) => m.id === created.model.id)]).toEqual([
+    200,
+    ["POST /api/public/models", `DELETE /api/public/models/${created.model.id}`, "GET /api/public/models"],
+    false,
+  ]);
+
+  const rawPut = (body: string) =>
+    adminRoute(new Request(`https://armada.test/api/v1/orgs/${people.org}/langfuse/models`, { method: "PUT", body }));
+  for (const bad of [
+    "not-json",
+    JSON.stringify({ modelName: "x", matchPattern: "(?i)[broken", pricesPerMillion: { input: 1, output: 2 } }),
+    JSON.stringify({ modelName: "x", matchPattern: "^x$", pricesPerMillion: { input: -1, output: 2 } }),
+    JSON.stringify({ modelName: "", matchPattern: "^x$", pricesPerMillion: { input: 1, output: 2 } }),
+  ]) {
+    const res = await rawPut(bad);
+    expect([res?.status, await res?.json()]).toEqual([400, { error: "invalid_model_pricing" }]);
+  }
+  const big = await rawPut(JSON.stringify({ modelName: "a".repeat(20_000), matchPattern: "^a$", pricesPerMillion: p }));
+  expect([big?.status, await big?.json()]).toEqual([413, { error: "request_too_large" }]);
+
+  const delRes = await adminRoute(settingsRequest(people.org, "DELETE", undefined, `/models/${replaced.model.id}`));
+  expect([delRes?.status, delRes?.headers.get("cache-control"), await delRes?.text()]).toEqual([204, "no-store", ""]);
+  const badDel = await adminRoute(settingsRequest(people.org, "DELETE", undefined, "/models/%E0%A4%A"));
+  expect([badDel?.status, await badDel?.json()]).toEqual([400, { error: "invalid_model_pricing" }]);
+
+  for (const [status, err] of [
+    [401, "langfuse_rejected"],
+    [403, "langfuse_rejected"],
+    [500, "langfuse_unreachable"],
+  ] as const) {
+    mock.state.modelsStatus = status;
+    const res = await adminRoute(settingsRequest(people.org, "GET", undefined, "/models"));
+    const text = await res?.text();
+    expect([res?.status, JSON.parse(text ?? "{}"), text?.includes("upstream_secret")]).toEqual([
+      502,
+      { error: err },
+      false,
+    ]);
+  }
+  mock.state.modelsStatus = 200;
+  mock.state.failNetwork = true;
+  const netRes = await adminRoute(settingsRequest(people.org, "POST", undefined, "/models/sync"));
+  const netText = await netRes?.text();
+  expect([netRes?.status, JSON.parse(netText ?? "{}"), netText?.includes("upstream_secret")]).toEqual([
+    502,
+    { error: "langfuse_unreachable" },
+    false,
+  ]);
+});
+
+test("exportTurn auto-syncs unpriced Armada models before OTLP export, caches by TTL, and never fails traces", async () => {
+  const { db, people } = await database();
+  await db.query("insert into org_langfuse(org_id,enabled,content_mode,config_enc) values($1,true,'metadata',$2)", [
+    people.org,
+    await encryptConfig(),
+  ]);
+  const mock = mockModelsApi();
+  const logs: string[] = [];
+  let nowMs = 1_700_000_000_000;
+  const exporter = createLangfuse(db, key, mock.send, { logError: (l) => logs.push(l), now: () => nowMs });
+  const beforeTrace = () => mock.calls.slice(0, mock.calls.indexOf("POST /api/public/otel/v1/traces"));
+
+  await enqueueUsageTurn(db, people.owner, "p-neon-1", "gemini-4-neon");
+  expect(await runExport(db, exporter)).toBe(true);
+  expect(beforeTrace()).toEqual(["GET /api/public/models", "POST /api/public/models"]);
+
+  mock.calls.length = 0;
+  nowMs += 5 * 60 * 1000;
+  await enqueueUsageTurn(db, people.owner, "p-neon-2", "gemini-4-neon");
+  expect(await runExport(db, exporter)).toBe(true);
+  expect([mock.calls.some((c) => c.includes("/models")), mock.calls[0]]).toEqual([
+    false,
+    "POST /api/public/otel/v1/traces",
+  ]);
+
+  mock.calls.length = 0;
+  await enqueueUsageTurn(db, people.owner, "p-morph-1", "armada/morph-dsv41flash");
+  expect(await runExport(db, exporter)).toBe(true);
+  expect(beforeTrace()).toEqual(["GET /api/public/models", "POST /api/public/models"]);
+
+  mock.calls.length = 0;
+  await enqueueUsageTurn(db, people.owner, "p-claude", "claude-sonnet-4-6", true);
+  expect(await runExport(db, exporter)).toBe(true);
+  expect(mock.calls.some((c) => c.includes("/models"))).toBe(false);
+
+  mock.calls.length = 0;
+  nowMs += 10 * 60 * 1000 + 1;
+  mock.state.modelsStatus = 500;
+  await enqueueUsageTurn(db, people.owner, "p-fail-sync", "gemini-4-neon");
+  expect(await runExport(db, exporter)).toBe(true);
+  expect(mock.calls.slice(0, 2)).toEqual(["GET /api/public/models", "POST /api/public/otel/v1/traces"]);
+  expect([logs[0]?.includes("reason=LangfuseModelsError"), logs.join("\n").includes("secret")]).toEqual([true, false]);
+});
+
+test("PUT /langfuse with enabled=true runs bounded best-effort model sync and succeeds even when /models fails", async () => {
+  const { db, people } = await database();
+  const mock = mockModelsApi();
+  const logs: string[] = [];
+  const lf = createLangfuse(db, key, mock.send, { logError: (l) => logs.push(l) });
+  const route = lf.route(async () => ({
+    ok: true,
+    caller: { userId: people.admin, via: "service", orgs: [{ orgId: people.org, role: "admin" }] },
+  }));
+  const timeoutSpy = spyOn(AbortSignal, "timeout");
+  try {
+    const okRes = await route(
+      settingsRequest(people.org, "PUT", {
+        enabled: true,
+        host: "https://langfuse.test",
+        publicKey: "public_placeholder",
+        secretKey: "secret_placeholder",
+      }),
+    );
+    expect([okRes?.status, await okRes?.json()]).toEqual([200, { enabled: true, contentMode: "metadata" }]);
+    expect(timeoutSpy).toHaveBeenCalledWith(3000);
+    expect([mock.calls[0], mock.calls.includes("POST /api/public/models")]).toEqual(["GET /api/public/models", true]);
+  } finally {
+    timeoutSpy.mockRestore();
+  }
+
+  mock.calls.length = 0;
+  await enqueueUsageTurn(db, people.owner, "p-cached", "gemini-4-neon");
+  expect(await runExport(db, lf)).toBe(true);
+  expect(mock.calls.some((c) => c.includes("/models"))).toBe(false);
+
+  const neonId = String(mock.stored.find((m) => m.modelName === "armada:gemini-4-neon")?.id ?? "m-1");
+  expect((await route(settingsRequest(people.org, "DELETE", undefined, `/models/${neonId}`)))?.status).toBe(204);
+  mock.calls.length = 0;
+  await enqueueUsageTurn(db, people.owner, "p-after-del", "gemini-4-neon");
+  expect(await runExport(db, lf)).toBe(true);
+  expect(mock.calls.slice(0, 2)).toEqual(["GET /api/public/models", "POST /api/public/models"]);
+
+  mock.state.modelsStatus = 500;
+  mock.calls.length = 0;
+  const failRes = await route(settingsRequest(people.org, "PUT", { enabled: true, contentMode: "full" }));
+  expect([failRes?.status, await failRes?.json(), mock.calls]).toEqual([
+    200,
+    { enabled: true, contentMode: "full" },
+    ["GET /api/public/models"],
+  ]);
+  expect([logs[0]?.includes("reason=LangfuseModelsError"), logs.join("\n").includes("secret")]).toEqual([true, false]);
 });
