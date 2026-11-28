@@ -100,3 +100,125 @@ export function readLangfuseForm(form: FormData, baseline?: LangfuseEditable): L
     },
   };
 }
+
+type OptN = number | null;
+export type LangfuseTokenPricesPerMillion = { input: number; output: number } & Record<
+  "cacheRead" | "cacheWrite" | "reasoning",
+  OptN
+>;
+export type LangfuseModelRecord = Record<"id" | "modelName" | "matchPattern", string> & {
+  unit: string | null;
+  isLangfuseManaged: boolean;
+  pricesPerMillion: LangfuseTokenPricesPerMillion;
+};
+export type LangfuseArmadaModelStatus = Record<"id" | "label" | "defaultModelName" | "defaultMatchPattern", string> & {
+  providerGroup: "antigravity" | "morph";
+  sampleModelNames: string[];
+  status: "matched_builtin" | "matched_custom" | "unmatched";
+  matchedModel: LangfuseModelRecord | null;
+  suggestedPricesPerMillion:
+    | (LangfuseTokenPricesPerMillion & { source: "langfuse" | "catalog"; sourceModel: string | null })
+    | null;
+};
+export type LangfuseModelsSummary = { armadaModels: LangfuseArmadaModelStatus[]; customModels: LangfuseModelRecord[] };
+export type LangfuseModelsSyncResult = LangfuseModelsSummary & Record<"created" | "skipped" | "failed", string[]>;
+export type LangfuseModelOverrideInput = {
+  modelName: string;
+  matchPattern: string;
+  replaceModelId?: string | null;
+  pricesPerMillion: Partial<LangfuseTokenPricesPerMillion> & { input: number; output: number };
+};
+
+const PRICE_RE = /^(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i;
+const usd = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
+const bad = (k: string): never => {
+  throw new Error(`Invalid ${k}`);
+};
+const obj = (v: unknown, k: string) =>
+  typeof v === "object" && v && !Array.isArray(v) ? (v as Record<string, unknown>) : bad(k);
+const str = (v: unknown, k: string) => (typeof v === "string" && v.trim() ? v : bad(k));
+const optStr = (v: unknown, k: string) => (v === null || typeof v === "string" ? v : bad(k));
+const list = (v: unknown, k: string) =>
+  Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : bad(k);
+const num = (v: unknown, k: string) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : bad(k));
+const optNum = (v: unknown, k: string) => (v === null ? null : num(v, k));
+const one = <T extends string>(v: unknown, xs: readonly T[], k: string) => (xs.includes(v as T) ? (v as T) : bad(k));
+
+const parsePrices = (v: unknown) => {
+  const r = obj(v, "prices");
+  const [input, output, cacheRead] = [num(r.input, "input"), num(r.output, "output"), optNum(r.cacheRead, "cr")];
+  const [cacheWrite, reasoning] = [optNum(r.cacheWrite, "cw"), optNum(r.reasoning, "rs")];
+  return { input, output, cacheRead, cacheWrite, reasoning } satisfies LangfuseTokenPricesPerMillion;
+};
+const parseModel = (v: unknown) => {
+  const r = obj(v, "model");
+  const isLangfuseManaged = typeof r.isLangfuseManaged === "boolean" ? r.isLangfuseManaged : bad("managed");
+  const [id, modelName] = [str(r.id, "id"), str(r.modelName, "name")];
+  const [matchPattern, unit] = [str(r.matchPattern, "pat"), optStr(r.unit, "unit")];
+  const pricesPerMillion = parsePrices(r.pricesPerMillion);
+  return { id, modelName, matchPattern, unit, isLangfuseManaged, pricesPerMillion } satisfies LangfuseModelRecord;
+};
+const parseArmada = (v: unknown) => {
+  const r = obj(v, "armada");
+  const s = r.suggestedPricesPerMillion === null ? null : obj(r.suggestedPricesPerMillion, "suggested");
+  const src = s ? one(s.source, ["langfuse", "catalog"], "source") : null;
+  const suggestedPricesPerMillion =
+    s && src ? { ...parsePrices(s), source: src, sourceModel: optStr(s.sourceModel, "src") } : null;
+  const [id, label] = [str(r.id, "id"), str(r.label, "label")];
+  const [defaultModelName, defaultMatchPattern] = [str(r.defaultModelName, "name"), str(r.defaultMatchPattern, "pat")];
+  const providerGroup = one(r.providerGroup, ["antigravity", "morph"], "providerGroup");
+  const status = one(r.status, ["matched_builtin", "matched_custom", "unmatched"], "status");
+  const sampleModelNames = list(r.sampleModelNames, "samples");
+  const matchedModel = r.matchedModel === null ? null : parseModel(r.matchedModel);
+  const base = { id, label, providerGroup, sampleModelNames, defaultModelName, defaultMatchPattern };
+  return { ...base, status, matchedModel, suggestedPricesPerMillion } satisfies LangfuseArmadaModelStatus;
+};
+
+export function parseLangfuseModelsSummary(input: unknown) {
+  const r = obj(input, "summary");
+  if (!Array.isArray(r.armadaModels) || !Array.isArray(r.customModels)) throw new Error("Invalid summary");
+  const [armadaModels, customModels] = [r.armadaModels.map(parseArmada), r.customModels.map(parseModel)];
+  return { armadaModels, customModels } satisfies LangfuseModelsSummary;
+}
+export function parseLangfuseModelsSyncResult(input: unknown) {
+  const r = obj(input, "sync");
+  const [created, skipped, failed] = [list(r.created, "created"), list(r.skipped, "skipped"), list(r.failed, "failed")];
+  return { ...parseLangfuseModelsSummary(r), created, skipped, failed } satisfies LangfuseModelsSyncResult;
+}
+export function parseLangfuseModelSaveResult(input: unknown) {
+  const r = obj(input, "save");
+  return { ...parseLangfuseModelsSummary(r), model: parseModel(r.model) };
+}
+export function readLangfuseModelOverrideForm(form: FormData) {
+  const get = (k: string) => (typeof form.get(k) === "string" ? String(form.get(k)).trim() : "");
+  const [modelName, matchPattern] = [get("modelName"), get("matchPattern")];
+  if (!modelName) return { ok: false as const, error: "Enter a model name." };
+  const stripped = matchPattern.replace(/^\(\?i\)/, "");
+  if (!stripped) return { ok: false as const, error: "Enter a regular expression match pattern." };
+  try {
+    new RegExp(stripped);
+  } catch {
+    return { ok: false as const, error: "Match pattern must be a valid regex." };
+  }
+  const vals: Record<string, OptN> = {};
+  for (const k of ["input", "output", "cacheRead", "cacheWrite", "reasoning"]) {
+    const raw = form.get(k);
+    if (raw !== null && typeof raw !== "string") return { ok: false as const, error: `Invalid ${k} price.` };
+    const s = typeof raw === "string" ? raw.trim() : "";
+    if (!s) {
+      if (k === "input" || k === "output") return { ok: false as const, error: `Enter a valid ${k} price.` };
+      vals[k] = null;
+      continue;
+    }
+    const n = PRICE_RE.test(s) ? Number(s) : Number.NaN;
+    if (!Number.isFinite(n) || n < 0) return { ok: false as const, error: `${k} price must be >= 0.` };
+    vals[k] = n;
+  }
+  const replaceModelId = get("replaceModelId");
+  const { input, output, cacheRead = null, cacheWrite = null, reasoning = null } = vals;
+  if (typeof input !== "number" || typeof output !== "number") return { ok: false as const, error: "Invalid price." };
+  const base = { modelName, matchPattern, pricesPerMillion: { input, output, cacheRead, cacheWrite, reasoning } };
+  const out = { ...base, ...(replaceModelId ? { replaceModelId } : {}) } satisfies LangfuseModelOverrideInput;
+  return { ok: true as const, input: out };
+}
+export const formatUsdPerMillion = (v: OptN) => (v === null ? "—" : `$${usd.format(v)}`);

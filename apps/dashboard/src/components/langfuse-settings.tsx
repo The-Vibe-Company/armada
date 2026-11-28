@@ -4,6 +4,7 @@ import { ActivityIcon, CircleCheckIcon, CircleDashedIcon, CircleXIcon, TriangleA
 import { useId, useState, useTransition } from "react";
 import { updateLangfuse } from "@/app/actions/langfuse";
 import { LangfuseDialog, LangfuseTestResult } from "@/components/langfuse-dialog";
+import { LangfuseModelsPanel } from "@/components/langfuse-models";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -99,6 +100,7 @@ export function LangfuseSettingsCard({ org, settings, now }: { org: string; sett
       </div>
       {admin && connected && <LangfuseCounters counters={admin.counters} />}
       {admin && connected && <TestStored key={testGeneration} org={org} host={admin.host} />}
+      {admin && connected && <LangfuseModelsPanel org={org} key={testGeneration} />}
     </div>
   );
 }
