@@ -557,7 +557,7 @@ test("multi-model generations emit separate spans, filter default, include 5D to
     attr(gens.find((g) => g.name === "generation")!, "langfuse.observation.model.name"),
   ]).toEqual([
     root.spanId,
-    '{"input":100,"output":40,"cache_read_input_tokens":20,"cache_creation_input_tokens":15,"reasoning":10}',
+    '{"input":100,"output":30,"cache_read_input_tokens":20,"cache_creation_input_tokens":15,"reasoning":10}',
     '{"total":0.0125}',
     "1970-01-01T00:00:01.250Z",
     undefined,
@@ -788,7 +788,16 @@ test("usage_details exports disjoint buckets per harness without double counting
   expect(usageFor("codex", full)).toEqual({ input: 300, output: 120, ...shared });
   expect(usageFor("claude", full)).toEqual({ input: 1000, output: 120, ...shared });
   expect(usageFor("opencode", full)).toEqual({ input: 1000, output: 120, ...shared });
-  expect(usageFor("antigravity", full)).toEqual({ input: 1000, output: 200, ...shared });
+  expect(usageFor("antigravity", full)).toEqual({ input: 1000, output: 120, ...shared });
+  const agRow = {
+    promptId: "p1",
+    model: "gemini-4-neon",
+    inputTokens: null,
+    outputTokens: 39,
+    cachedTokens: null,
+    reasoningTokens: 32,
+  };
+  expect(usageFor("antigravity", agRow)).toEqual({ output: 7, reasoning: 32 });
   expect(
     usageFor("codex", { promptId: "p1", model: "m1", inputTokens: 300, outputTokens: 60, cachedTokens: 90 }),
   ).toEqual({ input: 210, output: 60, cache_read_input_tokens: 90 });

@@ -86,7 +86,7 @@ const DIMS = [
   ["cacheWriteTokens", "cache_creation_input_tokens"],
   ["reasoningTokens", "reasoning"],
 ] as const;
-const OUTPUT_INCLUDES_REASONING = new Set(["codex", "opencode", "claude"]);
+const OUTPUT_INCLUDES_REASONING = new Set(["codex", "opencode", "claude", "antigravity"]);
 
 function normalizeUsageDetails(rows: readonly TurnTokenUsage[], harness: string | undefined) {
   const sum = (key: (typeof DIMS)[number][0]) =>
