@@ -7,6 +7,17 @@ import type { Route } from "./http.ts";
 import type { createJobsRunner } from "./jobs/runner.ts";
 import { createJobsStore, wakeSandboxJobs } from "./jobs/store.ts";
 import {
+  deleteLangfuseModel,
+  fetchLangfuseModels,
+  isKnownLangfuseArmadaModel,
+  type LangfuseConfig,
+  type LangfuseModelOverrideInput,
+  LangfuseModelsError,
+  summarizeLangfuseModels,
+  syncMissingLangfuseModels,
+  upsertLangfuseModel,
+} from "./langfuse-models.ts";
+import {
   type LangfuseSandboxContext,
   type LangfuseScorePayload,
   langfusePrLinkedScore,
@@ -15,11 +26,7 @@ import {
 } from "./langfuse-spans.ts";
 import { PULL_REQUEST_SCAN_ELIGIBLE } from "./sandbox-lifecycle.ts";
 
-interface Config {
-  host: string;
-  publicKey: string;
-  secretKey: string;
-}
+type Config = LangfuseConfig;
 type ContentMode = "metadata" | "full";
 interface SettingsRow {
   enabled: boolean | null;
@@ -34,6 +41,10 @@ class LangfuseInputError extends Error {}
 
 const DEFAULT_HOST = "https://cloud.langfuse.com";
 const REQUEST_TIMEOUT_MS = 5000;
+const MODEL_SYNC_TIMEOUT_MS = 3000;
+const MODEL_SYNC_TTL_MS = 10 * 60 * 1000;
+const MODEL_SYNC_CACHE_MAX = 256;
+const SETTINGS_BODY_MAX_BYTES = 16384;
 const BASE_BACKOFF_MS = 10_000;
 const MAX_BACKOFF_MS = 60_000;
 
@@ -208,6 +219,64 @@ interface ExportJob {
 export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch, options: LangfuseOptions = {}) {
   const logError = options.logError;
   const now = options.now ?? (() => Date.now());
+  const modelSyncCache = new Map<string, { allAt?: number; models: Map<string, number> }>();
+  const syncCacheKey = (orgId: string, config: Config) => `${orgId}:${config.host}:${config.publicKey}`;
+  const isFresh = (ts: number | undefined, current: number) =>
+    ts !== undefined && current >= ts && current - ts < MODEL_SYNC_TTL_MS;
+
+  function clearOrgSyncCache(orgId: string) {
+    const prefix = `${orgId}:`;
+    for (const cacheKey of modelSyncCache.keys()) {
+      if (cacheKey.startsWith(prefix)) modelSyncCache.delete(cacheKey);
+    }
+  }
+
+  function uncachedModels(orgId: string, config: Config, models: readonly string[]) {
+    const current = now();
+    const entry = modelSyncCache.get(syncCacheKey(orgId, config));
+    if (!entry) return [...models];
+    if (isFresh(entry.allAt, current)) return [];
+    return models.filter((model) => !isFresh(entry.models.get(model.trim().toLowerCase()), current));
+  }
+
+  function recordModelSync(orgId: string, config: Config, models?: readonly string[]) {
+    const current = now();
+    const cacheKey = syncCacheKey(orgId, config);
+    const prev = modelSyncCache.get(cacheKey);
+    modelSyncCache.delete(cacheKey);
+    const next = prev ? { ...prev, models: new Map(prev.models) } : { models: new Map<string, number>() };
+    if (!models) next.allAt = current;
+    else for (const model of models) next.models.set(model.trim().toLowerCase(), current);
+    modelSyncCache.set(cacheKey, next);
+    while (modelSyncCache.size > MODEL_SYNC_CACHE_MAX) {
+      const oldest = modelSyncCache.keys().next().value;
+      if (oldest === undefined) break;
+      modelSyncCache.delete(oldest);
+    }
+  }
+
+  async function bestEffortModelSync(
+    orgId: string,
+    config: Config,
+    signal: AbortSignal,
+    onlyModels?: readonly string[],
+    sandboxId?: string,
+  ) {
+    try {
+      const result = await syncMissingLangfuseModels(
+        send,
+        config,
+        AbortSignal.any([signal, AbortSignal.timeout(MODEL_SYNC_TIMEOUT_MS)]),
+        onlyModels ? { onlyModels } : undefined,
+      );
+      if (result.failed.length === 0) recordModelSync(orgId, config, onlyModels);
+    } catch (error) {
+      if (!signal.aborted) {
+        const scope = sandboxId ? `orgId=${orgId} sandboxId=${sandboxId}` : `orgId=${orgId}`;
+        logError?.(`armada: langfuse model sync error reason=${errorReason(error)} ${scope}`);
+      }
+    }
+  }
   async function history(job: ExportJob): Promise<AgentEvent[] | null> {
     if (job.runtime_ack === null) return [];
     // Read only this turn's window: from its first archived reference (the sparse
@@ -323,6 +392,24 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     const config = JSON.parse(await decryptSecret(job.config_enc, key)) as Config;
     if (!(await canDispatch())) return "dropped";
     signal.throwIfAborted();
+    if (!withheld) {
+      const seen = new Set<string>();
+      const unpriced: string[] = [];
+      for (const row of usage) {
+        const usd = row.pricing?.usd;
+        if ((usd !== null && usd !== undefined) || !row.model || !isKnownLangfuseArmadaModel(row.model)) continue;
+        const trimmed = row.model.trim();
+        const lower = trimmed.toLowerCase();
+        if (seen.has(lower)) continue;
+        seen.add(lower);
+        unpriced.push(trimmed);
+      }
+      const pending = unpriced.length ? uncachedModels(job.org_id, config, unpriced) : [];
+      if (pending.length) {
+        await bestEffortModelSync(job.org_id, config, signal, pending, job.sandbox_id);
+        signal.throwIfAborted();
+      }
+    }
     let response: Response;
     try {
       response = await send(`${config.host}/api/public/otel/v1/traces`, {
@@ -466,19 +553,82 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
     }
   }
 
+  async function handleModelsRoute(
+    request: Request,
+    orgId: string,
+    syncing: boolean,
+    rawModelId: string | undefined,
+    headers: Record<string, string>,
+  ) {
+    let allowed: readonly string[] = ["GET", "PUT"];
+    if (syncing) allowed = ["POST"];
+    else if (rawModelId !== undefined) allowed = ["DELETE"];
+    if (!allowed.includes(request.method)) return new Response(null, { status: 405, headers });
+
+    const row = (await sql.query<SettingsRow>("select config_enc from public.org_langfuse where org_id=$1", [orgId]))
+      .rows[0];
+    const config = await storedConfig(row);
+    if (!config) return Response.json({ error: "langfuse_not_configured" }, { status: 400, headers });
+
+    if (syncing) {
+      const { created, skipped, failed, summary } = await syncMissingLangfuseModels(send, config, request.signal);
+      clearOrgSyncCache(orgId);
+      return Response.json({ created, skipped, failed, ...summary }, { headers });
+    }
+    if (rawModelId !== undefined) {
+      let modelId: string;
+      try {
+        modelId = decodeURIComponent(rawModelId);
+      } catch {
+        throw new LangfuseModelsError("invalid_input", "Invalid modelId");
+      }
+      await deleteLangfuseModel(send, config, modelId, request.signal);
+      clearOrgSyncCache(orgId);
+      return new Response(null, { status: 204, headers });
+    }
+    if (request.method === "GET") {
+      return Response.json(summarizeLangfuseModels(await fetchLangfuseModels(send, config, request.signal)), {
+        headers,
+      });
+    }
+    let input: Record<string, unknown>;
+    try {
+      input = await readBody(request, SETTINGS_BODY_MAX_BYTES);
+    } catch (error) {
+      if (error instanceof VaultError) throw new LangfuseModelsError("invalid_input", "Invalid model pricing");
+      throw error;
+    }
+    const model = await upsertLangfuseModel(
+      send,
+      config,
+      input as unknown as LangfuseModelOverrideInput,
+      request.signal,
+    );
+    clearOrgSyncCache(orgId);
+    const summary = summarizeLangfuseModels(await fetchLangfuseModels(send, config, request.signal));
+    return Response.json({ model, ...summary }, { headers });
+  }
+
   function route(authenticate: (request: Request) => Promise<CallerResult>): Route {
     return async (request) => {
-      const match = new URL(request.url).pathname.match(/^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(\/test)?$/i);
+      const match = new URL(request.url).pathname.match(
+        /^\/api\/v1\/orgs\/([0-9a-f-]{36})\/langfuse(?:(\/test)|(\/models)(?:(\/sync)|\/([^/]+))?)?$/i,
+      );
       if (!match) return null;
       const orgId = match[1]!.toLowerCase();
       const testing = Boolean(match[2]);
+      const modelsRoute = Boolean(match[3]);
+      const syncing = Boolean(match[4]);
+      const rawModelId = match[5];
       const headers = { "cache-control": "no-store" };
       try {
         const auth = await authenticate(request);
         if (!auth.ok) return Response.json({ error: "unauthorized" }, { status: 401, headers });
         const membership = auth.caller.orgs.find((o) => o.orgId === orgId);
-        if (!membership || (membership.role !== "admin" && (testing || request.method !== "GET")))
+        if (!membership || (membership.role !== "admin" && (testing || modelsRoute || request.method !== "GET")))
           return Response.json({ error: "forbidden" }, { status: 403, headers });
+
+        if (modelsRoute) return await handleModelsRoute(request, orgId, syncing, rawModelId, headers);
 
         if (testing) {
           if (request.method !== "POST") return new Response(null, { status: 405, headers });
@@ -541,12 +691,12 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
           return new Response(null, { status: 405, headers });
         const input = request.method === "PUT" ? await readBody(request, 16384) : {};
         if (!sql.transaction) throw Error("Langfuse settings require transactions");
-        return await sql.transaction(async (tx) => {
+        const saved = await sql.transaction(async (tx) => {
           // Lock the organization even before a configuration row exists.
           await tx.query("select id from public.orgs where id=$1 for no key update", [orgId]);
           if (request.method === "DELETE") {
             await tx.query("delete from public.org_langfuse where org_id=$1", [orgId]);
-            return new Response(null, { status: 204, headers });
+            return null;
           }
           const row = (
             await tx.query<SettingsRow>(
@@ -565,11 +715,23 @@ export function createLangfuse(sql: Sql, key: string, send: typeof fetch = fetch
              on conflict(org_id) do update set enabled=excluded.enabled,content_mode=excluded.content_mode,config_enc=excluded.config_enc`,
             [orgId, enabled, contentMode, Buffer.from(encrypted).toString("hex")],
           );
-          return Response.json({ enabled, contentMode }, { headers });
+          return { enabled, contentMode, config };
         });
+        clearOrgSyncCache(orgId);
+        if (!saved) return new Response(null, { status: 204, headers });
+        if (saved.enabled) await bestEffortModelSync(orgId, saved.config, request.signal);
+        return Response.json({ enabled: saved.enabled, contentMode: saved.contentMode }, { headers });
       } catch (error) {
         if (error instanceof BodyTooLargeError) {
           return Response.json({ error: "request_too_large" }, { status: 413, headers });
+        }
+        if (error instanceof LangfuseModelsError) {
+          if (error.code === "invalid_input")
+            return Response.json({ error: "invalid_model_pricing" }, { status: 400, headers });
+          return Response.json(
+            { error: error.code === "rejected" ? "langfuse_rejected" : "langfuse_unreachable" },
+            { status: 502, headers },
+          );
         }
         if (error instanceof LangfuseInputError || error instanceof VaultError) {
           return Response.json({ error: "langfuse_configuration_unavailable" }, { status: 400, headers });
